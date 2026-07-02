@@ -1,0 +1,24 @@
+# Local/dev composition (docs/21-deployment.md). Phase 1: PAPER mode only.
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      APP_ENV: dev
+      SYSTEM_MODE: PAPER
+      DATABASE_URL: postgresql+asyncpg://cipher:cipher@db:5432/capital_cipher
+      ENABLE_MARKET_DATA: "1"
+      LOG_LEVEL: INFO
+    depends_on:
+      - db
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: cipher
+      POSTGRES_PASSWORD: cipher
+      POSTGRES_DB: capital_cipher
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+volumes:
+  pgdata:
