@@ -49,7 +49,10 @@ class RiskManager:
         self.state.open_positions = count
 
     def reset_daily(self) -> None:
+        # New UTC day: reset daily window AND loss-streak lockout (defect
+        # found in real-data validation: streak never resets while blocked).
         self.state.daily_pnl_percent = 0.0
+        self.state.consecutive_losses = 0
 
     def update_equity(self, balance: float) -> None:
         """Track total drawdown from peak equity (docs/06 drawdown total)."""

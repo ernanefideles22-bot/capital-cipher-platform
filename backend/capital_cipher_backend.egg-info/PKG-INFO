@@ -1,0 +1,89 @@
+Metadata-Version: 2.4
+Name: capital-cipher-backend
+Version: 0.5.0
+Summary: Capital Cipher AI — institutional multi-agent trading platform (Phase 1, PAPER only)
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi>=0.115
+Requires-Dist: uvicorn[standard]>=0.30
+Requires-Dist: pydantic>=2.8
+Requires-Dist: pydantic-settings>=2.4
+Requires-Dist: sqlalchemy[asyncio]>=2.0
+Requires-Dist: aiosqlite>=0.20
+Requires-Dist: websockets>=12.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.23; extra == "dev"
+Requires-Dist: httpx>=0.27; extra == "dev"
+Provides-Extra: postgres
+Requires-Dist: asyncpg>=0.29; extra == "postgres"
+
+# Capital Cipher AI — Backend (Phase 1)
+
+FastAPI backend implementing the Capital Cipher AI specification
+(`capital-cipher-specification` repo). **Phase 1 operates exclusively in PAPER
+mode: no real orders, no private API keys, no live trading code.**
+
+## Requirements
+
+- Python 3.13+ (spec target; code runs on 3.10+)
+- pip
+
+## Run locally
+
+```bash
+cd backend
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+cp .env.example .env
+uvicorn app.main:app --reload
+```
+
+- `GET /health` — service health
+- `GET /api/v1/status` — system mode (PAPER) and component status
+- Full API per `docs/13-api-specification.md`
+
+To stream real public market data from Binance (no API key needed):
+
+```bash
+ENABLE_MARKET_DATA=1 uvicorn app.main:app
+```
+
+## Run tests
+
+```bash
+python -m pytest app/tests -q
+```
+
+98 tests cover: agent contracts, indicators, risk scenarios (approve/reduce/
+block/kill-switch/drawdown/losses/latency/audit-failure), decision engine
+(weights, conflicts, minimum confidence), paper trading (SL/TP, fees,
+slippage, idempotency), data quality, state machine and Phase 1 security
+guarantees (LIVE mode impossible, no API key fields, no real order code).
+
+## Phase 2 additions
+
+- `app/strategy/` — Strategy Engine (docs/26): versioned strategies with risk
+  profiles; regime rules (HIGH_VOLATILITY blocks, RANGE raises min confidence).
+  Strategy overrides can only tighten docs/06 global limits, never loosen them.
+- `app/backtesting/` — Backtesting Engine (docs/17): isolated pipeline replay,
+  no lookahead (input order irrelevant), mandatory metrics, fees/slippage.
+  API: `POST /api/v1/backtest/run` (source: store | inline | csv).
+- Reports: `GET /api/v1/reports/performance?by=symbol|timeframe` (equity curve
+  included), `GET /api/v1/reports/agents/ranking` (report-only, docs/27).
+- Risk: total-drawdown gate (10% default) + daily reset on UTC day change.
+
+## Architecture
+
+```text
+Market Data Adapter (Binance/Bybit/CSV/Replay)
+  → Data Quality → CandleStore
+  → Orchestrator → [MarketDataAgent, QuantAgent, TrendAgent]
+  → Decision Engine (weighted consolidation, no simple voting)
+  → Risk Manager (absolute veto, audited before anything advances)
+  → Paper Trading Engine (fees + slippage simulated)
+  → Audit trail (correlation_id reconstructs every chain)
+```
+
+Sensitive endpoints (kill switch) require `X-API-Key` matching `ADMIN_API_KEY`
+from the environment; when unset they are locked (fail-safe).
