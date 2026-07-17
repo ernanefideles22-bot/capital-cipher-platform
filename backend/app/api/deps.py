@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import secrets
+
 from fastapi import Depends, Header, HTTPException, Request
 
 from app.api.context import AppContext
@@ -30,7 +32,7 @@ async def require_admin(
                 "message": "ADMIN_API_KEY not configured; sensitive endpoints are locked",
             },
         )
-    if x_api_key != configured:
+    if x_api_key is None or not secrets.compare_digest(x_api_key, configured):
         raise HTTPException(
             status_code=401,
             detail={"code": "UNAUTHORIZED", "message": "Invalid or missing API key"},

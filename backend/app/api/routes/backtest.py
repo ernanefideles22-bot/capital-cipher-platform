@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 
 from app.api.context import AppContext
-from app.api.deps import get_context
+from app.api.deps import AdminRequired, get_context
 from app.market_data.data_quality import validate_raw_candle
 from app.schemas.api import error_response, success_response
 from app.schemas.backtest import BacktestRequest
@@ -13,7 +13,7 @@ from app.schemas.backtest import BacktestRequest
 router = APIRouter(prefix="/backtest")
 
 
-@router.post("/run")
+@router.post("/run", dependencies=[AdminRequired])
 async def run_backtest(body: BacktestRequest, context: AppContext = Depends(get_context)) -> dict:
     """Run a backtest from stored candles or inline candle data.
 

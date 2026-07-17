@@ -5,7 +5,7 @@ Phase 1 MVP + Phase 2 (robust paper trading): multi-agent platform with backtest
 API keys, no live execution — by design and by test.**
 
 ```text
-backend/   FastAPI + Pydantic + SQLAlchemy (98 tests passing)
+backend/   FastAPI + Pydantic + SQLAlchemy (106 tests passing)
 frontend/  React + Vite + TS + Tailwind dashboard
 docker-compose.yml  backend + PostgreSQL (dev)
 ```

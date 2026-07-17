@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from app.api.context import AppContext
-from app.api.deps import get_context
+from app.api.deps import AdminRequired, get_context
 from app.schemas.api import error_response, success_response
 
 router = APIRouter(prefix="/orchestrator")
@@ -23,7 +23,7 @@ async def orchestrator_status(context: AppContext = Depends(get_context)) -> dic
     return success_response(context.orchestrator.status())
 
 
-@router.post("/evaluate")
+@router.post("/evaluate", dependencies=[AdminRequired])
 async def evaluate(
     body: EvaluateRequest, context: AppContext = Depends(get_context)
 ) -> dict:

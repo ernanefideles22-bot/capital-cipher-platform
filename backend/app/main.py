@@ -12,8 +12,8 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import websockets as ws_module
 from app.api.context import AppContext, build_context
+from app.api.security import ApiSecurityMiddleware
 from app.api.routes import (
     agents,
     audit,
@@ -39,7 +39,7 @@ logger = ServiceLogger("main")
 
 
 def create_app(context: AppContext | None = None, *, with_market_data: bool | None = None) -> FastAPI:
-    settings = get_settings()
+    settings = context.settings if context is not None else get_settings()
     configure_logging(settings.log_level)
     if with_market_data is None:
         with_market_data = os.environ.get("ENABLE_MARKET_DATA", "0") == "1"
@@ -50,8 +50,6 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
         app.state.context = ctx
         if ctx.database is not None:
             await ctx.database.create_all()
-        ws_module.wire_bus_to_hub(ctx.event_bus)
-
         # State machine boot: OFFLINE -> INITIALIZING -> PAPER (docs/30).
         await ctx.state_machine.transition(
             SystemState.INITIALIZING, reason="System boot", actor="main"
@@ -95,8 +93,13 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
         lifespan=lifespan,
     )
     app.add_middleware(
+        ApiSecurityMiddleware,
+        requests_per_minute=settings.api_rate_limit_per_minute,
+        max_request_body_bytes=settings.max_request_body_bytes,
+    )
+    app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+        allow_origins=settings.cors_allowed_origins_list,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -123,7 +126,6 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
     app.include_router(backtest.router, prefix=api_prefix)
     app.include_router(strategies.router, prefix=api_prefix)
     app.include_router(reports.router, prefix=api_prefix)
-    app.include_router(ws_module.router)
     return app
 
 

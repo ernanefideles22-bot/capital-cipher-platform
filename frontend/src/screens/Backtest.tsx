@@ -24,9 +24,11 @@ export default function Backtest() {
   const history = usePolling(api.backtestReports, 10000);
 
   const run = async () => {
+    const apiKey = window.prompt("Admin API key:");
+    if (!apiKey) return;
     setRunning(true);
     setError(null);
-    const result = await api.runBacktest({ symbol, timeframe, source: "store" });
+    const result = await api.runBacktest({ symbol, timeframe, source: "store" }, apiKey);
     setRunning(false);
     if (!result.success || !result.data) {
       setError(result.error?.message ?? "Backtest failed");

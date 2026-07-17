@@ -35,7 +35,7 @@ ENABLE_MARKET_DATA=1 uvicorn app.main:app
 python -m pytest app/tests -q
 ```
 
-98 tests cover: agent contracts, indicators, risk scenarios (approve/reduce/
+106 tests cover: agent contracts, indicators, risk scenarios (approve/reduce/
 block/kill-switch/drawdown/losses/latency/audit-failure), decision engine
 (weights, conflicts, minimum confidence), paper trading (SL/TP, fees,
 slippage, idempotency), data quality, state machine and Phase 1 security
@@ -65,5 +65,16 @@ Market Data Adapter (Binance/Bybit/CSV/Replay)
   → Audit trail (correlation_id reconstructs every chain)
 ```
 
-Sensitive endpoints (kill switch) require `X-API-Key` matching `ADMIN_API_KEY`
-from the environment; when unset they are locked (fail-safe).
+Every state-changing or resource-intensive endpoint (`kill-switch`, manual
+evaluation, strategy changes, and backtest execution) requires `X-API-Key`
+matching `ADMIN_API_KEY` from the environment. The key must contain at least
+32 characters; when unset, those endpoints are locked (fail-safe).
+
+The HTTP boundary also enforces `API_RATE_LIMIT_PER_MINUTE`, rejects request
+bodies larger than `MAX_REQUEST_BODY_BYTES`, adds defensive response headers,
+and accepts browser origins only from `CORS_ALLOWED_ORIGINS`. The Phase 1
+runtime accepts only `SYSTEM_MODE=OFFLINE|PAPER`; testnet and live execution
+environments are not represented in configuration or code.
+
+Unauthenticated WebSocket streams are not mounted. They may return only after
+the platform has a user-authenticated handshake and per-tenant authorization.

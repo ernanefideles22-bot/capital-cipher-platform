@@ -31,6 +31,16 @@ class Settings(BaseSettings):
         default="sqlite+aiosqlite:///./capital_cipher.db", alias="DATABASE_URL"
     )
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
+    cors_allowed_origins: str = Field(
+        default="http://localhost:5173,http://127.0.0.1:5173",
+        alias="CORS_ALLOWED_ORIGINS",
+    )
+    api_rate_limit_per_minute: int = Field(
+        default=300, alias="API_RATE_LIMIT_PER_MINUTE", ge=1, le=100_000
+    )
+    max_request_body_bytes: int = Field(
+        default=2_000_000, alias="MAX_REQUEST_BODY_BYTES", ge=1, le=20_000_000
+    )
 
     allowed_symbols: str = Field(default="BTCUSDT,ETHUSDT,SOLUSDT", alias="ALLOWED_SYMBOLS")
     default_timeframe: str = Field(default="15m", alias="DEFAULT_TIMEFRAME")
@@ -78,9 +88,29 @@ class Settings(BaseSettings):
             )
         return mode
 
+    @field_validator("admin_api_key")
+    @classmethod
+    def validate_admin_api_key(cls, value: str | None) -> str | None:
+        """Configured administrator keys must have enough entropy.
+
+        An empty value keeps every protected endpoint locked. Short placeholder
+        values are rejected at startup so they cannot accidentally reach a
+        shared environment.
+        """
+        if value is None or not value.strip():
+            return None
+        candidate = value.strip()
+        if len(candidate) < 32:
+            raise ValueError("ADMIN_API_KEY must contain at least 32 characters")
+        return candidate
+
     @property
     def allowed_symbols_list(self) -> list[str]:
         return [s.strip().upper() for s in self.allowed_symbols.split(",") if s.strip()]
+
+    @property
+    def cors_allowed_origins_list(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]
 
 
 @lru_cache
