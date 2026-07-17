@@ -11,3 +11,10 @@ docker-compose.yml  backend + PostgreSQL (dev)
 ```
 
 Quick start: see `backend/README.md` and `frontend/README.md`.
+
+This repository is the active paper-trading implementation. The
+[`capital-cipher-specification`](https://github.com/ernanefideles22-bot/capital-cipher-specification)
+repository remains the authoritative source for architecture and contracts.
+See [MIGRATION.md](MIGRATION.md) for repository roles, the safe dashboard
+migration path, and the conditions required before the legacy prototype can be
+archived.
