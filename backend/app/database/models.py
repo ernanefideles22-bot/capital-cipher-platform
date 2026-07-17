@@ -33,6 +33,35 @@ class SystemEventModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
 
 
+class EventJournalModel(Base):
+    __tablename__ = "event_journal"
+
+    message_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    event_id: Mapped[str] = mapped_column(String(36), nullable=False, unique=True, index=True)
+    correlation_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    topic: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    payload: Mapped[dict] = mapped_column(JsonType, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+
+class RawMarketEventModel(Base):
+    __tablename__ = "raw_market_events"
+
+    event_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    source: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    exchange: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    symbol: Mapped[str | None] = mapped_column(Text, index=True)
+    occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    payload: Mapped[dict] = mapped_column(JsonType, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+
+
 class MarketCandleModel(Base):
     __tablename__ = "market_candles"
 

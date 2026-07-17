@@ -1,0 +1,16 @@
+{
+  "name": "capital-cipher-platform",
+  "version": "0.6.0",
+  "private": true,
+  "packageManager": "pnpm@11.9.0",
+  "scripts": {
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
+    "check": "turbo run build typecheck test",
+    "check:affected": "turbo run build typecheck test --affected"
+  },
+  "devDependencies": {
+    "turbo": "2.8.21"
+  }
+}

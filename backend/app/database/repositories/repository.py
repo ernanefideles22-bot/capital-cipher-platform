@@ -15,15 +15,18 @@ from app.database.models import (
     AgentOutputModel,
     AuditLogModel,
     DecisionModel,
+    EventJournalModel,
     MarketCandleModel,
     PaperOrderModel,
+    RawMarketEventModel,
     RiskCheckModel,
     SystemEventModel,
 )
 from app.database.session import Database
 from app.schemas.agents import AgentOutput
 from app.schemas.decisions import Decision
-from app.schemas.market import Candle
+from app.schemas.events import BusMessage
+from app.schemas.market import Candle, RawMarketEvent
 from app.schemas.paper import PaperOrder
 from app.schemas.risk import RiskCheck
 
@@ -50,6 +53,57 @@ class Repository:
                 )
         except Exception as exc:
             raise DatabaseError(f"Failed to persist system event: {exc}") from exc
+
+    async def save_bus_message(self, message: BusMessage) -> bool:
+        """Append a versioned event before any consumer handles it."""
+        try:
+            async with self._db.session() as session, session.begin():
+                existing = await session.scalar(
+                    select(EventJournalModel.message_id).where(
+                        EventJournalModel.event_id == message.event_id
+                    )
+                )
+                if existing is not None:
+                    return False
+                session.add(
+                    EventJournalModel(
+                        message_id=message.message_id,
+                        event_id=message.event_id,
+                        correlation_id=message.correlation_id,
+                        topic=message.topic,
+                        event_type=message.event_type,
+                        source=message.source,
+                        schema_version=message.schema_version,
+                        payload=message.payload,
+                        created_at=message.timestamp,
+                    )
+                )
+            return True
+        except Exception as exc:
+            raise DatabaseError(f"Failed to journal bus message: {exc}") from exc
+
+    async def save_raw_market_event(self, event: RawMarketEvent) -> None:
+        """Persist a public exchange payload once, before normalization."""
+        try:
+            async with self._db.session() as session, session.begin():
+                existing = await session.get(RawMarketEventModel, event.event_id)
+                if existing is None:
+                    session.add(
+                        RawMarketEventModel(
+                            event_id=event.event_id,
+                            schema_version=event.schema_version,
+                            source=event.source,
+                            exchange=event.exchange.value,
+                            event_type=event.event_type,
+                            symbol=event.symbol,
+                            occurred_at=event.occurred_at,
+                            received_at=event.received_at,
+                            payload=event.payload,
+                            payload_sha256=event.payload_sha256,
+                        )
+                    )
+        except Exception as exc:
+            raise DatabaseError(f"Failed to persist raw market event: {exc}") from exc
 
     async def save_candle(self, candle: Candle) -> None:
         try:

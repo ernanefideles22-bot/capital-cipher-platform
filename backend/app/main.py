@@ -30,10 +30,12 @@ from app.api.routes import (
 )
 from app.core.config import get_settings
 from app.core.errors import CapitalCipherError
+from app.core.event_bus import Topics
 from app.core.logging import ServiceLogger, configure_logging
 from app.core.state_machine import SystemState
 from app.market_data.adapters.binance import BinanceMarketDataAdapter
 from app.schemas.api import error_response
+from app.schemas.events import EventTypes
 
 logger = ServiceLogger("main")
 
@@ -71,10 +73,24 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
                 if ctx.repository is not None:
                     await ctx.repository.save_candle(candle)
 
+            async def on_raw_event(event):
+                # Store public source data before normalization or analysis.
+                if ctx.repository is not None:
+                    await ctx.repository.save_raw_market_event(event)
+                await ctx.event_bus.publish(
+                    Topics.RAW_MARKET_EVENTS,
+                    EventTypes.RAW_MARKET_EVENT_RECEIVED,
+                    event.model_dump(mode="json"),
+                    source=event.source,
+                    correlation_id=event.event_id,
+                    event_id=event.event_id,
+                )
+
             async def on_status(event_type: str, payload: dict):
                 ctx.market_connected = event_type == "MARKET_CONNECTED"
 
             adapter.on_candle = on_candle
+            adapter.on_raw_event = on_raw_event
             adapter.on_status = on_status
             await adapter.connect()
 

@@ -3,42 +3,45 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
 from app.schemas.common import utcnow
 
+CONTRACT_VERSION = "1.0.0"
+
 
 class SystemEvent(BaseModel):
     """Common envelope for every system event."""
 
-    event_id: str = Field(default_factory=lambda: str(uuid4()))
-    correlation_id: str
-    event_type: str
-    source: str
+    event_id: str = Field(default_factory=lambda: str(uuid4()), min_length=1)
+    correlation_id: str = Field(min_length=1)
+    event_type: str = Field(pattern=r"^[A-Z][A-Z0-9_]+$")
+    source: str = Field(min_length=1)
     timestamp: datetime = Field(default_factory=utcnow)
-    version: str = "1.0"
+    schema_version: Literal["1.0.0"] = CONTRACT_VERSION
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class BusMessage(BaseModel):
     """Message bus envelope (docs/23-message-bus.md)."""
 
-    message_id: str = Field(default_factory=lambda: str(uuid4()))
-    event_id: str = Field(default_factory=lambda: str(uuid4()))
-    correlation_id: str
-    topic: str
-    event_type: str
-    source: str
+    message_id: str = Field(default_factory=lambda: str(uuid4()), min_length=1)
+    event_id: str = Field(default_factory=lambda: str(uuid4()), min_length=1)
+    correlation_id: str = Field(min_length=1)
+    topic: str = Field(pattern=r"^[a-z][a-z0-9_.-]+\.v[1-9][0-9]*$")
+    event_type: str = Field(pattern=r"^[A-Z][A-Z0-9_]+$")
+    source: str = Field(min_length=1)
     timestamp: datetime = Field(default_factory=utcnow)
-    version: str = "1.0"
+    schema_version: Literal["1.0.0"] = CONTRACT_VERSION
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class EventTypes:
     # Market
+    RAW_MARKET_EVENT_RECEIVED = "RAW_MARKET_EVENT_RECEIVED"
     MARKET_CONNECTED = "MARKET_CONNECTED"
     MARKET_DISCONNECTED = "MARKET_DISCONNECTED"
     CANDLE_CLOSED = "CANDLE_CLOSED"

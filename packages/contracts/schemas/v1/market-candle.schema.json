@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/market-candle.schema.json",
+  "title": "Capital Cipher Market Candle v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "exchange",
+    "symbol",
+    "timeframe",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "closed_at",
+    "received_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "exchange": {
+      "enum": ["BINANCE", "BYBIT"]
+    },
+    "symbol": {
+      "type": "string",
+      "pattern": "^[A-Z0-9._-]{2,32}$"
+    },
+    "timeframe": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*[mhdw]$"
+    },
+    "open": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "high": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "low": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "close": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "volume": {
+      "type": "number",
+      "minimum": 0
+    },
+    "closed_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "received_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "additionalProperties": false
+}

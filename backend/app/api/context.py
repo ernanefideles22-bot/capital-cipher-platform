@@ -40,7 +40,6 @@ class AppContext:
 
 def build_context(settings: Settings, *, with_database: bool = False) -> AppContext:
     state_machine = SystemStateMachine()
-    event_bus = EventBus()
     candle_store = CandleStore()
 
     database: Database | None = None
@@ -48,6 +47,9 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
     if with_database:
         database = Database(settings.database_url)
         repository = Repository(database)
+    event_bus = EventBus(
+        journal=repository.save_bus_message if repository is not None else None
+    )
 
     audit_service = AuditService(repository=repository)
     limits = RiskLimits(

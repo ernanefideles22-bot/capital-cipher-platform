@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
@@ -17,31 +17,58 @@ from app.core.logging import ServiceLogger
 from app.schemas.events import BusMessage
 
 Handler = Callable[[BusMessage], Awaitable[None]]
+EventJournal = Callable[[BusMessage], Awaitable[bool | None]]
 
 logger = ServiceLogger("message_bus")
 
 
 class Topics:
-    MARKET_EVENTS = "market.events"
-    AGENT_REQUESTS = "agent.requests"
-    AGENT_OUTPUTS = "agent.outputs"
-    DECISION_EVENTS = "decision.events"
-    RISK_EVENTS = "risk.events"
-    PAPER_ORDERS = "paper.orders"
-    AUDIT_EVENTS = "audit.events"
-    SYSTEM_EVENTS = "system.events"
-    DEAD_LETTER = "dead_letter.events"
+    RAW_MARKET_EVENTS = "market.raw.v1"
+    MARKET_EVENTS = "market.events.v1"
+    AGENT_REQUESTS = "agent.requests.v1"
+    AGENT_OUTPUTS = "agent.outputs.v1"
+    DECISION_EVENTS = "decision.events.v1"
+    RISK_EVENTS = "risk.events.v1"
+    PAPER_ORDERS = "paper.orders.v1"
+    AUDIT_EVENTS = "audit.events.v1"
+    SYSTEM_EVENTS = "system.events.v1"
+    DEAD_LETTER = "dead_letter.events.v1"
 
 
 class EventBus:
-    """Simple async pub/sub bus with per-topic subscribers."""
+    """Deterministic async pub/sub bus with journaling and bounded deduplication.
 
-    def __init__(self) -> None:
+    The interface remains broker-neutral so a durable external transport can
+    replace this in-process implementation without changing producers.
+    """
+
+    def __init__(
+        self,
+        *,
+        journal: EventJournal | None = None,
+        max_processed_event_ids: int = 100_000,
+    ) -> None:
+        if max_processed_event_ids < 1:
+            raise ValueError("max_processed_event_ids must be positive")
         self._subscribers: dict[str, list[Handler]] = defaultdict(list)
-        self._processed_message_ids: set[str] = set()
+        self._journal = journal
+        self._max_processed_event_ids = max_processed_event_ids
+        self._processed_event_ids: OrderedDict[str, None] = OrderedDict()
 
     def subscribe(self, topic: str, handler: Handler) -> None:
-        self._subscribers[topic].append(handler)
+        if handler not in self._subscribers[topic]:
+            self._subscribers[topic].append(handler)
+
+    def unsubscribe(self, topic: str, handler: Handler) -> None:
+        subscribers = self._subscribers.get(topic)
+        if subscribers and handler in subscribers:
+            subscribers.remove(handler)
+
+    def _remember(self, event_id: str) -> None:
+        self._processed_event_ids[event_id] = None
+        self._processed_event_ids.move_to_end(event_id)
+        while len(self._processed_event_ids) > self._max_processed_event_ids:
+            self._processed_event_ids.popitem(last=False)
 
     async def publish(
         self,
@@ -65,7 +92,7 @@ class EventBus:
             payload=payload,
         )
         # Idempotency guard for critical events (docs/23).
-        if message.event_id in self._processed_message_ids:
+        if message.event_id in self._processed_event_ids:
             logger.warning(
                 "Duplicate event ignored",
                 event_type="DUPLICATE_EVENT",
@@ -73,7 +100,22 @@ class EventBus:
                 metadata={"event_id": message.event_id, "topic": topic},
             )
             return message
-        self._processed_message_ids.add(message.event_id)
+
+        # Durable journal is written before in-process delivery. A journal
+        # failure stops the event so downstream consumers never act on an
+        # event that cannot be replayed or audited.
+        if self._journal is not None:
+            journaled = await self._journal(message)
+            if journaled is False:
+                self._remember(message.event_id)
+                logger.warning(
+                    "Duplicate durable event ignored",
+                    event_type="DUPLICATE_EVENT",
+                    correlation_id=correlation_id,
+                    metadata={"event_id": message.event_id, "topic": topic},
+                )
+                return message
+        self._remember(message.event_id)
 
         for handler in self._subscribers.get(topic, []):
             try:

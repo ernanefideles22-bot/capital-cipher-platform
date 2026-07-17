@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from app.core.logging import ServiceLogger
 from app.market_data.adapters.base import MarketDataAdapter
 from app.schemas.common import Exchange
-from app.schemas.market import Candle
+from app.schemas.market import Candle, RawMarketEvent
 
 logger = ServiceLogger("binance_adapter")
 
@@ -21,6 +21,26 @@ BINANCE_WS_BASE = "wss://stream.binance.com:9443/ws"
 
 # Binance interval strings match our timeframes for the supported set.
 SUPPORTED_TIMEFRAMES = {"1m", "5m", "15m", "1h", "4h", "1d"}
+
+
+def build_raw_kline_event(payload: dict) -> RawMarketEvent | None:
+    """Wrap the untouched Binance payload in the versioned ingestion contract."""
+    kline = payload.get("k")
+    if not isinstance(kline, dict):
+        return None
+    event_millis = payload.get("E") or kline.get("T")
+    occurred_at = None
+    if event_millis is not None:
+        occurred_at = datetime.fromtimestamp(int(event_millis) / 1000, tz=timezone.utc)
+    symbol = str(kline["s"]).upper() if kline.get("s") else None
+    return RawMarketEvent(
+        source="binance.public.websocket",
+        exchange=Exchange.BINANCE,
+        event_type="BINANCE_KLINE",
+        symbol=symbol,
+        occurred_at=occurred_at,
+        payload=payload,
+    )
 
 
 def normalize_kline(payload: dict) -> Candle | None:
@@ -92,6 +112,9 @@ class BinanceMarketDataAdapter(MarketDataAdapter):
                     )
                     async for raw in ws:
                         message = json.loads(raw)
+                        raw_event = build_raw_kline_event(message)
+                        if raw_event is not None:
+                            await self._emit_raw_event(raw_event)
                         candle = normalize_kline(message)
                         if candle is not None:
                             await self._emit_candle(candle)

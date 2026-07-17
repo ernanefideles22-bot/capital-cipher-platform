@@ -1,0 +1,10 @@
+{
+  "contract_family": "capital-cipher-platform",
+  "current_version": "1.0.0",
+  "compatibility": "backward-compatible-within-major",
+  "schemas": [
+    "schemas/v1/event-envelope.schema.json",
+    "schemas/v1/market-candle.schema.json",
+    "schemas/v1/raw-market-event.schema.json"
+  ]
+}
