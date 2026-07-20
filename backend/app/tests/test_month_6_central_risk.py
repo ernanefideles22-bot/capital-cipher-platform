@@ -1,4 +1,4 @@
-"""Month 6 completion tests for central portfolio risk and 40 PAPER agents."""
+"""Month 6 risk invariants retained by the Month 8 100-agent cohort."""
 
 from __future__ import annotations
 
@@ -71,12 +71,12 @@ async def risk_stack(
     return state_machine, audit, manager, engine
 
 
-def test_month_6_registry_has_40_paper_agents_with_bounded_authority():
+def test_registry_has_100_paper_agents_with_bounded_authority():
     context = build_context(Settings(), with_database=False)
     registrations = context.agent_registry.registrations()
-    assert len(registrations) == 40
+    assert len(registrations) == 100
     assert sum(item.decision_role == "PRIMARY" for item in registrations) == 3
-    assert sum(item.decision_role == "SHADOW" for item in registrations) == 37
+    assert sum(item.decision_role == "SHADOW" for item in registrations) == 97
     assert {definition.name for definition in DEFINITIONS}.issubset(
         {item.agent_name for item in registrations}
     )

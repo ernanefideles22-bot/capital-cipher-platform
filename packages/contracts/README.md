@@ -28,3 +28,7 @@ research boundary without authorizing operational execution.
 Agent inputs, outputs, registrations, execution requests, durable jobs, and
 complete traces form the Month 5 PAPER-only runtime boundary. These contracts
 do not expose risk mutation or order execution authority.
+Specialist evidence, agent forecasts, realized outcomes and observational
+scorecards form the Month 8 evaluation boundary. They preserve source
+provenance, make forecast identities reproducible and explicitly carry no
+decision or order authority.

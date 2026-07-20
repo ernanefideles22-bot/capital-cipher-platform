@@ -67,6 +67,7 @@ class Orchestrator:
         clock_registry: ExchangeClockRegistry | None = None,
         require_trusted_clock: bool = False,
         gap_service: GapService | None = None,
+        agent_evaluation_service=None,
     ) -> None:
         self._sm = state_machine
         self._bus = event_bus
@@ -81,6 +82,7 @@ class Orchestrator:
         self._clock_registry = clock_registry
         self._require_trusted_clock = require_trusted_clock
         self._gap_service = gap_service
+        self._agent_evaluation = agent_evaluation_service
         self.strategy_engine = strategy_engine or StrategyEngine()
         self._current_day = None
         self._agent_runtime = agent_runtime or AgentRuntime(
@@ -330,6 +332,26 @@ class Orchestrator:
                 )
             )
         agent_outputs = await self._agent_runtime.execute_many(requests)
+        if self._agent_evaluation is not None:
+            try:
+                await self._agent_evaluation.observe(
+                    candle=candle,
+                    correlation_id=correlation_id,
+                    outputs=agent_outputs,
+                    registrations={
+                        item.agent_name: item
+                        for item in self._agent_runtime.registry.registrations()
+                    },
+                )
+            except Exception as exc:
+                # Month 8 evaluation is observational. It may never create,
+                # block, resize or route an order.
+                logger.error(
+                    "Agent evaluation evidence could not be recorded",
+                    event_type="AGENT_EVALUATION_FAILED",
+                    correlation_id=correlation_id,
+                    metadata={"error_type": type(exc).__name__},
+                )
 
         # Strategy selection and regime rules (docs/26).
         trend_output = next((o for o in agent_outputs if o.agent_name == "TrendAgent"), None)

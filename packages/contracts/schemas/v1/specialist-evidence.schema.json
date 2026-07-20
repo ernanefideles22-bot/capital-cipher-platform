@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/specialist-evidence.schema.json",
+  "title": "SpecialistEvidenceV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "evidence_id", "domain", "metric_name", "scope",
+    "source", "source_event_id", "value", "unit", "quality_score",
+    "observed_at", "received_at", "provenance_uri", "payload_sha256"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "evidence_id": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "domain": {
+      "enum": ["DERIVATIVES", "MACRO", "ONCHAIN", "NEWS"]
+    },
+    "metric_name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{1,63}$"
+    },
+    "scope": {
+      "type": "string",
+      "pattern": "^(GLOBAL|[A-Z0-9._-]{2,32})$"
+    },
+    "source": { "type": "string", "minLength": 2, "maxLength": 128 },
+    "source_event_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "value": { "type": "number" },
+    "unit": { "type": "string", "minLength": 1, "maxLength": 32 },
+    "quality_score": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "observed_at": { "type": "string", "format": "date-time" },
+    "received_at": { "type": "string", "format": "date-time" },
+    "provenance_uri": {
+      "anyOf": [
+        { "type": "string", "maxLength": 1000 },
+        { "type": "null" }
+      ]
+    },
+    "payload_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    }
+  }
+}

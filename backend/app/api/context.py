@@ -6,6 +6,10 @@ import asyncio
 from dataclasses import dataclass
 
 from app.agents.market_data import MarketDataAgent
+from app.agents.evaluation import (
+    AgentEvaluationService,
+    SpecialistEvidenceService,
+)
 from app.agents.advanced_specialists import (
     build_advanced_shadow_specialists,
 )
@@ -13,6 +17,7 @@ from app.agents.quant import QuantAgent
 from app.agents.registry import AgentRegistry
 from app.agents.runtime import AgentRuntime, AgentRuntimeWorker
 from app.agents.specialists import build_shadow_specialists
+from app.agents.month8_specialists import build_month8_shadow_specialists
 from app.agents.trend import TrendAgent
 from app.audit.service import AuditService
 from app.backtesting.engine import BacktestingEngine
@@ -92,6 +97,8 @@ class AppContext:
     agent_registry: AgentRegistry | None = None
     agent_runtime: AgentRuntime | None = None
     agent_runtime_worker: AgentRuntimeWorker | None = None
+    specialist_evidence_service: SpecialistEvidenceService | None = None
+    agent_evaluation_service: AgentEvaluationService | None = None
     market_connected: bool = False
 
 
@@ -307,18 +314,24 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
     )
     quant_agent = QuantAgent(candle_store)
     trend_agent = TrendAgent(candle_store)
+    specialist_evidence_service = SpecialistEvidenceService(repository)
+    agent_evaluation_service = AgentEvaluationService(repository)
     runtime_agents = [
         market_data_agent,
         quant_agent,
         trend_agent,
         *build_shadow_specialists(candle_store),
         *build_advanced_shadow_specialists(candle_store),
+        *build_month8_shadow_specialists(
+            candle_store,
+            specialist_evidence_service,
+        ),
     ]
     for agent in runtime_agents:
         agent.timeout_ms = settings.agent_timeout_ms
         agent.max_attempts = settings.agent_max_attempts
     agent_registry = AgentRegistry(runtime_agents)
-    agent_registry.validate_cohort(expected_count=40)
+    agent_registry.validate_cohort(expected_count=100)
     agent_runtime = AgentRuntime(
         agent_registry,
         repository=repository,
@@ -354,6 +367,7 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         clock_registry=clock_registry,
         require_trusted_clock=settings.require_trusted_market_clock,
         gap_service=gap_service,
+        agent_evaluation_service=agent_evaluation_service,
     )
     backtesting_engine = BacktestingEngine(
         limits=limits,
@@ -400,6 +414,8 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         agent_registry=agent_registry,
         agent_runtime=agent_runtime,
         agent_runtime_worker=agent_runtime_worker,
+        specialist_evidence_service=specialist_evidence_service,
+        agent_evaluation_service=agent_evaluation_service,
     )
     context_holder["ctx"] = ctx
     return ctx

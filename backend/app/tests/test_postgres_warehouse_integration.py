@@ -498,6 +498,44 @@ async def test_real_postgres_internal_warehouse_round_trip():
             ),
             {"schema_name": INTERNAL_SCHEMA},
         )
+        specialist_evaluation_rls_count = await connection.scalar(
+            text(
+                "SELECT count(*) "
+                "FROM pg_class c "
+                "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                "WHERE n.nspname = :schema_name "
+                "AND c.relname IN "
+                "('specialist_evidence', 'agent_forecasts', "
+                "'agent_forecast_outcomes') "
+                "AND c.relrowsecurity"
+            ),
+            {"schema_name": INTERNAL_SCHEMA},
+        )
+        specialist_evaluation_triggers = set(
+            await connection.scalars(
+                text(
+                    "SELECT trigger_name "
+                    "FROM information_schema.triggers "
+                    "WHERE trigger_schema = :schema_name "
+                    "AND event_object_table IN "
+                    "('specialist_evidence', 'agent_forecasts', "
+                    "'agent_forecast_outcomes')"
+                ),
+                {"schema_name": INTERNAL_SCHEMA},
+            )
+        )
+        specialist_evaluation_security_definers = await connection.scalar(
+            text(
+                "SELECT count(*) "
+                "FROM pg_proc p "
+                "JOIN pg_namespace n ON n.oid = p.pronamespace "
+                "WHERE n.nspname = :schema_name "
+                "AND p.proname = "
+                "'reject_specialist_evaluation_mutation' "
+                "AND p.prosecdef"
+            ),
+            {"schema_name": INTERNAL_SCHEMA},
+        )
     await database.dispose()
 
     assert loaded == manifest
@@ -537,6 +575,9 @@ async def test_real_postgres_internal_warehouse_round_trip():
         "reconciliation_mismatches",
         "venue_position_snapshots",
         "venue_balance_snapshots",
+        "specialist_evidence",
+        "agent_forecasts",
+        "agent_forecast_outcomes",
     } <= tables
     assert "trg_walk_forward_experiments_immutable" in immutable_triggers
     assert row_security_enabled is True
@@ -555,6 +596,13 @@ async def test_real_postgres_internal_warehouse_round_trip():
     assert central_risk_security_definers == 0
     assert oms_rls_count == 8
     assert oms_security_definers == 0
+    assert specialist_evaluation_rls_count == 3
+    assert specialist_evaluation_security_definers == 0
+    assert specialist_evaluation_triggers == {
+        "trg_specialist_evidence_immutable",
+        "trg_agent_forecasts_immutable",
+        "trg_agent_forecast_outcomes_immutable",
+    }
     assert {
         "trg_oms_orders_transition",
         "trg_oms_order_events_immutable",

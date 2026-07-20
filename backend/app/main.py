@@ -62,6 +62,10 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
         await ctx.oms_service.initialize()
         if ctx.agent_runtime is not None:
             await ctx.agent_runtime.initialize()
+        if ctx.specialist_evidence_service is not None:
+            await ctx.specialist_evidence_service.initialize()
+        if ctx.agent_evaluation_service is not None:
+            await ctx.agent_evaluation_service.initialize()
         outbox_stop = asyncio.Event()
         outbox_task = None
         backfill_stop = asyncio.Event()

@@ -38,7 +38,8 @@ python -m pytest app/tests -q
 The suite covers agent and event contracts, Redis transport, durable outbox,
 deterministic replay checkpoints, indicators, risk scenarios, the decision
 engine, PAPER trading, TESTNET OMS, reconciliation, data quality, state
-transitions, and security guarantees that keep LIVE execution impossible.
+transitions, specialist evidence, forecast evaluation, and security guarantees
+that keep LIVE execution impossible.
 
 Normalized candles are stored idempotently in the internal
 `capital_cipher.candle_observations` time-series table before agents, risk, or
@@ -105,8 +106,8 @@ migration—is documented in `../docs/month-4-completion.md`.
 
 ## Governed agent runtime
 
-The governed runtime now hosts exactly 40 analytical PAPER agents:
-three existing primary decision agents and 37 evidence-only shadow
+The governed runtime now hosts exactly 100 analytical PAPER agents:
+three existing primary decision agents and 97 evidence-only shadow
 specialists. Every execution has a versioned contract, deterministic
 idempotency identity, bounded retries, a recoverable lease, isolated
 append-only memory, and a complete trace.
@@ -119,7 +120,7 @@ GET  /api/v1/agents/executions
 GET  /api/v1/agents/executions/{execution_id}
 ```
 
-The 37 shadow outputs are visible in decision evidence but cannot alter
+The 97 shadow outputs are visible in decision evidence but cannot alter
 operational action, confidence, warnings, risk, or paper orders. See
 `../docs/month-5-agent-runtime.md` for the cohort, contracts, recovery
 semantics, storage migration, and exit evidence.
@@ -128,7 +129,7 @@ Month 6 adds the central portfolio-risk authority, gross/net/symbol/strategy
 exposure, concentration, historical VaR with a conservative fallback,
 single-use execution approvals and a durable kill switch. See
 `../docs/month-6-central-risk-engine.md` for limits, transaction semantics,
-the 40-agent cohort and completion evidence.
+the then-current 40-agent cohort and completion evidence.
 
 Month 7 adds the single order-management boundary, atomic PAPER mirrors,
 durable TESTNET commands, exact Binance Spot/Bybit linear sandbox allowlists,
@@ -137,12 +138,31 @@ the central durable kill switch. See
 `../docs/month-7-oms-testnet-reconciliation.md` for configuration, API,
 transaction semantics, migration and completion evidence.
 
+Month 8 adds 60 narrowly scoped shadow specialists: 20 technical, 15
+derivatives, 10 macro, 10 on-chain and 5 news agents. External specialists
+consume only normalized evidence with source identity, checksum, quality and
+freshness; missing or invalid evidence produces `WAIT` with zero confidence.
+Every output is captured as an immutable one-candle forecast and later scored
+for directional accuracy, Brier loss and leave-one-out marginal contribution.
+Scorecards remain observational until Month 9. See
+`../docs/month-8-specialist-cohort-evaluation.md`.
+
+Authenticated Month 8 APIs:
+
+```text
+POST /api/v1/agents/evidence
+GET  /api/v1/agents/evidence
+GET  /api/v1/agents/evaluation/forecasts
+GET  /api/v1/agents/evaluation/scorecards
+```
+
 ## Architecture
 
 ```text
 Market Data Adapter (Binance/Bybit/CSV/Replay)
   → Data Quality → CandleStore
-  → Orchestrator → Agent Runtime (3 PRIMARY + 37 SHADOW)
+  → Orchestrator → Agent Runtime (3 PRIMARY + 97 SHADOW)
+  → Observational Evaluation (forecast + outcome + scorecard)
   → Decision Engine (weighted consolidation, no simple voting)
   → Central Risk (portfolio VaR + single-use approval + absolute veto)
   → OMS (atomic PAPER mirror or durable TESTNET command)

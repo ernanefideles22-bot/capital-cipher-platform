@@ -37,6 +37,10 @@
     "schemas/v1/venue-position-snapshot.schema.json",
     "schemas/v1/venue-balance-snapshot.schema.json",
     "schemas/v1/reconciliation-run.schema.json",
-    "schemas/v1/reconciliation-mismatch.schema.json"
+    "schemas/v1/reconciliation-mismatch.schema.json",
+    "schemas/v1/specialist-evidence.schema.json",
+    "schemas/v1/agent-forecast.schema.json",
+    "schemas/v1/agent-forecast-outcome.schema.json",
+    "schemas/v1/agent-scorecard.schema.json"
   ]
 }

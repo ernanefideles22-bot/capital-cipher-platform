@@ -20,6 +20,8 @@ from app.backtesting.artifacts import walk_forward_artifact_hash
 from app.database.models import (
     AgentExecutionAttemptModel,
     AgentExecutionJobModel,
+    AgentForecastModel,
+    AgentForecastOutcomeModel,
     AgentMemoryEntryModel,
     AgentOutputModel,
     AuditLogModel,
@@ -49,6 +51,7 @@ from app.database.models import (
     RiskCheckModel,
     OrderApprovalModel,
     SystemEventModel,
+    SpecialistEvidenceModel,
     VenueBalanceSnapshotModel,
     VenuePositionSnapshotModel,
     WalkForwardExperimentModel,
@@ -107,6 +110,11 @@ from app.schemas.risk import (
     PositionExposure,
     RiskCheck,
     RiskControlState,
+)
+from app.schemas.specialist_evaluation import (
+    AgentForecast,
+    AgentForecastOutcome,
+    SpecialistEvidence,
 )
 
 
@@ -3598,6 +3606,326 @@ class Repository:
             raise DatabaseError(
                 f"Failed to list walk-forward artifacts: {exc}"
             ) from exc
+
+    @staticmethod
+    def _specialist_evidence_from_row(
+        row: SpecialistEvidenceModel,
+    ) -> SpecialistEvidence:
+        return SpecialistEvidence(
+            schema_version=row.schema_version,
+            evidence_id=row.evidence_id,
+            domain=row.domain,
+            metric_name=row.metric_name,
+            scope=row.scope,
+            source=row.source,
+            source_event_id=row.source_event_id,
+            value=float(row.value),
+            unit=row.unit,
+            quality_score=row.quality_score,
+            observed_at=_as_utc(row.observed_at),
+            received_at=_as_utc(row.received_at),
+            provenance_uri=row.provenance_uri,
+            payload_sha256=row.payload_sha256,
+        )
+
+    @staticmethod
+    def _agent_forecast_from_row(
+        row: AgentForecastModel,
+    ) -> AgentForecast:
+        return AgentForecast(
+            schema_version=row.schema_version,
+            forecast_id=row.forecast_id,
+            correlation_id=row.correlation_id,
+            agent_name=row.agent_name,
+            agent_version=row.agent_version,
+            definition_hash=row.definition_hash,
+            symbol=row.symbol,
+            timeframe=row.timeframe,
+            signal=row.signal,
+            confidence=row.confidence,
+            probability_up=float(row.probability_up),
+            reference_price=float(row.reference_price),
+            forecast_at=_as_utc(row.forecast_at),
+            target_at=_as_utc(row.target_at),
+            horizon_seconds=row.horizon_seconds,
+            decision_role=row.decision_role,
+            created_at=_as_utc(row.created_at),
+        )
+
+    @staticmethod
+    def _agent_forecast_outcome_from_row(
+        row: AgentForecastOutcomeModel,
+    ) -> AgentForecastOutcome:
+        return AgentForecastOutcome(
+            schema_version=row.schema_version,
+            outcome_id=row.outcome_id,
+            forecast_id=row.forecast_id,
+            realized_at=_as_utc(row.realized_at),
+            realized_price=float(row.realized_price),
+            realized_return=float(row.realized_return),
+            realized_up=float(row.realized_up),
+            correct=row.correct,
+            brier_loss=float(row.brier_loss),
+            ensemble_probability_up=float(row.ensemble_probability_up),
+            ensemble_brier_loss=float(row.ensemble_brier_loss),
+            leave_one_out_probability_up=float(
+                row.leave_one_out_probability_up
+            ),
+            leave_one_out_brier_loss=float(row.leave_one_out_brier_loss),
+            marginal_contribution=float(row.marginal_contribution),
+            cohort_size=row.cohort_size,
+            created_at=_as_utc(row.created_at),
+        )
+
+    async def save_specialist_evidence(
+        self,
+        evidence: SpecialistEvidence,
+    ) -> SpecialistEvidence:
+        """Idempotently append one externally sourced evidence record."""
+
+        try:
+            async with self._db.session() as session:
+                existing = await session.get(
+                    SpecialistEvidenceModel,
+                    evidence.evidence_id,
+                )
+                if existing is not None:
+                    stored = self._specialist_evidence_from_row(existing)
+                    if stored != evidence:
+                        raise ValidationError(
+                            "Immutable specialist evidence identity conflict"
+                        )
+                    return stored
+                source_event = await session.scalar(
+                    select(SpecialistEvidenceModel).where(
+                        SpecialistEvidenceModel.source == evidence.source,
+                        SpecialistEvidenceModel.source_event_id
+                        == evidence.source_event_id,
+                    )
+                )
+                if source_event is not None:
+                    stored = self._specialist_evidence_from_row(source_event)
+                    if stored != evidence:
+                        raise ValidationError(
+                            "Source event already maps to different evidence"
+                        )
+                    return stored
+                session.add(
+                    SpecialistEvidenceModel(
+                        evidence_id=evidence.evidence_id,
+                        schema_version=evidence.schema_version,
+                        domain=evidence.domain,
+                        metric_name=evidence.metric_name,
+                        scope=evidence.scope,
+                        source=evidence.source,
+                        source_event_id=evidence.source_event_id,
+                        value=evidence.value,
+                        unit=evidence.unit,
+                        quality_score=evidence.quality_score,
+                        observed_at=evidence.observed_at,
+                        received_at=evidence.received_at,
+                        provenance_uri=evidence.provenance_uri,
+                        payload_sha256=evidence.payload_sha256,
+                    )
+                )
+                await session.commit()
+                return evidence
+        except (DatabaseError, ValidationError):
+            raise
+        except Exception as exc:
+            raise DatabaseError(
+                f"Failed to persist specialist evidence: {exc}"
+            ) from exc
+
+    async def list_specialist_evidence(
+        self,
+        *,
+        limit: int = 100,
+    ) -> list[SpecialistEvidence]:
+        if not 1 <= limit <= 100_000:
+            raise ValueError("Specialist evidence limit must be 1..100000")
+        async with self._db.session() as session:
+            rows = list(
+                await session.scalars(
+                    select(SpecialistEvidenceModel)
+                    .order_by(
+                        SpecialistEvidenceModel.observed_at.desc(),
+                        SpecialistEvidenceModel.evidence_id,
+                    )
+                    .limit(limit)
+                )
+            )
+            return [
+                self._specialist_evidence_from_row(row)
+                for row in rows
+            ]
+
+    async def save_agent_forecasts(
+        self,
+        forecasts: list[AgentForecast],
+    ) -> list[AgentForecast]:
+        """Append an idempotent forecast cohort in one transaction."""
+
+        if not forecasts:
+            return []
+        try:
+            async with self._db.session() as session:
+                stored: list[AgentForecast] = []
+                for forecast in forecasts:
+                    existing = await session.get(
+                        AgentForecastModel,
+                        forecast.forecast_id,
+                    )
+                    if existing is not None:
+                        current = self._agent_forecast_from_row(existing)
+                        if current != forecast:
+                            raise ValidationError(
+                                "Immutable agent forecast identity conflict"
+                            )
+                        stored.append(current)
+                        continue
+                    session.add(
+                        AgentForecastModel(
+                            forecast_id=forecast.forecast_id,
+                            schema_version=forecast.schema_version,
+                            correlation_id=forecast.correlation_id,
+                            agent_name=forecast.agent_name,
+                            agent_version=forecast.agent_version,
+                            definition_hash=forecast.definition_hash,
+                            symbol=forecast.symbol,
+                            timeframe=forecast.timeframe,
+                            signal=forecast.signal.value,
+                            confidence=forecast.confidence,
+                            probability_up=forecast.probability_up,
+                            reference_price=forecast.reference_price,
+                            forecast_at=forecast.forecast_at,
+                            target_at=forecast.target_at,
+                            horizon_seconds=forecast.horizon_seconds,
+                            decision_role=forecast.decision_role,
+                            created_at=forecast.created_at,
+                        )
+                    )
+                    stored.append(forecast)
+                await session.commit()
+                return stored
+        except (DatabaseError, ValidationError):
+            raise
+        except Exception as exc:
+            raise DatabaseError(
+                f"Failed to persist agent forecasts: {exc}"
+            ) from exc
+
+    async def list_agent_forecasts(
+        self,
+        *,
+        limit: int = 100,
+    ) -> list[AgentForecast]:
+        if not 1 <= limit <= 100_000:
+            raise ValueError("Agent forecast limit must be 1..100000")
+        async with self._db.session() as session:
+            rows = list(
+                await session.scalars(
+                    select(AgentForecastModel)
+                    .order_by(
+                        AgentForecastModel.forecast_at.desc(),
+                        AgentForecastModel.forecast_id,
+                    )
+                    .limit(limit)
+                )
+            )
+            return [self._agent_forecast_from_row(row) for row in rows]
+
+    async def save_agent_forecast_outcomes(
+        self,
+        outcomes: list[AgentForecastOutcome],
+    ) -> list[AgentForecastOutcome]:
+        """Append realized outcomes; an immutable forecast settles once."""
+
+        if not outcomes:
+            return []
+        try:
+            async with self._db.session() as session:
+                stored: list[AgentForecastOutcome] = []
+                for outcome in outcomes:
+                    existing = await session.get(
+                        AgentForecastOutcomeModel,
+                        outcome.outcome_id,
+                    )
+                    if existing is None:
+                        existing = await session.scalar(
+                            select(AgentForecastOutcomeModel).where(
+                                AgentForecastOutcomeModel.forecast_id
+                                == outcome.forecast_id
+                            )
+                        )
+                    if existing is not None:
+                        current = self._agent_forecast_outcome_from_row(existing)
+                        if current != outcome:
+                            raise ValidationError(
+                                "Forecast already has a different outcome"
+                            )
+                        stored.append(current)
+                        continue
+                    session.add(
+                        AgentForecastOutcomeModel(
+                            outcome_id=outcome.outcome_id,
+                            schema_version=outcome.schema_version,
+                            forecast_id=outcome.forecast_id,
+                            realized_at=outcome.realized_at,
+                            realized_price=outcome.realized_price,
+                            realized_return=outcome.realized_return,
+                            realized_up=outcome.realized_up,
+                            correct=outcome.correct,
+                            brier_loss=outcome.brier_loss,
+                            ensemble_probability_up=(
+                                outcome.ensemble_probability_up
+                            ),
+                            ensemble_brier_loss=outcome.ensemble_brier_loss,
+                            leave_one_out_probability_up=(
+                                outcome.leave_one_out_probability_up
+                            ),
+                            leave_one_out_brier_loss=(
+                                outcome.leave_one_out_brier_loss
+                            ),
+                            marginal_contribution=(
+                                outcome.marginal_contribution
+                            ),
+                            cohort_size=outcome.cohort_size,
+                            created_at=outcome.created_at,
+                        )
+                    )
+                    stored.append(outcome)
+                await session.commit()
+                return stored
+        except (DatabaseError, ValidationError):
+            raise
+        except Exception as exc:
+            raise DatabaseError(
+                f"Failed to persist agent forecast outcomes: {exc}"
+            ) from exc
+
+    async def list_agent_forecast_outcomes(
+        self,
+        *,
+        limit: int = 100,
+    ) -> list[AgentForecastOutcome]:
+        if not 1 <= limit <= 100_000:
+            raise ValueError("Agent outcome limit must be 1..100000")
+        async with self._db.session() as session:
+            rows = list(
+                await session.scalars(
+                    select(AgentForecastOutcomeModel)
+                    .order_by(
+                        AgentForecastOutcomeModel.realized_at.desc(),
+                        AgentForecastOutcomeModel.outcome_id,
+                    )
+                    .limit(limit)
+                )
+            )
+            return [
+                self._agent_forecast_outcome_from_row(row)
+                for row in rows
+            ]
 
     async def get_decisions(self, limit: int = 50) -> list[DecisionModel]:
         async with self._db.session() as session:

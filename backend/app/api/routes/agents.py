@@ -8,8 +8,96 @@ from app.api.context import AppContext
 from app.api.deps import AdminRequired, get_context
 from app.schemas.api import error_response, success_response
 from app.schemas.agents import AgentExecutionRequest
+from app.schemas.specialist_evaluation import (
+    SpecialistDomain,
+    SpecialistEvidence,
+)
 
 router = APIRouter(prefix="/agents")
+
+
+@router.post("/evidence", dependencies=[AdminRequired])
+async def ingest_specialist_evidence(
+    evidence: SpecialistEvidence,
+    context: AppContext = Depends(get_context),
+) -> dict:
+    if context.specialist_evidence_service is None:
+        return error_response(
+            "SPECIALIST_EVIDENCE_UNAVAILABLE",
+            "Specialist evidence service is not configured",
+        )
+    stored = await context.specialist_evidence_service.ingest(evidence)
+    return success_response({"evidence": stored.model_dump(mode="json")})
+
+
+@router.get("/evidence", dependencies=[AdminRequired])
+async def list_specialist_evidence(
+    domain: SpecialistDomain | None = None,
+    metric_name: str | None = Query(
+        default=None,
+        pattern=r"^[a-z][a-z0-9_]{1,63}$",
+    ),
+    scope: str | None = Query(
+        default=None,
+        pattern=r"^(GLOBAL|[A-Z0-9._-]{2,32})$",
+    ),
+    limit: int = Query(default=100, ge=1, le=1_000),
+    context: AppContext = Depends(get_context),
+) -> dict:
+    if context.specialist_evidence_service is None:
+        return error_response(
+            "SPECIALIST_EVIDENCE_UNAVAILABLE",
+            "Specialist evidence service is not configured",
+        )
+    items = await context.specialist_evidence_service.list(
+        domain=domain,
+        metric_name=metric_name,
+        scope=scope,
+        limit=limit,
+    )
+    return success_response(
+        {"evidence": [item.model_dump(mode="json") for item in items]}
+    )
+
+
+@router.get("/evaluation/scorecards", dependencies=[AdminRequired])
+async def agent_scorecards(
+    context: AppContext = Depends(get_context),
+) -> dict:
+    if context.agent_evaluation_service is None:
+        return error_response(
+            "AGENT_EVALUATION_UNAVAILABLE",
+            "Agent evaluation service is not configured",
+        )
+    cards = await context.agent_evaluation_service.scorecards()
+    return success_response(
+        {
+            "scorecards": [card.model_dump(mode="json") for card in cards],
+            "decision_authority": False,
+        }
+    )
+
+
+@router.get("/evaluation/forecasts", dependencies=[AdminRequired])
+async def agent_forecasts(
+    limit: int = Query(default=100, ge=1, le=1_000),
+    context: AppContext = Depends(get_context),
+) -> dict:
+    if context.agent_evaluation_service is None:
+        return error_response(
+            "AGENT_EVALUATION_UNAVAILABLE",
+            "Agent evaluation service is not configured",
+        )
+    forecasts = await context.agent_evaluation_service.forecasts(limit=limit)
+    return success_response(
+        {
+            "forecasts": [
+                forecast.model_dump(mode="json")
+                for forecast in forecasts
+            ],
+            "decision_authority": False,
+        }
+    )
 
 
 @router.get("")

@@ -839,6 +839,227 @@ class AgentMemoryEntryModel(Base):
     )
 
 
+class SpecialistEvidenceModel(Base):
+    """Append-only normalized evidence for external-data specialists."""
+
+    __tablename__ = "specialist_evidence"
+    __table_args__ = (
+        CheckConstraint(
+            "domain IN ('DERIVATIVES', 'MACRO', 'ONCHAIN', 'NEWS')",
+            name="ck_specialist_evidence_domain",
+        ),
+        CheckConstraint(
+            "quality_score >= 0 AND quality_score <= 100",
+            name="ck_specialist_evidence_quality",
+        ),
+        CheckConstraint(
+            "received_at >= observed_at",
+            name="ck_specialist_evidence_time",
+        ),
+        UniqueConstraint(
+            "source",
+            "source_event_id",
+            name="uq_specialist_evidence_source_event",
+        ),
+        Index(
+            "ix_specialist_evidence_lookup",
+            "domain",
+            "metric_name",
+            "scope",
+            "observed_at",
+        ),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    evidence_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    domain: Mapped[str] = mapped_column(String(16), nullable=False)
+    metric_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    scope: Mapped[str] = mapped_column(String(32), nullable=False)
+    source: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_event_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    value: Mapped[float] = mapped_column(Numeric(38, 18), nullable=False)
+    unit: Mapped[str] = mapped_column(String(32), nullable=False)
+    quality_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    provenance_uri: Mapped[str | None] = mapped_column(Text)
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class AgentForecastModel(Base):
+    """Append-only PAPER forecast captured before its target horizon."""
+
+    __tablename__ = "agent_forecasts"
+    __table_args__ = (
+        CheckConstraint(
+            "signal IN ('BUY', 'SELL', 'HOLD', 'WAIT', 'BLOCK', 'NEUTRAL')",
+            name="ck_agent_forecast_signal",
+        ),
+        CheckConstraint(
+            "confidence >= 0 AND confidence <= 100",
+            name="ck_agent_forecast_confidence",
+        ),
+        CheckConstraint(
+            "probability_up >= 0 AND probability_up <= 1",
+            name="ck_agent_forecast_probability",
+        ),
+        CheckConstraint(
+            "decision_role IN ('PRIMARY', 'SHADOW')",
+            name="ck_agent_forecast_role",
+        ),
+        CheckConstraint(
+            "reference_price > 0 AND horizon_seconds > 0 "
+            "AND target_at > forecast_at",
+            name="ck_agent_forecast_horizon",
+        ),
+        Index(
+            "ix_agent_forecasts_pending",
+            "symbol",
+            "timeframe",
+            "target_at",
+        ),
+        Index(
+            "ix_agent_forecasts_agent",
+            "agent_name",
+            "agent_version",
+            "forecast_at",
+        ),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    forecast_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    correlation_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    agent_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    agent_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    definition_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    timeframe: Mapped[str] = mapped_column(String(16), nullable=False)
+    signal: Mapped[str] = mapped_column(String(16), nullable=False)
+    confidence: Mapped[int] = mapped_column(Integer, nullable=False)
+    probability_up: Mapped[float] = mapped_column(
+        Numeric(20, 18),
+        nullable=False,
+    )
+    reference_price: Mapped[float] = mapped_column(
+        Numeric(38, 18),
+        nullable=False,
+    )
+    forecast_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    target_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    horizon_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    decision_role: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+
+class AgentForecastOutcomeModel(Base):
+    """Append-only realized result and marginal contribution."""
+
+    __tablename__ = "agent_forecast_outcomes"
+    __table_args__ = (
+        CheckConstraint(
+            "realized_price > 0",
+            name="ck_agent_forecast_outcome_price",
+        ),
+        CheckConstraint(
+            "realized_up >= 0 AND realized_up <= 1",
+            name="ck_agent_forecast_outcome_realized",
+        ),
+        CheckConstraint(
+            "brier_loss >= 0 AND brier_loss <= 1 "
+            "AND ensemble_brier_loss >= 0 AND ensemble_brier_loss <= 1 "
+            "AND leave_one_out_brier_loss >= 0 "
+            "AND leave_one_out_brier_loss <= 1",
+            name="ck_agent_forecast_outcome_losses",
+        ),
+        CheckConstraint(
+            "marginal_contribution >= -1 "
+            "AND marginal_contribution <= 1",
+            name="ck_agent_forecast_outcome_contribution",
+        ),
+        CheckConstraint(
+            "cohort_size >= 1",
+            name="ck_agent_forecast_outcome_cohort",
+        ),
+        Index(
+            "ix_agent_forecast_outcomes_realized",
+            "realized_at",
+        ),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    outcome_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    forecast_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey(
+            f"{INTERNAL_SCHEMA}.agent_forecasts.forecast_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+        unique=True,
+    )
+    realized_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    realized_price: Mapped[float] = mapped_column(
+        Numeric(38, 18),
+        nullable=False,
+    )
+    realized_return: Mapped[float] = mapped_column(
+        Numeric(38, 18),
+        nullable=False,
+    )
+    realized_up: Mapped[float] = mapped_column(
+        Numeric(20, 18),
+        nullable=False,
+    )
+    correct: Mapped[bool | None] = mapped_column(Boolean)
+    brier_loss: Mapped[float] = mapped_column(Numeric(20, 18), nullable=False)
+    ensemble_probability_up: Mapped[float] = mapped_column(
+        Numeric(20, 18),
+        nullable=False,
+    )
+    ensemble_brier_loss: Mapped[float] = mapped_column(
+        Numeric(20, 18),
+        nullable=False,
+    )
+    leave_one_out_probability_up: Mapped[float] = mapped_column(
+        Numeric(20, 18),
+        nullable=False,
+    )
+    leave_one_out_brier_loss: Mapped[float] = mapped_column(
+        Numeric(20, 18),
+        nullable=False,
+    )
+    marginal_contribution: Mapped[float] = mapped_column(
+        Numeric(20, 18),
+        nullable=False,
+    )
+    cohort_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+
 class AgentOutputModel(Base):
     __tablename__ = "agent_outputs"
 

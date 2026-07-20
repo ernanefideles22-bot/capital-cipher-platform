@@ -1,4 +1,4 @@
-"""Month 5 runtime invariants retained by the expanded Month 6 cohort."""
+"""Month 5 runtime invariants retained by the expanded Month 8 cohort."""
 
 from __future__ import annotations
 
@@ -113,7 +113,7 @@ def _request(
     )
 
 
-async def test_default_registry_contains_exactly_40_paper_agents():
+async def test_default_registry_contains_exactly_100_paper_agents():
     context = build_context(Settings(), with_database=False)
     assert context.agent_registry is not None
     assert context.agent_runtime is not None
@@ -122,7 +122,7 @@ async def test_default_registry_contains_exactly_40_paper_agents():
     registrations = context.agent_registry.registrations()
     names = {registration.agent_name for registration in registrations}
 
-    assert len(registrations) == 40
+    assert len(registrations) == 100
     assert sum(
         registration.decision_role == "PRIMARY"
         for registration in registrations
@@ -130,7 +130,7 @@ async def test_default_registry_contains_exactly_40_paper_agents():
     assert sum(
         registration.decision_role == "SHADOW"
         for registration in registrations
-    ) == 37
+    ) == 97
     assert {
         "MarketDataAgent",
         "QuantAgent",
@@ -157,7 +157,7 @@ async def test_default_registry_contains_exactly_40_paper_agents():
     assert "PaperTradingAgent" not in names
 
 
-async def test_all_40_agents_execute_through_versioned_runtime_contracts():
+async def test_all_100_agents_execute_through_versioned_runtime_contracts():
     context = build_context(Settings(), with_database=False)
     assert context.agent_runtime is not None
     assert context.agent_registry is not None
@@ -184,7 +184,7 @@ async def test_all_40_agents_execute_through_versioned_runtime_contracts():
 
     outputs = await context.agent_runtime.execute_many(requests)
 
-    assert len(outputs) == 40
+    assert len(outputs) == 100
     assert {output.agent_name for output in outputs} == {
         registration.agent_name
         for registration in context.agent_registry.registrations()
