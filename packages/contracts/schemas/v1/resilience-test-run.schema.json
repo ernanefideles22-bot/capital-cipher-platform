@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/resilience-test-run.schema.json",
+  "title": "ResilienceTestRunV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "run_id", "run_type", "scenario", "status",
+    "environment", "target_agents", "executed_agents", "duration_ms",
+    "throughput_per_second", "p95_latency_ms", "error_rate",
+    "recovery_time_ms", "invariants", "live_execution_attempted",
+    "started_at", "completed_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "run_id": { "type": "string", "format": "uuid" },
+    "run_type": { "enum": ["LOAD", "CHAOS", "RECOVERY"] },
+    "scenario": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 160,
+      "pattern": "^[a-z][a-z0-9_.-]+$"
+    },
+    "status": { "enum": ["PASSED", "FAILED"] },
+    "environment": { "enum": ["LOCAL", "CI", "PAPER"] },
+    "target_agents": { "type": "integer", "minimum": 0, "maximum": 10000 },
+    "executed_agents": { "type": "integer", "minimum": 0, "maximum": 10000 },
+    "duration_ms": { "type": "number", "minimum": 0 },
+    "throughput_per_second": { "type": "number", "minimum": 0 },
+    "p95_latency_ms": { "type": "number", "minimum": 0 },
+    "error_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+    "recovery_time_ms": {
+      "anyOf": [
+        { "type": "number", "minimum": 0 },
+        { "type": "null" }
+      ]
+    },
+    "invariants": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 64,
+      "additionalProperties": { "type": "boolean" }
+    },
+    "live_execution_attempted": { "const": false },
+    "started_at": { "type": "string", "format": "date-time" },
+    "completed_at": { "type": "string", "format": "date-time" }
+  }
+}

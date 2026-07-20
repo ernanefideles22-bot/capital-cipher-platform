@@ -53,7 +53,7 @@ class ConsensusExperiment(StrictGovernanceModel):
     minimum_accuracy: float = Field(default=0.52, ge=0.5, le=1)
     maximum_brier_loss: float = Field(default=0.24, ge=0, le=0.25)
     minimum_marginal_contribution: float = Field(default=0.0, ge=0, le=1)
-    minimum_eligible_agents: int = Field(default=5, ge=3, le=150)
+    minimum_eligible_agents: int = Field(default=5, ge=3, le=200)
     maximum_agent_weight: float = Field(default=0.25, gt=0, le=0.34)
     buy_probability_threshold: float = Field(default=0.55, gt=0.5, lt=1)
     sell_probability_threshold: float = Field(default=0.45, gt=0, lt=0.5)
@@ -152,7 +152,7 @@ class WeightedConsensus(StrictGovernanceModel):
     probability_up: float | None = Field(default=None, ge=0, le=1)
     signal: Signal = Signal.WAIT
     consensus_confidence: int = Field(default=0, ge=0, le=100)
-    eligible_agent_count: int = Field(ge=0, le=150)
+    eligible_agent_count: int = Field(ge=0, le=200)
     excluded_agents: dict[str, str] = Field(default_factory=dict)
     weights: list[ConsensusAgentWeight] = Field(default_factory=list)
     applied: bool = False

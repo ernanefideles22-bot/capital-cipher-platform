@@ -19,6 +19,7 @@ from app.agents.runtime import AgentRuntime, AgentRuntimeWorker
 from app.agents.specialists import build_shadow_specialists
 from app.agents.month8_specialists import build_month8_shadow_specialists
 from app.agents.month9_specialists import build_month9_shadow_specialists
+from app.agents.month10_specialists import build_month10_shadow_specialists
 from app.agents.trend import TrendAgent
 from app.audit.service import AuditService
 from app.backtesting.engine import BacktestingEngine
@@ -63,6 +64,7 @@ from app.orchestrator.portfolio_consensus import (
 from app.orchestrator.service import Orchestrator
 from app.oms.reconciliation import ReconciliationService
 from app.oms.service import OMSService
+from app.operations.service import OperationsService
 from app.paper_trading.engine import PaperTradingEngine
 from app.risk.manager import RiskManager
 from app.schemas.common import Exchange
@@ -110,6 +112,7 @@ class AppContext:
     drift_monitor: DriftMonitor | None = None
     weighted_consensus_service: WeightedConsensusService | None = None
     portfolio_construction_service: PortfolioConstructionService | None = None
+    operations_service: OperationsService | None = None
     market_connected: bool = False
 
 
@@ -338,12 +341,37 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
             specialist_evidence_service,
         ),
         *build_month9_shadow_specialists(candle_store),
+        *build_month10_shadow_specialists(candle_store),
     ]
     for agent in runtime_agents:
         agent.timeout_ms = settings.agent_timeout_ms
         agent.max_attempts = settings.agent_max_attempts
     agent_registry = AgentRegistry(runtime_agents)
-    agent_registry.validate_cohort(expected_count=150)
+    agent_registry.validate_cohort(expected_count=200)
+    operations_service = OperationsService(
+        agent_registry,
+        repository=repository,
+        metric_capacity=settings.operations_metric_capacity,
+        window_seconds=settings.operations_window_seconds,
+        daily_budget_usd=settings.operations_daily_budget_usd,
+        budget_warning_percent=(
+            settings.operations_budget_warning_percent
+        ),
+        agent_execution_unit_cost_usd=(
+            settings.agent_execution_unit_cost_usd
+        ),
+        agent_success_target=settings.agent_success_slo,
+        agent_p95_latency_target_ms=(
+            settings.agent_p95_latency_slo_ms
+        ),
+        orchestrator_success_target=settings.orchestrator_success_slo,
+        orchestrator_p95_latency_target_ms=(
+            settings.orchestrator_p95_latency_slo_ms
+        ),
+        recovery_successes_required=(
+            settings.recovery_successes_required
+        ),
+    )
     agent_runtime = AgentRuntime(
         agent_registry,
         repository=repository,
@@ -401,6 +429,7 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         agent_evaluation_service=agent_evaluation_service,
         weighted_consensus_service=weighted_consensus_service,
         portfolio_construction_service=portfolio_construction_service,
+        operations_service=operations_service,
     )
     backtesting_engine = BacktestingEngine(
         limits=limits,
@@ -453,6 +482,7 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         drift_monitor=drift_monitor,
         weighted_consensus_service=weighted_consensus_service,
         portfolio_construction_service=portfolio_construction_service,
+        operations_service=operations_service,
     )
     context_holder["ctx"] = ctx
     return ctx

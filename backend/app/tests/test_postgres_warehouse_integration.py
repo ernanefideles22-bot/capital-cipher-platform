@@ -542,6 +542,46 @@ async def test_real_postgres_internal_warehouse_round_trip():
             ),
             {"schema_name": INTERNAL_SCHEMA},
         )
+        operational_evidence_rls_count = await connection.scalar(
+            text(
+                "SELECT count(*) "
+                "FROM pg_class c "
+                "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                "WHERE n.nspname = :schema_name "
+                "AND c.relname IN "
+                "('operational_metric_snapshots', 'slo_evaluations', "
+                "'operational_alert_events', 'cost_usage_records', "
+                "'resilience_test_runs') "
+                "AND c.relrowsecurity"
+            ),
+            {"schema_name": INTERNAL_SCHEMA},
+        )
+        operational_evidence_triggers = set(
+            await connection.scalars(
+                text(
+                    "SELECT trigger_name "
+                    "FROM information_schema.triggers "
+                    "WHERE trigger_schema = :schema_name "
+                    "AND event_object_table IN "
+                    "('operational_metric_snapshots', 'slo_evaluations', "
+                    "'operational_alert_events', 'cost_usage_records', "
+                    "'resilience_test_runs')"
+                ),
+                {"schema_name": INTERNAL_SCHEMA},
+            )
+        )
+        operational_evidence_security_definers = await connection.scalar(
+            text(
+                "SELECT count(*) "
+                "FROM pg_proc p "
+                "JOIN pg_namespace n ON n.oid = p.pronamespace "
+                "WHERE n.nspname = :schema_name "
+                "AND p.proname = "
+                "'reject_operational_evidence_mutation' "
+                "AND p.prosecdef"
+            ),
+            {"schema_name": INTERNAL_SCHEMA},
+        )
     await database.dispose()
 
     assert loaded == manifest
@@ -589,6 +629,11 @@ async def test_real_postgres_internal_warehouse_round_trip():
         "weighted_consensus_snapshots",
         "drift_observations",
         "portfolio_proposals",
+        "operational_metric_snapshots",
+        "slo_evaluations",
+        "operational_alert_events",
+        "cost_usage_records",
+        "resilience_test_runs",
     } <= tables
     assert "trg_walk_forward_experiments_immutable" in immutable_triggers
     assert row_security_enabled is True
@@ -609,6 +654,15 @@ async def test_real_postgres_internal_warehouse_round_trip():
     assert oms_security_definers == 0
     assert specialist_evaluation_rls_count == 8
     assert specialist_evaluation_security_definers == 0
+    assert operational_evidence_rls_count == 5
+    assert operational_evidence_security_definers == 0
+    assert operational_evidence_triggers == {
+        "trg_operational_metric_snapshots_immutable",
+        "trg_slo_evaluations_immutable",
+        "trg_operational_alert_events_immutable",
+        "trg_cost_usage_records_immutable",
+        "trg_resilience_test_runs_immutable",
+    }
     assert specialist_evaluation_triggers == {
         "trg_specialist_evidence_immutable",
         "trg_agent_forecasts_immutable",

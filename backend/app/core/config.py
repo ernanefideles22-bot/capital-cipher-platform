@@ -25,7 +25,7 @@ class Settings(BaseSettings):
 
     app_env: str = Field(default="local", alias="APP_ENV")
     app_name: str = "capital-cipher-api"
-    app_version: str = "0.19.0"
+    app_version: str = "0.20.0"
 
     system_mode: str = Field(default="PAPER", alias="SYSTEM_MODE")
     oms_execution_environment: str = Field(
@@ -128,6 +128,76 @@ class Settings(BaseSettings):
         le=60.0,
     )
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
+    operations_monitor_enabled: bool = Field(
+        default=False,
+        alias="OPERATIONS_MONITOR_ENABLED",
+    )
+    operations_monitor_interval_seconds: float = Field(
+        default=30.0,
+        alias="OPERATIONS_MONITOR_INTERVAL_SECONDS",
+        ge=1,
+        le=3_600,
+    )
+    operations_metric_capacity: int = Field(
+        default=10_000,
+        alias="OPERATIONS_METRIC_CAPACITY",
+        ge=100,
+        le=1_000_000,
+    )
+    operations_window_seconds: int = Field(
+        default=300,
+        alias="OPERATIONS_WINDOW_SECONDS",
+        ge=10,
+        le=86_400,
+    )
+    operations_daily_budget_usd: float = Field(
+        default=10.0,
+        alias="OPERATIONS_DAILY_BUDGET_USD",
+        gt=0,
+        le=1_000_000,
+    )
+    operations_budget_warning_percent: float = Field(
+        default=80.0,
+        alias="OPERATIONS_BUDGET_WARNING_PERCENT",
+        gt=0,
+        lt=100,
+    )
+    agent_execution_unit_cost_usd: float = Field(
+        default=0.0,
+        alias="AGENT_EXECUTION_UNIT_COST_USD",
+        ge=0,
+        le=1_000,
+    )
+    agent_success_slo: float = Field(
+        default=0.99,
+        alias="AGENT_SUCCESS_SLO",
+        ge=0.5,
+        le=1,
+    )
+    agent_p95_latency_slo_ms: float = Field(
+        default=2_000,
+        alias="AGENT_P95_LATENCY_SLO_MS",
+        gt=0,
+        le=300_000,
+    )
+    orchestrator_success_slo: float = Field(
+        default=0.99,
+        alias="ORCHESTRATOR_SUCCESS_SLO",
+        ge=0.5,
+        le=1,
+    )
+    orchestrator_p95_latency_slo_ms: float = Field(
+        default=5_000,
+        alias="ORCHESTRATOR_P95_LATENCY_SLO_MS",
+        gt=0,
+        le=300_000,
+    )
+    recovery_successes_required: int = Field(
+        default=3,
+        alias="RECOVERY_SUCCESSES_REQUIRED",
+        ge=2,
+        le=100,
+    )
     cors_allowed_origins: str = Field(
         default="http://localhost:5173,http://127.0.0.1:5173",
         alias="CORS_ALLOWED_ORIGINS",

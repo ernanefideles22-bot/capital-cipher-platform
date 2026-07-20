@@ -32,7 +32,7 @@
     },
     "signal": { "enum": ["BUY", "SELL", "HOLD", "WAIT", "BLOCK", "NEUTRAL"] },
     "consensus_confidence": { "type": "integer", "minimum": 0, "maximum": 100 },
-    "eligible_agent_count": { "type": "integer", "minimum": 0, "maximum": 150 },
+    "eligible_agent_count": { "type": "integer", "minimum": 0, "maximum": 200 },
     "excluded_agents": {
       "type": "object",
       "additionalProperties": { "type": "string" }

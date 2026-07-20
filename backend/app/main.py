@@ -25,6 +25,7 @@ from app.api.routes import (
     health,
     market,
     oms,
+    operations,
     orchestrator,
     paper,
     reports,
@@ -75,6 +76,8 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
             await ctx.weighted_consensus_service.initialize()
         if ctx.portfolio_construction_service is not None:
             await ctx.portfolio_construction_service.initialize()
+        if ctx.operations_service is not None:
+            await ctx.operations_service.initialize()
         outbox_stop = asyncio.Event()
         outbox_task = None
         backfill_stop = asyncio.Event()
@@ -85,6 +88,8 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
         oms_worker_task = None
         reconciliation_stop = asyncio.Event()
         reconciliation_task = None
+        operations_stop = asyncio.Event()
+        operations_task = None
         if ctx.oms_service.target_environment.value == "TESTNET":
             if not await ctx.oms_service.adapter.healthcheck():
                 for execution_adapter in ctx.execution_adapters.values():
@@ -140,6 +145,87 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
                     ),
                     "oms_exchange": ctx.oms_service.target_exchange.value,
                 },
+            )
+        if (
+            settings.operations_monitor_enabled
+            and ctx.operations_service is not None
+        ):
+            async def operational_probe():
+                database_healthy = (
+                    await ctx.database.healthcheck()
+                    if ctx.database is not None
+                    else True
+                )
+                if ctx.event_transport is None:
+                    broker_healthy = True
+                    broker_reason = "external broker not configured"
+                else:
+                    try:
+                        broker_healthy = (
+                            await ctx.event_transport.healthcheck()
+                        )
+                    except Exception:
+                        broker_healthy = False
+                    broker_reason = (
+                        "broker healthcheck passed"
+                        if broker_healthy
+                        else "broker healthcheck failed"
+                    )
+                registrations = (
+                    ctx.agent_registry.registrations()
+                    if ctx.agent_registry is not None
+                    else []
+                )
+                shadow_healthy = (
+                    len(registrations) == 200
+                    and all(
+                        registration.execution_mode == "PAPER"
+                        for registration in registrations
+                    )
+                )
+                market_healthy = (
+                    ctx.market_connected if with_market_data else True
+                )
+                return {
+                    "DATABASE": (
+                        database_healthy,
+                        (
+                            "database healthcheck passed"
+                            if database_healthy
+                            else "database healthcheck failed"
+                        ),
+                    ),
+                    "AUDIT": (True, "audit service initialized"),
+                    "RISK": (True, "central risk service initialized"),
+                    "BROKER": (broker_healthy, broker_reason),
+                    "MARKET_DATA": (
+                        market_healthy,
+                        (
+                            "market data connected"
+                            if with_market_data and market_healthy
+                            else "market data disconnected"
+                            if with_market_data
+                            else "market data adapter disabled"
+                        ),
+                    ),
+                    "SHADOW_RUNTIME": (
+                        shadow_healthy,
+                        (
+                            "200-agent PAPER cohort validated"
+                            if shadow_healthy
+                            else "agent cohort validation failed"
+                        ),
+                    ),
+                }
+
+            operations_task = asyncio.create_task(
+                ctx.operations_service.run(
+                    operations_stop,
+                    probe=operational_probe,
+                    interval_seconds=(
+                        settings.operations_monitor_interval_seconds
+                    ),
+                )
             )
         if (
             settings.oms_worker_enabled
@@ -229,6 +315,9 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
         if oms_worker_task is not None:
             oms_worker_stop.set()
             await oms_worker_task
+        if operations_task is not None:
+            operations_stop.set()
+            await operations_task
         await asyncio.gather(
             *(
                 execution_adapter.aclose()
@@ -288,6 +377,7 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
     app.include_router(risk.router, prefix=api_prefix)
     app.include_router(paper.router, prefix=api_prefix)
     app.include_router(oms.router, prefix=api_prefix)
+    app.include_router(operations.router, prefix=api_prefix)
     app.include_router(audit.router, prefix=api_prefix)
     app.include_router(backtest.router, prefix=api_prefix)
     app.include_router(strategies.router, prefix=api_prefix)

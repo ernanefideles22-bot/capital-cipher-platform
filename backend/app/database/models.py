@@ -1279,6 +1279,182 @@ class PortfolioProposalModel(Base):
     )
 
 
+class OperationalMetricSnapshotModel(Base):
+    """Append-only bounded operational metric materialization."""
+
+    __tablename__ = "operational_metric_snapshots"
+    __table_args__ = (
+        CheckConstraint(
+            "registered_agents >= 0 AND active_agents >= 0 "
+            "AND active_agents <= registered_agents",
+            name="ck_operational_metric_snapshot_agents",
+        ),
+        Index(
+            "ix_operational_metric_snapshots_captured",
+            "captured_at",
+            "snapshot_id",
+        ),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    snapshot_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    correlation_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    registered_agents: Mapped[int] = mapped_column(Integer, nullable=False)
+    active_agents: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload: Mapped[dict] = mapped_column(JsonType, nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+
+class SLOEvaluationModel(Base):
+    """Append-only service-level objective evidence."""
+
+    __tablename__ = "slo_evaluations"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('NO_DATA', 'HEALTHY', 'WARNING', 'BREACHED')",
+            name="ck_slo_evaluation_status",
+        ),
+        CheckConstraint(
+            "sample_count >= 0",
+            name="ck_slo_evaluation_samples",
+        ),
+        Index(
+            "ix_slo_evaluations_name_evaluated",
+            "slo_name",
+            "evaluated_at",
+        ),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    evaluation_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    slo_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    sample_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload: Mapped[dict] = mapped_column(JsonType, nullable=False)
+    evaluated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+
+class OperationalAlertEventModel(Base):
+    """Append-only OPENED/RESOLVED alert lifecycle."""
+
+    __tablename__ = "operational_alert_events"
+    __table_args__ = (
+        CheckConstraint(
+            "event_type IN ('OPENED', 'RESOLVED')",
+            name="ck_operational_alert_event_type",
+        ),
+        CheckConstraint(
+            "severity IN ('WARNING', 'ERROR', 'CRITICAL')",
+            name="ck_operational_alert_severity",
+        ),
+        CheckConstraint(
+            "lifecycle_sequence >= 1",
+            name="ck_operational_alert_sequence",
+        ),
+        UniqueConstraint(
+            "alert_key",
+            "lifecycle_sequence",
+            name="uq_operational_alert_lifecycle",
+        ),
+        Index(
+            "ix_operational_alert_events_key_occurred",
+            "alert_key",
+            "occurred_at",
+        ),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    alert_event_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    alert_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    lifecycle_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    payload: Mapped[dict] = mapped_column(JsonType, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+
+class CostUsageRecordModel(Base):
+    """Append-only operational cost attribution."""
+
+    __tablename__ = "cost_usage_records"
+    __table_args__ = (
+        CheckConstraint(
+            "cost_center IN ('AGENT_RUNTIME', 'EXTERNAL_DATA', "
+            "'STORAGE', 'OBSERVABILITY')",
+            name="ck_cost_usage_center",
+        ),
+        CheckConstraint(
+            "estimated_cost_usd >= 0",
+            name="ck_cost_usage_nonnegative",
+        ),
+        Index(
+            "ix_cost_usage_records_center_observed",
+            "cost_center",
+            "observed_at",
+        ),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    usage_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    cost_center: Mapped[str] = mapped_column(String(32), nullable=False)
+    resource: Mapped[str] = mapped_column(String(128), nullable=False)
+    estimated_cost_usd: Mapped[float] = mapped_column(
+        Numeric(20, 8),
+        nullable=False,
+    )
+    payload: Mapped[dict] = mapped_column(JsonType, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+
+class ResilienceTestRunModel(Base):
+    """Append-only load, chaos and recovery acceptance evidence."""
+
+    __tablename__ = "resilience_test_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "run_type IN ('LOAD', 'CHAOS', 'RECOVERY')",
+            name="ck_resilience_test_run_type",
+        ),
+        CheckConstraint(
+            "status IN ('PASSED', 'FAILED')",
+            name="ck_resilience_test_run_status",
+        ),
+        Index(
+            "ix_resilience_test_runs_type_completed",
+            "run_type",
+            "completed_at",
+        ),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    run_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    run_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    scenario: Mapped[str] = mapped_column(String(160), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    payload: Mapped[dict] = mapped_column(JsonType, nullable=False)
+    completed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+
 class AgentOutputModel(Base):
     __tablename__ = "agent_outputs"
 

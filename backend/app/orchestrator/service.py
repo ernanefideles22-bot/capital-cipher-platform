@@ -24,7 +24,13 @@ from app.agents.registry import AgentRegistry
 from app.agents.runtime import AgentRuntime
 from app.agents.trend import TrendAgent
 from app.audit.service import AuditService
-from app.core.errors import AuditError, CapitalCipherError, DataQualityError
+from app.core.errors import (
+    AuditError,
+    CapitalCipherError,
+    DatabaseError,
+    DataQualityError,
+    RiskError,
+)
 from app.core.event_bus import EventBus, Topics
 from app.core.logging import ServiceLogger
 from app.core.state_machine import SystemStateMachine
@@ -33,6 +39,8 @@ from app.market_data.clock import ExchangeClockRegistry
 from app.market_data.gaps import GapService
 from app.market_data.store import CandleStore
 from app.orchestrator.decision_engine import DecisionEngine
+from app.operations.resilience import DependencyName
+from app.operations.service import OperationsService
 from app.paper_trading.engine import PaperTradingEngine
 from app.risk.manager import RiskManager
 from app.strategy.engine import StrategyEngine
@@ -70,6 +78,7 @@ class Orchestrator:
         agent_evaluation_service=None,
         weighted_consensus_service=None,
         portfolio_construction_service=None,
+        operations_service: OperationsService | None = None,
     ) -> None:
         self._sm = state_machine
         self._bus = event_bus
@@ -87,6 +96,7 @@ class Orchestrator:
         self._agent_evaluation = agent_evaluation_service
         self._weighted_consensus = weighted_consensus_service
         self._portfolio_construction = portfolio_construction_service
+        self._operations = operations_service
         self.strategy_engine = strategy_engine or StrategyEngine()
         self._current_day = None
         self._agent_runtime = agent_runtime or AgentRuntime(
@@ -144,6 +154,11 @@ class Orchestrator:
                     portfolio_items[0].status if portfolio_items else None
                 ),
             },
+            "operations": (
+                self._operations.status()
+                if self._operations is not None
+                else None
+            ),
         }
 
     # -- main entrypoint -----------------------------------------------------------
@@ -151,6 +166,8 @@ class Orchestrator:
         """Full decision cycle for a closed candle (docs/04 flow)."""
         started = time.monotonic()
         correlation_id = str(uuid4())
+        operational_cycle_attempted = False
+        operational_cycle_succeeded = False
         try:
             clock_verdict = None
             if self._require_trusted_clock:
@@ -298,6 +315,17 @@ class Orchestrator:
                     metadata={"state": self._sm.state.value},
                 )
                 return None
+            if (
+                self._operations is not None
+                and not self._operations.decisions_allowed
+            ):
+                logger.critical(
+                    "Operational recovery gate suspended decision evaluation",
+                    event_type="OPERATIONS_SAFE_HALT",
+                    correlation_id=correlation_id,
+                    metadata=self._operations.recovery.snapshot(),
+                )
+                return None
 
             await self._bus.publish(
                 Topics.MARKET_EVENTS,
@@ -306,11 +334,18 @@ class Orchestrator:
                 source="MarketDataAdapter",
                 correlation_id=correlation_id,
             )
+            operational_cycle_attempted = True
             decision = await self._evaluate(candle, correlation_id, quality)
+            operational_cycle_succeeded = decision is not None
             self.cycle_latencies_ms.append(int((time.monotonic() - started) * 1000))
             return decision
         except AuditError:
             # Fail safe: audit failure blocks operations (docs/31).
+            await self._mark_operational_dependency_unhealthy(
+                "AUDIT",
+                reason="audit operation failed during decision cycle",
+                correlation_id=correlation_id,
+            )
             logger.critical(
                 "Audit failure during decision cycle — blocking",
                 event_type="AUDIT_LOG_FAILED",
@@ -319,6 +354,18 @@ class Orchestrator:
             self.failures.append({"correlation_id": correlation_id, "error": "AUDIT_FAILED"})
             return None
         except CapitalCipherError as exc:
+            if isinstance(exc, DatabaseError):
+                await self._mark_operational_dependency_unhealthy(
+                    "DATABASE",
+                    reason="database operation failed during decision cycle",
+                    correlation_id=correlation_id,
+                )
+            elif isinstance(exc, RiskError):
+                await self._mark_operational_dependency_unhealthy(
+                    "RISK",
+                    reason="central risk invariant failed during decision cycle",
+                    correlation_id=correlation_id,
+                )
             self.failures.append({"correlation_id": correlation_id, "error": exc.error_code})
             logger.error(
                 f"Decision cycle failed: {exc.message}",
@@ -326,6 +373,39 @@ class Orchestrator:
                 correlation_id=correlation_id,
             )
             return None
+        finally:
+            if operational_cycle_attempted and self._operations is not None:
+                self._operations.observe_orchestrator_cycle(
+                    success=operational_cycle_succeeded,
+                    duration_ms=(time.monotonic() - started) * 1_000,
+                )
+
+    async def _mark_operational_dependency_unhealthy(
+        self,
+        dependency: DependencyName,
+        *,
+        reason: str,
+        correlation_id: str,
+    ) -> None:
+        if self._operations is None:
+            return
+        try:
+            await self._operations.observe_dependency(
+                dependency,
+                healthy=False,
+                reason=reason,
+                correlation_id=correlation_id,
+            )
+        except Exception as exc:
+            logger.error(
+                "Operational dependency alert could not be recorded",
+                event_type="OPERATIONS_TELEMETRY_FAILED",
+                correlation_id=correlation_id,
+                metadata={
+                    "dependency": dependency,
+                    "error_type": type(exc).__name__,
+                },
+            )
 
     async def _evaluate(
         self,
@@ -337,9 +417,15 @@ class Orchestrator:
         symbol, timeframe = candle.symbol, candle.timeframe
 
         # Run analytical agents through their contracts.
+        registrations = self._agent_runtime.registry.registrations()
+        admitted_registrations = (
+            self._operations.admitted_registrations(registrations)
+            if self._operations is not None
+            else registrations
+        )
         requests = []
-        for agent in self.agents.values():
-            registration = agent.registration()
+        for registration in admitted_registrations:
+            agent = self.agents[registration.agent_name]
             agent_input = AgentInput(
                 request_id=f"{correlation_id}:{agent.name}",
                 correlation_id=correlation_id,
@@ -356,7 +442,25 @@ class Orchestrator:
                     input=agent_input,
                 )
             )
+        agent_batch_started = time.monotonic()
         agent_outputs = await self._agent_runtime.execute_many(requests)
+        if self._operations is not None:
+            try:
+                await self._operations.observe_agent_batch(
+                    agent_outputs,
+                    correlation_id=correlation_id,
+                    duration_ms=(
+                        time.monotonic() - agent_batch_started
+                    )
+                    * 1_000,
+                )
+            except Exception as exc:
+                logger.error(
+                    "Operational agent telemetry could not be recorded",
+                    event_type="OPERATIONS_TELEMETRY_FAILED",
+                    correlation_id=correlation_id,
+                    metadata={"error_type": type(exc).__name__},
+                )
         if self._agent_evaluation is not None:
             try:
                 await self._agent_evaluation.observe(

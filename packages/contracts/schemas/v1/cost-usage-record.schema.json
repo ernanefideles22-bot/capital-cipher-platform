@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/cost-usage-record.schema.json",
+  "title": "CostUsageRecordV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "usage_id", "cost_center", "resource", "quantity",
+    "unit", "unit_cost_usd", "estimated_cost_usd", "correlation_id",
+    "observed_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "usage_id": { "type": "string", "format": "uuid" },
+    "cost_center": {
+      "enum": ["AGENT_RUNTIME", "EXTERNAL_DATA", "STORAGE", "OBSERVABILITY"]
+    },
+    "resource": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]+$"
+    },
+    "quantity": { "type": "number", "exclusiveMinimum": 0 },
+    "unit": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32,
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"
+    },
+    "unit_cost_usd": { "type": "number", "minimum": 0 },
+    "estimated_cost_usd": { "type": "number", "minimum": 0 },
+    "correlation_id": {
+      "anyOf": [
+        { "type": "string", "maxLength": 64 },
+        { "type": "null" }
+      ]
+    },
+    "observed_at": { "type": "string", "format": "date-time" }
+  }
+}

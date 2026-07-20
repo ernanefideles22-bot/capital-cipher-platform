@@ -25,7 +25,7 @@
     "minimum_accuracy": { "type": "number", "minimum": 0.5, "maximum": 1 },
     "maximum_brier_loss": { "type": "number", "minimum": 0, "maximum": 0.25 },
     "minimum_marginal_contribution": { "type": "number", "minimum": 0, "maximum": 1 },
-    "minimum_eligible_agents": { "type": "integer", "minimum": 3, "maximum": 150 },
+    "minimum_eligible_agents": { "type": "integer", "minimum": 3, "maximum": 200 },
     "maximum_agent_weight": { "type": "number", "exclusiveMinimum": 0, "maximum": 0.34 },
     "buy_probability_threshold": { "type": "number", "exclusiveMinimum": 0.5, "exclusiveMaximum": 1 },
     "sell_probability_threshold": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 0.5 },

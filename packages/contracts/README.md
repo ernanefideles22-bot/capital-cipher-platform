@@ -37,3 +37,7 @@ performance-weighted consensus snapshots, rolling drift observations and
 advisory portfolio proposals. These contracts prohibit unknown fields and
 encode the rule that consensus and portfolio construction may only tighten
 the existing decision/risk path.
+Month 10 adds bounded operational metric snapshots, SLO evaluations,
+append-only alert lifecycle events, attributed cost records and load/chaos/
+recovery evidence. The five contracts explicitly exclude LIVE execution and
+bring the v1 manifest to 49 schemas.

@@ -1,4 +1,4 @@
-"""Month 9 completion: 150 agents, portfolio, consensus and drift."""
+"""Month 9 invariants retained by the expanded Month 10 cohort."""
 
 from __future__ import annotations
 
@@ -107,7 +107,7 @@ def insufficient_consensus(experiment, decision) -> WeightedConsensus:
     )
 
 
-def test_month9_catalog_reaches_exactly_150_bounded_paper_agents():
+def test_month9_catalog_remains_bounded_in_200_agent_runtime():
     assert len(RETURN_DEFINITIONS) == 8
     assert len(VOLATILITY_DEFINITIONS) == 8
     assert len(DRAWDOWN_DEFINITIONS) == 6
@@ -122,9 +122,9 @@ def test_month9_catalog_reaches_exactly_150_bounded_paper_agents():
     context = build_context(Settings(), with_database=False)
     registrations = context.agent_registry.registrations()
     month9_names = {item.name for item in MONTH9_DIAGNOSTIC_DEFINITIONS}
-    assert len(registrations) == 150
+    assert len(registrations) == 200
     assert sum(item.decision_role == "PRIMARY" for item in registrations) == 3
-    assert sum(item.decision_role == "SHADOW" for item in registrations) == 147
+    assert sum(item.decision_role == "SHADOW" for item in registrations) == 197
     assert month9_names.issubset(
         {item.agent_name for item in registrations}
     )
@@ -481,7 +481,7 @@ def test_month9_contracts_and_private_migration_are_complete():
         "drift-observation.schema.json",
         "portfolio-proposal.schema.json",
     )
-    assert len(manifest["schemas"]) == 44
+    assert len(manifest["schemas"]) == 49
     for name in names:
         assert f"schemas/v1/{name}" in manifest["schemas"]
         Draft202012Validator.check_schema(

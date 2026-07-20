@@ -24,6 +24,13 @@ class Database:
         )
         self.session_factory = async_sessionmaker(self.engine, expire_on_commit=False)
 
+    async def healthcheck(self) -> bool:
+        try:
+            async with self.engine.connect() as connection:
+                return bool(await connection.scalar(text("SELECT 1")))
+        except Exception:
+            return False
+
     async def create_all(self) -> None:
         async with self.engine.begin() as conn:
             if self.engine.dialect.name == "postgresql":
@@ -39,6 +46,7 @@ class Database:
             await self._install_central_risk_guards(conn)
             await self._install_oms_guards(conn)
             await self._install_specialist_evaluation_guards(conn)
+            await self._install_operational_evidence_guards(conn)
             if self.engine.dialect.name == "postgresql":
                 await conn.execute(
                     text(
@@ -71,6 +79,11 @@ class Database:
                     "weighted_consensus_snapshots",
                     "drift_observations",
                     "portfolio_proposals",
+                    "operational_metric_snapshots",
+                    "slo_evaluations",
+                    "operational_alert_events",
+                    "cost_usage_records",
+                    "resilience_test_runs",
                 ):
                     await conn.execute(
                         text(
@@ -88,6 +101,92 @@ class Database:
                     text(
                         f'REVOKE ALL ON ALL SEQUENCES IN SCHEMA '
                         f'"{INTERNAL_SCHEMA}" FROM PUBLIC'
+                    )
+                )
+
+    async def _install_operational_evidence_guards(self, conn) -> None:
+        """Keep Month 10 metrics, alerts, costs and test runs append-only."""
+
+        tables = (
+            "operational_metric_snapshots",
+            "slo_evaluations",
+            "operational_alert_events",
+            "cost_usage_records",
+            "resilience_test_runs",
+        )
+        if self.engine.dialect.name == "postgresql":
+            await conn.execute(
+                text(
+                    f"""
+                    CREATE OR REPLACE FUNCTION
+                    "{INTERNAL_SCHEMA}".reject_operational_evidence_mutation()
+                    RETURNS trigger
+                    LANGUAGE plpgsql
+                    SECURITY INVOKER
+                    SET search_path = ''
+                    AS $function$
+                    BEGIN
+                        RAISE EXCEPTION
+                            'operational evidence is append-only'
+                            USING ERRCODE = '55000';
+                    END;
+                    $function$
+                    """
+                )
+            )
+            await conn.execute(
+                text(
+                    f'REVOKE ALL ON FUNCTION "{INTERNAL_SCHEMA}".'
+                    "reject_operational_evidence_mutation() FROM PUBLIC"
+                )
+            )
+            for table_name in tables:
+                await conn.execute(
+                    text(
+                        f'DROP TRIGGER IF EXISTS trg_{table_name}_immutable '
+                        f'ON "{INTERNAL_SCHEMA}"."{table_name}"'
+                    )
+                )
+                await conn.execute(
+                    text(
+                        f'CREATE TRIGGER trg_{table_name}_immutable '
+                        f'BEFORE UPDATE OR DELETE ON "{INTERNAL_SCHEMA}".'
+                        f'"{table_name}" FOR EACH ROW EXECUTE FUNCTION '
+                        f'"{INTERNAL_SCHEMA}".'
+                        "reject_operational_evidence_mutation()"
+                    )
+                )
+            return
+        if self.engine.dialect.name == "sqlite":
+            for table_name in tables:
+                await conn.execute(
+                    text(
+                        f"""
+                        CREATE TRIGGER IF NOT EXISTS
+                        trg_{table_name}_immutable_update
+                        BEFORE UPDATE ON {table_name}
+                        BEGIN
+                            SELECT RAISE(
+                                ABORT,
+                                'operational evidence is append-only'
+                            );
+                        END
+                        """
+                    )
+                )
+                await conn.execute(
+                    text(
+                        f"""
+                        CREATE TRIGGER IF NOT EXISTS
+                        trg_{table_name}_immutable_delete
+                        BEFORE DELETE ON {table_name}
+                        BEGIN
+                            SELECT RAISE(
+                                ABORT,
+                                'operational evidence is append-only'
+                            );
+                        END
+                        """
                     )
                 )
 

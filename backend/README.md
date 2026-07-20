@@ -106,8 +106,8 @@ migration—is documented in `../docs/month-4-completion.md`.
 
 ## Governed agent runtime
 
-The governed runtime now hosts exactly 100 analytical PAPER agents:
-three existing primary decision agents and 97 evidence-only shadow
+The governed runtime now hosts exactly 200 analytical PAPER agents:
+three existing primary decision agents and 197 evidence-only shadow
 specialists. Every execution has a versioned contract, deterministic
 idempotency identity, bounded retries, a recoverable lease, isolated
 append-only memory, and a complete trace.
@@ -120,7 +120,7 @@ GET  /api/v1/agents/executions
 GET  /api/v1/agents/executions/{execution_id}
 ```
 
-The 147 shadow agents have no direct decision, risk or order authority. Month 9
+The 197 shadow agents have no direct decision, risk or order authority. Month 9
 may consume eligible out-of-sample outputs through a bounded confirmation
 service that can only preserve a primary candidate or tighten it to `WAIT`. See
 `../docs/month-5-agent-runtime.md` for the cohort, contracts, recovery
@@ -176,12 +176,42 @@ GET  /api/v1/governance/drift
 GET  /api/v1/governance/portfolio-proposals
 ```
 
+Month 10 adds 50 deterministic OHLCV resilience diagnostics and an operational
+control plane for the exact 200-agent PAPER cohort. Bounded metrics, explicit
+SLO/error-budget evaluations, append-only alert lifecycles, cost attribution,
+and dependency recovery gates are observational controls. A critical
+database, audit or risk failure halts decision evaluation. An optional
+dependency failure or daily cost hard limit suspends shadow work while always
+preserving the three primary agents and central risk.
+
+Authenticated Month 10 APIs:
+
+```text
+GET  /api/v1/operations/status
+GET  /api/v1/operations/metrics
+POST /api/v1/operations/slos/evaluate
+GET  /api/v1/operations/slos
+GET  /api/v1/operations/alerts
+GET  /api/v1/operations/costs
+GET  /api/v1/operations/resilience-runs
+```
+
+There is deliberately no chaos-injection HTTP endpoint. Run the isolated,
+credential-free acceptance harness locally with:
+
+```bash
+python scripts/run_month10_resilience.py
+```
+
+See `../docs/month-10-resilience-observability.md`.
+
 ## Architecture
 
 ```text
 Market Data Adapter (Binance/Bybit/CSV/Replay)
   → Data Quality → CandleStore
-  → Orchestrator → Agent Runtime (3 PRIMARY + 147 SHADOW)
+  → Orchestrator → Agent Runtime (3 PRIMARY + 197 SHADOW)
+  → Operational Gate (SLOs + cost + dependency recovery)
   → Observational Evaluation (forecast + outcome + scorecard)
   → Decision Engine (weighted consolidation, no simple voting)
   → Performance Consensus (shadow/default; confirmation only tightens)

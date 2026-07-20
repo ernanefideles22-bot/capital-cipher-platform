@@ -41,6 +41,8 @@ from app.database.models import (
     MarketDataGapModel,
     OMSOrderEventModel,
     OMSOrderModel,
+    OperationalAlertEventModel,
+    OperationalMetricSnapshotModel,
     PaperOrderModel,
     PortfolioProposalModel,
     RawMarketEventModel,
@@ -55,12 +57,15 @@ from app.database.models import (
     OrderApprovalModel,
     SystemEventModel,
     SpecialistEvidenceModel,
+    SLOEvaluationModel,
     ConsensusExperimentEventModel,
     ConsensusExperimentModel,
     VenueBalanceSnapshotModel,
     VenuePositionSnapshotModel,
     WalkForwardExperimentModel,
     WeightedConsensusModel,
+    CostUsageRecordModel,
+    ResilienceTestRunModel,
 )
 from app.database.session import Database
 from app.market_data.identity import candle_event_id
@@ -128,6 +133,13 @@ from app.schemas.portfolio_consensus import (
     DriftObservation,
     PortfolioProposal,
     WeightedConsensus,
+)
+from app.schemas.operations import (
+    CostUsageRecord,
+    OperationalAlertEvent,
+    OperationalMetricSnapshot,
+    ResilienceTestRun,
+    SLOEvaluation,
 )
 
 
@@ -4327,6 +4339,255 @@ class Repository:
             )
             return [
                 PortfolioProposal.model_validate(row.payload)
+                for row in rows
+            ]
+
+    async def save_operational_metric_snapshot(
+        self,
+        snapshot: OperationalMetricSnapshot,
+    ) -> OperationalMetricSnapshot:
+        payload = snapshot.model_dump(mode="json")
+        return await self._save_governance_artifact(
+            model_class=OperationalMetricSnapshotModel,
+            identity=snapshot.snapshot_id,
+            payload=payload,
+            values={
+                "snapshot_id": snapshot.snapshot_id,
+                "schema_version": snapshot.schema_version,
+                "correlation_id": snapshot.correlation_id,
+                "registered_agents": snapshot.registered_agents,
+                "active_agents": snapshot.active_agents,
+                "payload": payload,
+                "captured_at": snapshot.captured_at,
+            },
+            contract_class=OperationalMetricSnapshot,
+            label="operational metric snapshot",
+        )
+
+    async def list_operational_metric_snapshots(
+        self,
+        *,
+        limit: int = 100,
+    ) -> list[OperationalMetricSnapshot]:
+        if not 1 <= limit <= 100_000:
+            raise ValueError("Operational snapshot limit must be 1..100000")
+        async with self._db.session() as session:
+            rows = list(
+                await session.scalars(
+                    select(OperationalMetricSnapshotModel)
+                    .order_by(
+                        OperationalMetricSnapshotModel.captured_at.desc(),
+                        OperationalMetricSnapshotModel.snapshot_id,
+                    )
+                    .limit(limit)
+                )
+            )
+            return [
+                OperationalMetricSnapshot.model_validate(row.payload)
+                for row in rows
+            ]
+
+    async def save_slo_evaluations(
+        self,
+        evaluations: list[SLOEvaluation],
+    ) -> list[SLOEvaluation]:
+        if not evaluations:
+            return []
+        try:
+            stored: list[SLOEvaluation] = []
+            async with self._db.session() as session, session.begin():
+                for evaluation in evaluations:
+                    existing = await session.get(
+                        SLOEvaluationModel,
+                        evaluation.evaluation_id,
+                    )
+                    if existing is not None:
+                        current = SLOEvaluation.model_validate(
+                            existing.payload
+                        )
+                        if current != evaluation:
+                            raise ValidationError(
+                                "Immutable SLO evaluation identity conflict"
+                            )
+                        stored.append(current)
+                        continue
+                    payload = evaluation.model_dump(mode="json")
+                    session.add(
+                        SLOEvaluationModel(
+                            evaluation_id=evaluation.evaluation_id,
+                            schema_version=evaluation.schema_version,
+                            slo_name=evaluation.slo_name,
+                            status=evaluation.status,
+                            sample_count=evaluation.sample_count,
+                            payload=payload,
+                            evaluated_at=evaluation.evaluated_at,
+                        )
+                    )
+                    stored.append(evaluation)
+            return stored
+        except (DatabaseError, ValidationError):
+            raise
+        except Exception as exc:
+            raise DatabaseError(
+                f"Failed to persist SLO evaluations: {exc}"
+            ) from exc
+
+    async def list_slo_evaluations(
+        self,
+        *,
+        limit: int = 100,
+    ) -> list[SLOEvaluation]:
+        if not 1 <= limit <= 100_000:
+            raise ValueError("SLO evaluation limit must be 1..100000")
+        async with self._db.session() as session:
+            rows = list(
+                await session.scalars(
+                    select(SLOEvaluationModel)
+                    .order_by(
+                        SLOEvaluationModel.evaluated_at.desc(),
+                        SLOEvaluationModel.evaluation_id,
+                    )
+                    .limit(limit)
+                )
+            )
+            return [
+                SLOEvaluation.model_validate(row.payload)
+                for row in rows
+            ]
+
+    async def save_operational_alert_event(
+        self,
+        event: OperationalAlertEvent,
+    ) -> OperationalAlertEvent:
+        payload = event.model_dump(mode="json")
+        return await self._save_governance_artifact(
+            model_class=OperationalAlertEventModel,
+            identity=event.alert_event_id,
+            payload=payload,
+            values={
+                "alert_event_id": event.alert_event_id,
+                "schema_version": event.schema_version,
+                "alert_key": event.alert_key,
+                "lifecycle_sequence": event.lifecycle_sequence,
+                "event_type": event.event_type,
+                "severity": event.severity,
+                "payload": payload,
+                "occurred_at": event.occurred_at,
+            },
+            contract_class=OperationalAlertEvent,
+            label="operational alert event",
+        )
+
+    async def list_operational_alert_events(
+        self,
+        *,
+        limit: int = 100,
+    ) -> list[OperationalAlertEvent]:
+        if not 1 <= limit <= 100_000:
+            raise ValueError("Operational alert limit must be 1..100000")
+        async with self._db.session() as session:
+            rows = list(
+                await session.scalars(
+                    select(OperationalAlertEventModel)
+                    .order_by(
+                        OperationalAlertEventModel.occurred_at.desc(),
+                        OperationalAlertEventModel.alert_event_id,
+                    )
+                    .limit(limit)
+                )
+            )
+            return [
+                OperationalAlertEvent.model_validate(row.payload)
+                for row in rows
+            ]
+
+    async def save_cost_usage_record(
+        self,
+        record: CostUsageRecord,
+    ) -> CostUsageRecord:
+        payload = record.model_dump(mode="json")
+        return await self._save_governance_artifact(
+            model_class=CostUsageRecordModel,
+            identity=record.usage_id,
+            payload=payload,
+            values={
+                "usage_id": record.usage_id,
+                "schema_version": record.schema_version,
+                "cost_center": record.cost_center,
+                "resource": record.resource,
+                "estimated_cost_usd": record.estimated_cost_usd,
+                "payload": payload,
+                "observed_at": record.observed_at,
+            },
+            contract_class=CostUsageRecord,
+            label="cost usage record",
+        )
+
+    async def list_cost_usage_records(
+        self,
+        *,
+        limit: int = 100,
+    ) -> list[CostUsageRecord]:
+        if not 1 <= limit <= 100_000:
+            raise ValueError("Cost usage limit must be 1..100000")
+        async with self._db.session() as session:
+            rows = list(
+                await session.scalars(
+                    select(CostUsageRecordModel)
+                    .order_by(
+                        CostUsageRecordModel.observed_at.desc(),
+                        CostUsageRecordModel.usage_id,
+                    )
+                    .limit(limit)
+                )
+            )
+            return [
+                CostUsageRecord.model_validate(row.payload)
+                for row in rows
+            ]
+
+    async def save_resilience_test_run(
+        self,
+        run: ResilienceTestRun,
+    ) -> ResilienceTestRun:
+        payload = run.model_dump(mode="json")
+        return await self._save_governance_artifact(
+            model_class=ResilienceTestRunModel,
+            identity=run.run_id,
+            payload=payload,
+            values={
+                "run_id": run.run_id,
+                "schema_version": run.schema_version,
+                "run_type": run.run_type,
+                "scenario": run.scenario,
+                "status": run.status,
+                "payload": payload,
+                "completed_at": run.completed_at,
+            },
+            contract_class=ResilienceTestRun,
+            label="resilience test run",
+        )
+
+    async def list_resilience_test_runs(
+        self,
+        *,
+        limit: int = 100,
+    ) -> list[ResilienceTestRun]:
+        if not 1 <= limit <= 100_000:
+            raise ValueError("Resilience run limit must be 1..100000")
+        async with self._db.session() as session:
+            rows = list(
+                await session.scalars(
+                    select(ResilienceTestRunModel)
+                    .order_by(
+                        ResilienceTestRunModel.completed_at.desc(),
+                        ResilienceTestRunModel.run_id,
+                    )
+                    .limit(limit)
+                )
+            )
+            return [
+                ResilienceTestRun.model_validate(row.payload)
                 for row in rows
             ]
 

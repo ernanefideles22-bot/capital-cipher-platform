@@ -46,6 +46,11 @@
     "schemas/v1/consensus-experiment-event.schema.json",
     "schemas/v1/weighted-consensus.schema.json",
     "schemas/v1/drift-observation.schema.json",
-    "schemas/v1/portfolio-proposal.schema.json"
+    "schemas/v1/portfolio-proposal.schema.json",
+    "schemas/v1/operational-metric-snapshot.schema.json",
+    "schemas/v1/slo-evaluation.schema.json",
+    "schemas/v1/operational-alert-event.schema.json",
+    "schemas/v1/cost-usage-record.schema.json",
+    "schemas/v1/resilience-test-run.schema.json"
   ]
 }
