@@ -29,6 +29,14 @@
     "schemas/v1/portfolio-risk-snapshot.schema.json",
     "schemas/v1/risk-evaluation.schema.json",
     "schemas/v1/order-approval.schema.json",
-    "schemas/v1/risk-control-event.schema.json"
+    "schemas/v1/risk-control-event.schema.json",
+    "schemas/v1/oms-order.schema.json",
+    "schemas/v1/execution-command.schema.json",
+    "schemas/v1/venue-order-snapshot.schema.json",
+    "schemas/v1/execution-fill.schema.json",
+    "schemas/v1/venue-position-snapshot.schema.json",
+    "schemas/v1/venue-balance-snapshot.schema.json",
+    "schemas/v1/reconciliation-run.schema.json",
+    "schemas/v1/reconciliation-mismatch.schema.json"
   ]
 }

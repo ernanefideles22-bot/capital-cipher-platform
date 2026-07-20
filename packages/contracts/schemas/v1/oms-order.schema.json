@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://capital-cipher.local/contracts/v1/oms-order.schema.json",
+  "title": "OMSOrderV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "oms_order_id", "client_order_id", "decision_id",
+    "risk_check_id", "approval_id", "request_fingerprint",
+    "correlation_id", "exchange", "environment", "symbol", "timeframe",
+    "strategy", "side", "order_type", "time_in_force", "quantity",
+    "requested_notional", "leverage", "limit_price", "reference_price",
+    "status", "venue_order_id", "cumulative_filled_quantity",
+    "average_fill_price", "rejection_reason", "state_version",
+    "created_at", "updated_at", "submitted_at", "terminal_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "oms_order_id": { "type": "string", "minLength": 1, "maxLength": 36 },
+    "client_order_id": { "type": "string", "minLength": 8, "maxLength": 36 },
+    "decision_id": { "type": "string", "minLength": 1 },
+    "risk_check_id": { "type": "string", "minLength": 1 },
+    "approval_id": { "type": "string", "minLength": 64, "maxLength": 64 },
+    "request_fingerprint": { "type": "string", "minLength": 64, "maxLength": 64 },
+    "correlation_id": { "type": "string", "minLength": 1 },
+    "exchange": { "enum": ["BINANCE", "BYBIT"] },
+    "environment": { "enum": ["PAPER", "TESTNET"] },
+    "symbol": { "type": "string", "minLength": 1 },
+    "timeframe": { "type": "string", "minLength": 1 },
+    "strategy": { "type": "string", "minLength": 1 },
+    "side": { "enum": ["BUY", "SELL"] },
+    "order_type": { "enum": ["MARKET", "LIMIT"] },
+    "time_in_force": { "enum": ["GTC", "IOC", "FOK", "POST_ONLY"] },
+    "quantity": { "type": "number", "exclusiveMinimum": 0 },
+    "requested_notional": { "type": "number", "exclusiveMinimum": 0 },
+    "leverage": { "type": "number", "minimum": 1 },
+    "limit_price": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+    "reference_price": { "type": "number", "exclusiveMinimum": 0 },
+    "status": {
+      "enum": [
+        "CREATED", "PENDING_SUBMISSION", "SUBMITTED", "PARTIALLY_FILLED",
+        "FILLED", "CANCEL_PENDING", "CANCELED", "REJECTED", "EXPIRED",
+        "UNKNOWN", "QUARANTINED"
+      ]
+    },
+    "venue_order_id": { "type": ["string", "null"] },
+    "cumulative_filled_quantity": { "type": "number", "minimum": 0 },
+    "average_fill_price": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+    "rejection_reason": { "type": ["string", "null"] },
+    "state_version": { "type": "integer", "minimum": 1 },
+    "created_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" },
+    "submitted_at": { "type": ["string", "null"], "format": "date-time" },
+    "terminal_at": { "type": ["string", "null"], "format": "date-time" }
+  }
+}

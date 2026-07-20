@@ -97,6 +97,19 @@ class ExternalServiceError(CapitalCipherError):
     recoverable = True
 
 
+class AmbiguousExecutionError(CapitalCipherError):
+    """The venue may have accepted a write; reconciliation must decide."""
+
+    error_code = "EXECUTION_STATUS_UNKNOWN"
+    severity = "CRITICAL"
+    recoverable = True
+
+
+class ExecutionRejectedError(CapitalCipherError):
+    error_code = "EXECUTION_REJECTED"
+    severity = "ERROR"
+
+
 class KillSwitchActiveError(CapitalCipherError):
     error_code = "KILL_SWITCH_ACTIVE"
     severity = "CRITICAL"

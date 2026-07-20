@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,7 @@ from app.backtesting.walk_forward import WalkForwardEngine
 from app.database.models import (
     AgentExecutionAttemptModel,
     INTERNAL_SCHEMA,
+    OMSOrderEventModel,
     OrderApprovalModel,
     RiskEvaluationModel,
     WalkForwardExperimentModel,
@@ -38,6 +40,14 @@ from app.schemas.data_lake import (
     BackfillQueueItem,
     BackfillRawPageLink,
     RawDataObject,
+)
+from app.schemas.common import Exchange
+from app.schemas.oms import (
+    ExecutionCommand,
+    ExecutionCommandType,
+    ExecutionEnvironment,
+    OMSOrder,
+    OMSOrderStatus,
 )
 from app.schemas.risk import ApprovalStatus, RiskLimits
 from app.tests.conftest import make_decision, make_series
@@ -71,6 +81,7 @@ async def test_real_postgres_internal_warehouse_round_trip():
 
     database = Database(os.environ["POSTGRES_TEST_URL"])
     await database.create_all()
+    await database.verify_testnet_oms_schema()
     repository = Repository(database)
     candles = make_series([100.0, 101.0, 102.0])
 
@@ -221,6 +232,74 @@ async def test_real_postgres_internal_warehouse_round_trip():
         central_check,
         current_price=100,
     )
+    central_oms = await repository.load_oms_order(
+        central_order.paper_order_id
+    )
+    testnet_decision = make_decision().model_copy(
+        update={"symbol": "ETHUSDT"}
+    )
+    testnet_check = await risk_manager.check(
+        testnet_decision,
+        entry_price=100,
+        atr=1,
+    )
+    testnet_order = OMSOrder(
+        client_order_id=(
+            f"cc-{testnet_check.approval_id[:32]}"
+        ),
+        decision_id=testnet_decision.decision_id,
+        risk_check_id=testnet_check.risk_check_id,
+        approval_id=testnet_check.approval_id,
+        request_fingerprint=testnet_check.request_fingerprint,
+        correlation_id=testnet_decision.correlation_id,
+        exchange=Exchange.BINANCE,
+        environment=ExecutionEnvironment.TESTNET,
+        symbol=testnet_decision.symbol,
+        timeframe=testnet_decision.timeframe,
+        strategy=testnet_decision.strategy,
+        side=testnet_decision.candidate_action.value,
+        quantity=testnet_check.position_size / 100,
+        requested_notional=testnet_check.position_size,
+        leverage=testnet_check.leverage,
+        reference_price=100,
+        status=OMSOrderStatus.PENDING_SUBMISSION,
+    )
+    testnet_command = ExecutionCommand(
+        oms_order_id=testnet_order.oms_order_id,
+        command_type=ExecutionCommandType.SUBMIT,
+    )
+    await risk_manager.consume_oms_approval(
+        testnet_decision,
+        testnet_check,
+        testnet_order,
+        testnet_command,
+    )
+    claimed_command, claimed_order = (
+        await repository.claim_execution_command(
+            worker_id="postgres-oms-worker",
+            lease_seconds=30,
+        )
+    )
+    transition_at = datetime.now(timezone.utc)
+    quarantined = claimed_order.model_copy(
+        update={
+            "status": OMSOrderStatus.QUARANTINED,
+            "state_version": claimed_order.state_version + 1,
+            "updated_at": transition_at,
+            "terminal_at": transition_at,
+            "rejection_reason": "POSTGRES_TEST",
+        }
+    )
+    await repository.finish_execution_command(
+        command_id=claimed_command.command_id,
+        worker_id="postgres-oms-worker",
+        order=quarantined,
+        event_type="POSTGRES_TEST_QUARANTINED",
+        error_type="RiskError",
+    )
+    stored_testnet_order = await repository.load_oms_order(
+        testnet_order.oms_order_id
+    )
     with pytest.raises(SQLAlchemyError, match="append-only"):
         async with database.session() as session, session.begin():
             await session.execute(
@@ -250,6 +329,16 @@ async def test_real_postgres_internal_warehouse_round_trip():
                     == central_check.evaluation_id
                 )
                 .values(risk_status="BLOCKED")
+            )
+    with pytest.raises(SQLAlchemyError, match="append-only"):
+        async with database.session() as session, session.begin():
+            await session.execute(
+                update(OMSOrderEventModel)
+                .where(
+                    OMSOrderEventModel.oms_order_id
+                    == central_order.paper_order_id
+                )
+                .values(status="UNKNOWN")
             )
 
     async with database.engine.connect() as connection:
@@ -364,6 +453,51 @@ async def test_real_postgres_internal_warehouse_round_trip():
             ),
             {"schema_name": INTERNAL_SCHEMA},
         )
+        oms_rls_count = await connection.scalar(
+            text(
+                "SELECT count(*) "
+                "FROM pg_class c "
+                "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                "WHERE n.nspname = :schema_name "
+                "AND c.relname IN "
+                "('oms_orders', 'oms_order_events', "
+                "'execution_commands', 'execution_fills', "
+                "'reconciliation_runs', 'reconciliation_mismatches', "
+                "'venue_position_snapshots', 'venue_balance_snapshots') "
+                "AND c.relrowsecurity"
+            ),
+            {"schema_name": INTERNAL_SCHEMA},
+        )
+        oms_triggers = set(
+            await connection.scalars(
+                text(
+                    "SELECT trigger_name "
+                    "FROM information_schema.triggers "
+                    "WHERE trigger_schema = :schema_name "
+                    "AND event_object_table IN "
+                    "('oms_orders', 'oms_order_events', "
+                    "'execution_commands', 'execution_fills', "
+                    "'reconciliation_runs', 'reconciliation_mismatches', "
+                    "'venue_position_snapshots', "
+                    "'venue_balance_snapshots')"
+                ),
+                {"schema_name": INTERNAL_SCHEMA},
+            )
+        )
+        oms_security_definers = await connection.scalar(
+            text(
+                "SELECT count(*) "
+                "FROM pg_proc p "
+                "JOIN pg_namespace n ON n.oid = p.pronamespace "
+                "WHERE n.nspname = :schema_name "
+                "AND p.proname IN "
+                "('reject_oms_evidence_mutation', "
+                "'guard_oms_order_transition', "
+                "'guard_execution_command_transition') "
+                "AND p.prosecdef"
+            ),
+            {"schema_name": INTERNAL_SCHEMA},
+        )
     await database.dispose()
 
     assert loaded == manifest
@@ -395,6 +529,14 @@ async def test_real_postgres_internal_warehouse_round_trip():
         "order_approvals",
         "risk_control_state",
         "risk_control_events",
+        "oms_orders",
+        "oms_order_events",
+        "execution_commands",
+        "execution_fills",
+        "reconciliation_runs",
+        "reconciliation_mismatches",
+        "venue_position_snapshots",
+        "venue_balance_snapshots",
     } <= tables
     assert "trg_walk_forward_experiments_immutable" in immutable_triggers
     assert row_security_enabled is True
@@ -406,6 +548,20 @@ async def test_real_postgres_internal_warehouse_round_trip():
     assert agent_rls_count == 3
     assert agent_function_is_security_definer is False
     assert central_order.approval_id == central_check.approval_id
+    assert central_oms.venue_order_id == central_order.paper_order_id
+    assert stored_testnet_order.status == OMSOrderStatus.QUARANTINED
     assert approval_status == ApprovalStatus.CONSUMED.value
     assert central_risk_rls_count == 4
     assert central_risk_security_definers == 0
+    assert oms_rls_count == 8
+    assert oms_security_definers == 0
+    assert {
+        "trg_oms_orders_transition",
+        "trg_oms_order_events_immutable",
+        "trg_execution_commands_transition",
+        "trg_execution_fills_immutable",
+        "trg_reconciliation_runs_immutable",
+        "trg_reconciliation_mismatches_immutable",
+        "trg_venue_position_snapshots_immutable",
+        "trg_venue_balance_snapshots_immutable",
+    } <= oms_triggers

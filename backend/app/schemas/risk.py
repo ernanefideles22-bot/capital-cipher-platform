@@ -113,15 +113,21 @@ class OrderApproval(BaseModel):
     expires_at: datetime
     consumed_at: datetime | None = None
     paper_order_id: str | None = None
+    oms_order_id: str | None = None
 
     @model_validator(mode="after")
     def validate_lifecycle(self) -> "OrderApproval":
         if self.expires_at <= self.created_at:
             raise ValueError("expires_at must be after created_at")
+        downstream_ids = int(bool(self.paper_order_id)) + int(bool(self.oms_order_id))
         if self.status == ApprovalStatus.CONSUMED and (
-            self.consumed_at is None or not self.paper_order_id
+            self.consumed_at is None or downstream_ids != 1
         ):
             raise ValueError("consumed approval requires order identity and timestamp")
+        if self.status != ApprovalStatus.CONSUMED and (
+            self.consumed_at is not None or downstream_ids
+        ):
+            raise ValueError("unconsumed approval cannot reference an order")
         return self
 
 

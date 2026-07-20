@@ -62,9 +62,21 @@ def test_no_hardcoded_secrets():
 
 
 def test_logs_sanitize_sensitive_keys():
-    from app.core.logging import _sanitize
+    import logging
 
-    clean = _sanitize({"api_key": "abc", "token": "xyz", "other": 1})
+    from app.core.logging import _sanitize, configure_logging
+
+    clean = _sanitize(
+        {
+            "api_key": "abc",
+            "token": "xyz",
+            "other": 1,
+            "nested": {"signature": "signed-query", "safe": True},
+        }
+    )
     assert clean["api_key"] == "***"
     assert clean["token"] == "***"
+    assert clean["nested"]["signature"] == "***"
     assert clean["other"] == 1
+    configure_logging("INFO")
+    assert logging.getLogger("httpx").level == logging.WARNING

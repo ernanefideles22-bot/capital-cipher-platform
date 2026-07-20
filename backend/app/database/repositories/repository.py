@@ -29,13 +29,19 @@ from app.database.models import (
     ClockObservationModel,
     DecisionModel,
     DatasetManifestModel,
+    ExecutionCommandModel,
+    ExecutionFillModel,
     EventJournalModel,
     EventOutboxModel,
     HistoricalBackfillJobModel,
     MarketDataGapModel,
+    OMSOrderEventModel,
+    OMSOrderModel,
     PaperOrderModel,
     RawMarketEventModel,
     RawDataObjectModel,
+    ReconciliationMismatchModel,
+    ReconciliationRunModel,
     ReplayCheckpointModel,
     RiskControlEventModel,
     RiskControlStateModel,
@@ -43,6 +49,8 @@ from app.database.models import (
     RiskCheckModel,
     OrderApprovalModel,
     SystemEventModel,
+    VenueBalanceSnapshotModel,
+    VenuePositionSnapshotModel,
     WalkForwardExperimentModel,
 )
 from app.database.session import Database
@@ -60,7 +68,7 @@ from app.schemas.backtest import (
     WalkForwardArtifactMetadata,
     WalkForwardReport,
 )
-from app.schemas.common import AgentStatus, OrderSide, PaperOrderStatus
+from app.schemas.common import AgentStatus, Exchange, OrderSide, PaperOrderStatus
 from app.schemas.data_lake import (
     BackfillQueueItem,
     BackfillRawPageLink,
@@ -72,6 +80,27 @@ from app.schemas.events import BusMessage
 from app.schemas.replay import ReplayCheckpoint
 from app.schemas.market import Candle, DataQualityReport, RawMarketEvent
 from app.schemas.paper import PaperOrder
+from app.schemas.oms import (
+    ExecutionCommand,
+    ExecutionCommandStatus,
+    ExecutionCommandType,
+    ExecutionEnvironment,
+    ExecutionFill,
+    OMSOrder,
+    OMSOrderStatus,
+    OMSOrderType,
+    OMSTimeInForce,
+    ReconciliationMismatch,
+    ReconciliationMismatchType,
+    ReconciliationRun,
+    ReconciliationRunStatus,
+    ReconciliationSeverity,
+    TERMINAL_OMS_STATUSES,
+    VenueBalanceSnapshot,
+    VenueOrderSnapshot,
+    VenuePositionSnapshot,
+    VenueStateSnapshot,
+)
 from app.schemas.risk import (
     ApprovalStatus,
     OrderApproval,
@@ -92,19 +121,36 @@ def _as_utc(value: datetime) -> datetime:
 
 
 def _position_snapshot_hash(rows: list[PaperOrderModel]) -> str:
+    return _exposure_snapshot_hash(
+        [
+            PositionExposure(
+                paper_order_id=row.id,
+                symbol=row.symbol,
+                timeframe=row.timeframe or "unknown",
+                strategy=row.strategy,
+                side=OrderSide(row.side),
+                notional=float(row.position_size),
+                leverage=float(row.leverage),
+            )
+            for row in rows
+        ]
+    )
+
+
+def _exposure_snapshot_hash(positions: list[PositionExposure]) -> str:
     payload = {
         "positions": sorted(
             (
                 {
-                    "paper_order_id": row.id,
-                    "symbol": row.symbol,
-                    "timeframe": row.timeframe or "unknown",
-                    "strategy": row.strategy,
-                    "side": row.side,
-                    "notional": round(float(row.position_size), 8),
-                    "leverage": round(float(row.leverage), 8),
+                    "paper_order_id": position.paper_order_id,
+                    "symbol": position.symbol,
+                    "timeframe": position.timeframe,
+                    "strategy": position.strategy,
+                    "side": position.side.value,
+                    "notional": round(position.notional, 8),
+                    "leverage": round(position.leverage, 8),
                 }
-                for row in rows
+                for position in positions
             ),
             key=lambda item: item["paper_order_id"],
         )
@@ -119,9 +165,243 @@ def _position_snapshot_hash(rows: list[PaperOrderModel]) -> str:
     ).hexdigest()
 
 
+def _spot_base_asset(symbol: str) -> str | None:
+    normalized = symbol.upper()
+    for quote_asset in (
+        "USDT",
+        "USDC",
+        "FDUSD",
+        "TUSD",
+        "BUSD",
+        "BTC",
+        "ETH",
+        "BNB",
+    ):
+        if normalized.endswith(quote_asset):
+            base_asset = normalized[: -len(quote_asset)]
+            return base_asset or None
+    return None
+
+
 class Repository:
     def __init__(self, database: Database) -> None:
         self._db = database
+
+    async def _durable_position_exposures(
+        self,
+        session,
+        *,
+        lock_paper: bool,
+    ) -> list[PositionExposure]:
+        paper_statement = select(PaperOrderModel).where(
+            PaperOrderModel.status == PaperOrderStatus.FILLED.value
+        )
+        if lock_paper:
+            paper_statement = paper_statement.with_for_update()
+        paper_rows = list(await session.scalars(paper_statement))
+        exposures = [
+            PositionExposure(
+                paper_order_id=row.id,
+                symbol=row.symbol,
+                timeframe=row.timeframe or "unknown",
+                strategy=row.strategy,
+                side=OrderSide(row.side),
+                notional=float(row.position_size),
+                leverage=float(row.leverage),
+            )
+            for row in paper_rows
+        ]
+        testnet_order_statement = select(OMSOrderModel).where(
+            OMSOrderModel.environment
+            == ExecutionEnvironment.TESTNET.value
+        )
+        if lock_paper:
+            testnet_order_statement = (
+                testnet_order_statement.with_for_update()
+            )
+        testnet_order_rows = list(
+            await session.scalars(testnet_order_statement)
+        )
+        reserving_statuses = {
+            OMSOrderStatus.CREATED.value,
+            OMSOrderStatus.PENDING_SUBMISSION.value,
+            OMSOrderStatus.SUBMITTED.value,
+            OMSOrderStatus.PARTIALLY_FILLED.value,
+            OMSOrderStatus.CANCEL_PENDING.value,
+            OMSOrderStatus.UNKNOWN.value,
+        }
+        for row in testnet_order_rows:
+            if row.status not in reserving_statuses:
+                continue
+            remaining_quantity = max(
+                0.0,
+                float(row.quantity)
+                - float(row.cumulative_filled_quantity),
+            )
+            reserved_notional = (
+                remaining_quantity * float(row.reference_price)
+            )
+            if reserved_notional <= 0:
+                continue
+            exposures.append(
+                PositionExposure(
+                    paper_order_id=(
+                        f"oms-reservation:{row.oms_order_id}"
+                    ),
+                    symbol=row.symbol,
+                    timeframe=row.timeframe,
+                    strategy=row.strategy,
+                    side=OrderSide(row.side),
+                    notional=reserved_notional,
+                    leverage=float(row.leverage),
+                )
+            )
+
+        ranked_runs = (
+            select(
+                ReconciliationRunModel.run_id,
+                ReconciliationRunModel.exchange,
+                func.row_number()
+                .over(
+                    partition_by=ReconciliationRunModel.exchange,
+                    order_by=ReconciliationRunModel.completed_at.desc(),
+                )
+                .label("venue_rank"),
+            )
+            .where(
+                ReconciliationRunModel.environment
+                == ExecutionEnvironment.TESTNET.value,
+                ReconciliationRunModel.status
+                != ReconciliationRunStatus.FAILED.value,
+            )
+            .subquery()
+        )
+        latest_run_rows = list(
+            await session.execute(
+                select(
+                    ranked_runs.c.run_id,
+                    ranked_runs.c.exchange,
+                ).where(
+                    ranked_runs.c.venue_rank == 1
+                )
+            )
+        )
+        latest_run_ids = [row.run_id for row in latest_run_rows]
+        reconciled_exchanges = {
+            row.exchange for row in latest_run_rows
+        }
+        reconciled_symbols: set[tuple[str, str]] = set()
+        if latest_run_ids:
+            position_rows = list(
+                await session.scalars(
+                    select(VenuePositionSnapshotModel).where(
+                        VenuePositionSnapshotModel.run_id.in_(
+                            latest_run_ids
+                        )
+                    )
+                )
+            )
+            exposures.extend(
+                PositionExposure(
+                    paper_order_id=(
+                        f"venue:{row.exchange}:{row.environment}:"
+                        f"{row.symbol}:{row.side}"
+                    ),
+                    symbol=row.symbol,
+                    timeframe="venue",
+                    strategy="OMS_RECONCILED",
+                    side=OrderSide(row.side),
+                    notional=float(row.quantity)
+                    * float(row.mark_price or row.entry_price or 0),
+                    leverage=1.0,
+                )
+                for row in position_rows
+                if float(row.quantity) > 0
+                and float(row.mark_price or row.entry_price or 0) > 0
+            )
+            reconciled_symbols.update(
+                (row.exchange, row.symbol) for row in position_rows
+            )
+            if Exchange.BYBIT.value in reconciled_exchanges:
+                reconciled_symbols.update(
+                    (row.exchange, row.symbol)
+                    for row in testnet_order_rows
+                    if row.exchange == Exchange.BYBIT.value
+                )
+            balance_rows = list(
+                await session.scalars(
+                    select(VenueBalanceSnapshotModel).where(
+                        VenueBalanceSnapshotModel.run_id.in_(
+                            latest_run_ids
+                        ),
+                        VenueBalanceSnapshotModel.exchange
+                        == Exchange.BINANCE.value,
+                    )
+                )
+            )
+            latest_binance_orders: dict[str, OMSOrderModel] = {}
+            for row in sorted(
+                (
+                    order
+                    for order in testnet_order_rows
+                    if order.exchange == Exchange.BINANCE.value
+                ),
+                key=lambda order: _as_utc(order.updated_at),
+                reverse=True,
+            ):
+                latest_binance_orders.setdefault(row.symbol, row)
+            balances_by_asset = {
+                row.asset.upper(): row for row in balance_rows
+            }
+            for symbol, order in latest_binance_orders.items():
+                base_asset = _spot_base_asset(symbol)
+                if base_asset is None:
+                    continue
+                reconciled_symbols.add(
+                    (Exchange.BINANCE.value, symbol)
+                )
+                balance = (
+                    balances_by_asset.get(base_asset)
+                    if base_asset is not None
+                    else None
+                )
+                quantity = float(balance.equity) if balance else 0.0
+                price = float(
+                    order.average_fill_price or order.reference_price
+                )
+                if quantity <= 0 or price <= 0:
+                    continue
+                exposures.append(
+                    PositionExposure(
+                        paper_order_id=(
+                            "venue:BINANCE:TESTNET:"
+                            f"{symbol}:BUY"
+                        ),
+                        symbol=symbol,
+                        timeframe="venue",
+                        strategy="OMS_RECONCILED",
+                        side=OrderSide.BUY,
+                        notional=quantity * price,
+                        leverage=1.0,
+                    )
+                )
+
+        exposures.extend(
+            PositionExposure(
+                paper_order_id=f"oms:{row.oms_order_id}",
+                symbol=row.symbol,
+                timeframe=row.timeframe,
+                strategy=row.strategy,
+                side=OrderSide(row.side),
+                notional=float(row.cumulative_filled_quantity)
+                * float(row.average_fill_price or row.reference_price),
+                leverage=float(row.leverage),
+            )
+            for row in testnet_order_rows
+            if float(row.cumulative_filled_quantity) > 0
+            and (row.exchange, row.symbol) not in reconciled_symbols
+        )
+        return exposures
 
     async def save_system_event(self, event: dict) -> None:
         try:
@@ -1931,6 +2211,7 @@ class Repository:
                             expires_at=approval.expires_at,
                             consumed_at=approval.consumed_at,
                             paper_order_id=approval.paper_order_id,
+                            oms_order_id=approval.oms_order_id,
                         )
                     )
         except DatabaseError:
@@ -1988,6 +2269,7 @@ class Repository:
                     expires_at=approval_row.expires_at,
                     consumed_at=approval_row.consumed_at,
                     paper_order_id=approval_row.paper_order_id,
+                    oms_order_id=approval_row.oms_order_id,
                 )
                 return check, approval
         except Exception as exc:
@@ -2027,9 +2309,17 @@ class Repository:
         self,
         approval: OrderApproval,
         order: PaperOrder,
+        *,
+        oms_order: OMSOrder | None = None,
     ) -> None:
-        """Lock, consume and insert the PAPER order atomically."""
+        """Consume approval and insert PAPER plus its OMS mirror atomically."""
 
+        if oms_order is not None and (
+            oms_order.environment != ExecutionEnvironment.PAPER
+            or oms_order.oms_order_id != order.paper_order_id
+            or oms_order.approval_id != approval.approval_id
+        ):
+            raise ValidationError("Invalid PAPER OMS mirror")
         try:
             async with self._db.session() as session, session.begin():
                 control = await session.get(
@@ -2055,19 +2345,11 @@ class Repository:
                     raise ValidationError(
                         f"Order approval is {stored.status}"
                     )
-                open_rows = list(
-                    await session.scalars(
-                        select(PaperOrderModel)
-                        .where(
-                            PaperOrderModel.status
-                            == PaperOrderStatus.FILLED.value
-                        )
-                        .with_for_update()
-                    )
+                exposures = await self._durable_position_exposures(
+                    session,
+                    lock_paper=True,
                 )
-                if stored.position_snapshot_hash != _position_snapshot_hash(
-                    open_rows
-                ):
+                if stored.position_snapshot_hash != _exposure_snapshot_hash(exposures):
                     raise ValidationError(
                         "Order approval is stale for the durable portfolio"
                     )
@@ -2098,7 +2380,16 @@ class Repository:
                 stored.status = ApprovalStatus.CONSUMED.value
                 stored.consumed_at = approval.consumed_at
                 stored.paper_order_id = order.paper_order_id
+                stored.oms_order_id = None
                 session.add(PaperOrderModel(**self._paper_order_values(order)))
+                if oms_order is not None:
+                    session.add(
+                        OMSOrderModel(**self._oms_order_values(oms_order))
+                    )
+                    await session.flush()
+                    session.add(
+                        self._oms_order_event(oms_order, "PAPER_FILLED")
+                    )
         except DatabaseError:
             raise
         except Exception as exc:
@@ -2123,29 +2414,947 @@ class Repository:
     async def load_open_position_exposures(self) -> list[PositionExposure]:
         try:
             async with self._db.session() as session:
-                rows = list(
-                    await session.scalars(
-                        select(PaperOrderModel).where(
-                            PaperOrderModel.status
-                            == PaperOrderStatus.FILLED.value
+                return await self._durable_position_exposures(
+                    session,
+                    lock_paper=False,
+                )
+        except Exception as exc:
+            raise DatabaseError(
+                f"Failed to restore open risk exposure: {exc}"
+            ) from exc
+
+    @staticmethod
+    def _oms_order_values(order: OMSOrder) -> dict:
+        return {
+            "oms_order_id": order.oms_order_id,
+            "client_order_id": order.client_order_id,
+            "decision_id": order.decision_id,
+            "risk_check_id": order.risk_check_id,
+            "approval_id": order.approval_id,
+            "request_fingerprint": order.request_fingerprint,
+            "correlation_id": order.correlation_id,
+            "exchange": order.exchange.value,
+            "environment": order.environment.value,
+            "symbol": order.symbol,
+            "timeframe": order.timeframe,
+            "strategy": order.strategy,
+            "side": order.side.value,
+            "order_type": order.order_type.value,
+            "time_in_force": order.time_in_force.value,
+            "quantity": order.quantity,
+            "requested_notional": order.requested_notional,
+            "leverage": order.leverage,
+            "limit_price": order.limit_price,
+            "reference_price": order.reference_price,
+            "status": order.status.value,
+            "venue_order_id": order.venue_order_id,
+            "cumulative_filled_quantity": order.cumulative_filled_quantity,
+            "average_fill_price": order.average_fill_price,
+            "rejection_reason": order.rejection_reason,
+            "state_version": order.state_version,
+            "created_at": order.created_at,
+            "updated_at": order.updated_at,
+            "submitted_at": order.submitted_at,
+            "terminal_at": order.terminal_at,
+        }
+
+    @staticmethod
+    def _oms_order_from_row(row: OMSOrderModel) -> OMSOrder:
+        return OMSOrder(
+            oms_order_id=row.oms_order_id,
+            client_order_id=row.client_order_id,
+            decision_id=row.decision_id,
+            risk_check_id=row.risk_check_id,
+            approval_id=row.approval_id,
+            request_fingerprint=row.request_fingerprint,
+            correlation_id=row.correlation_id,
+            exchange=Exchange(row.exchange),
+            environment=ExecutionEnvironment(row.environment),
+            symbol=row.symbol,
+            timeframe=row.timeframe,
+            strategy=row.strategy,
+            side=OrderSide(row.side),
+            order_type=OMSOrderType(row.order_type),
+            time_in_force=OMSTimeInForce(row.time_in_force),
+            quantity=float(row.quantity),
+            requested_notional=float(row.requested_notional),
+            leverage=float(row.leverage),
+            limit_price=(
+                float(row.limit_price) if row.limit_price is not None else None
+            ),
+            reference_price=float(row.reference_price),
+            status=OMSOrderStatus(row.status),
+            venue_order_id=row.venue_order_id,
+            cumulative_filled_quantity=float(row.cumulative_filled_quantity),
+            average_fill_price=(
+                float(row.average_fill_price)
+                if row.average_fill_price is not None
+                else None
+            ),
+            rejection_reason=row.rejection_reason,
+            state_version=row.state_version,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+            submitted_at=row.submitted_at,
+            terminal_at=row.terminal_at,
+        )
+
+    @staticmethod
+    def _execution_command_values(command: ExecutionCommand) -> dict:
+        return {
+            "command_id": command.command_id,
+            "oms_order_id": command.oms_order_id,
+            "command_type": command.command_type.value,
+            "status": command.status.value,
+            "attempt_count": command.attempt_count,
+            "max_attempts": command.max_attempts,
+            "leased_by": command.leased_by,
+            "lease_expires_at": command.lease_expires_at,
+            "available_at": command.available_at,
+            "last_error_type": command.last_error_type,
+            "created_at": command.created_at,
+            "completed_at": command.completed_at,
+        }
+
+    @staticmethod
+    def _execution_command_from_row(
+        row: ExecutionCommandModel,
+    ) -> ExecutionCommand:
+        return ExecutionCommand(
+            command_id=row.command_id,
+            oms_order_id=row.oms_order_id,
+            command_type=ExecutionCommandType(row.command_type),
+            status=ExecutionCommandStatus(row.status),
+            attempt_count=row.attempt_count,
+            max_attempts=row.max_attempts,
+            leased_by=row.leased_by,
+            lease_expires_at=row.lease_expires_at,
+            available_at=row.available_at,
+            last_error_type=row.last_error_type,
+            created_at=row.created_at,
+            completed_at=row.completed_at,
+        )
+
+    @staticmethod
+    def _oms_order_event(
+        order: OMSOrder,
+        event_type: str,
+    ) -> OMSOrderEventModel:
+        return OMSOrderEventModel(
+            event_id=str(uuid4()),
+            oms_order_id=order.oms_order_id,
+            state_version=order.state_version,
+            event_type=event_type,
+            status=order.status.value,
+            payload=order.model_dump(mode="json"),
+            created_at=order.updated_at,
+        )
+
+    @staticmethod
+    def _same_oms_identity(left: OMSOrder, right: OMSOrder) -> bool:
+        immutable_fields = (
+            "oms_order_id",
+            "client_order_id",
+            "decision_id",
+            "risk_check_id",
+            "approval_id",
+            "request_fingerprint",
+            "correlation_id",
+            "exchange",
+            "environment",
+            "symbol",
+            "timeframe",
+            "strategy",
+            "side",
+            "order_type",
+            "time_in_force",
+            "quantity",
+            "requested_notional",
+            "leverage",
+            "limit_price",
+            "reference_price",
+        )
+        return all(getattr(left, field) == getattr(right, field) for field in immutable_fields)
+
+    async def create_oms_order(
+        self,
+        order: OMSOrder,
+        *,
+        command: ExecutionCommand | None = None,
+        consume_approval: bool,
+    ) -> OMSOrder:
+        """Create one durable OMS identity and optionally consume risk authority."""
+
+        if command is not None and command.oms_order_id != order.oms_order_id:
+            raise ValidationError("Execution command belongs to another OMS order")
+        try:
+            async with self._db.session() as session, session.begin():
+                existing_row = await session.scalar(
+                    select(OMSOrderModel).where(
+                        or_(
+                            OMSOrderModel.oms_order_id == order.oms_order_id,
+                            OMSOrderModel.approval_id == order.approval_id,
+                            and_(
+                                OMSOrderModel.exchange == order.exchange.value,
+                                OMSOrderModel.environment
+                                == order.environment.value,
+                                OMSOrderModel.client_order_id
+                                == order.client_order_id,
+                            ),
                         )
                     )
                 )
+                if existing_row is not None:
+                    existing = self._oms_order_from_row(existing_row)
+                    if not self._same_oms_identity(existing, order):
+                        raise ValidationError(
+                            "OMS idempotency identity has conflicting payload"
+                        )
+                    return existing
+
+                stored = await session.scalar(
+                    select(OrderApprovalModel)
+                    .where(OrderApprovalModel.approval_id == order.approval_id)
+                    .with_for_update()
+                )
+                if stored is None:
+                    raise ValidationError("Order approval is not durable")
+
+                if consume_approval:
+                    if order.environment != ExecutionEnvironment.TESTNET:
+                        raise ValidationError(
+                            "Only TESTNET OMS orders consume approval directly"
+                        )
+                    control = await session.get(
+                        RiskControlStateModel,
+                        1,
+                        with_for_update=True,
+                    )
+                    if control is not None and control.active:
+                        raise ValidationError(
+                            "Durable kill switch prevents OMS submission"
+                        )
+                    if stored.status != ApprovalStatus.ACTIVE.value:
+                        raise ValidationError(
+                            f"Order approval is {stored.status}"
+                        )
+                    exposures = await self._durable_position_exposures(
+                        session,
+                        lock_paper=True,
+                    )
+                    if stored.position_snapshot_hash != _exposure_snapshot_hash(
+                        exposures
+                    ):
+                        raise ValidationError(
+                            "Order approval is stale for the durable portfolio"
+                        )
+                    now = _now()
+                    if _as_utc(stored.expires_at) <= now:
+                        stored.status = ApprovalStatus.EXPIRED.value
+                        raise ValidationError("Order approval expired")
+                    deviation_bps = (
+                        abs(order.reference_price - float(stored.reference_price))
+                        / float(stored.reference_price)
+                        * 10_000
+                    )
+                    if (
+                        stored.risk_check_id != order.risk_check_id
+                        or stored.decision_id != order.decision_id
+                        or stored.request_fingerprint
+                        != order.request_fingerprint
+                        or stored.correlation_id != order.correlation_id
+                        or stored.symbol != order.symbol
+                        or stored.timeframe != order.timeframe
+                        or stored.strategy != order.strategy
+                        or stored.side != order.side.value
+                        or float(stored.max_notional) + 1e-8
+                        < order.requested_notional
+                        or float(stored.max_leverage) + 1e-8
+                        < order.leverage
+                        or deviation_bps
+                        > float(stored.max_entry_deviation_bps) + 1e-8
+                    ):
+                        raise ValidationError(
+                            "OMS order differs from durable approval"
+                        )
+                    stored.status = ApprovalStatus.CONSUMED.value
+                    stored.consumed_at = now
+                    stored.paper_order_id = None
+                    stored.oms_order_id = order.oms_order_id
+                else:
+                    if order.environment != ExecutionEnvironment.PAPER:
+                        raise ValidationError(
+                            "Unconsumed OMS mirror must be PAPER"
+                        )
+                    if (
+                        stored.status != ApprovalStatus.CONSUMED.value
+                        or stored.paper_order_id != order.oms_order_id
+                        or stored.oms_order_id is not None
+                    ):
+                        raise ValidationError(
+                            "PAPER OMS mirror requires its consumed approval"
+                        )
+
+                session.add(OMSOrderModel(**self._oms_order_values(order)))
+                await session.flush()
+                session.add(self._oms_order_event(order, "CREATED"))
+                if command is not None:
+                    session.add(
+                        ExecutionCommandModel(
+                            **self._execution_command_values(command)
+                        )
+                    )
+                return order
+        except DatabaseError:
+            raise
+        except ValidationError:
+            raise
+        except Exception as exc:
+            raise DatabaseError(f"Failed to create OMS order: {exc}") from exc
+
+    async def load_oms_order(self, oms_order_id: str) -> OMSOrder | None:
+        try:
+            async with self._db.session() as session:
+                row = await session.get(OMSOrderModel, oms_order_id)
+                return self._oms_order_from_row(row) if row is not None else None
+        except Exception as exc:
+            raise DatabaseError(f"Failed to load OMS order: {exc}") from exc
+
+    async def list_oms_orders(
+        self,
+        *,
+        exchange: Exchange | None = None,
+        environment: ExecutionEnvironment | None = None,
+        limit: int | None = 200,
+    ) -> list[OMSOrder]:
+        try:
+            async with self._db.session() as session:
+                statement = select(OMSOrderModel)
+                if exchange is not None:
+                    statement = statement.where(
+                        OMSOrderModel.exchange == exchange.value
+                    )
+                if environment is not None:
+                    statement = statement.where(
+                        OMSOrderModel.environment == environment.value
+                    )
+                statement = statement.order_by(
+                    OMSOrderModel.created_at.desc()
+                )
+                if limit is not None:
+                    statement = statement.limit(
+                        max(1, min(limit, 1_000))
+                    )
+                rows = list(await session.scalars(statement))
+                return [self._oms_order_from_row(row) for row in rows]
+        except Exception as exc:
+            raise DatabaseError(f"Failed to list OMS orders: {exc}") from exc
+
+    async def claim_execution_command(
+        self,
+        *,
+        worker_id: str,
+        lease_seconds: float,
+    ) -> tuple[ExecutionCommand, OMSOrder] | None:
+        """Lease one command; PostgreSQL workers skip rows leased elsewhere."""
+
+        now = _now()
+        lease_until = now + timedelta(seconds=max(1.0, lease_seconds))
+        try:
+            async with self._db.session() as session, session.begin():
+                expired_rows = list(
+                    await session.scalars(
+                        select(ExecutionCommandModel)
+                        .where(
+                            ExecutionCommandModel.status
+                            == ExecutionCommandStatus.LEASED.value,
+                            ExecutionCommandModel.lease_expires_at <= now,
+                            ExecutionCommandModel.attempt_count
+                            >= ExecutionCommandModel.max_attempts,
+                        )
+                        .with_for_update(skip_locked=True)
+                        .limit(100)
+                    )
+                )
+                for expired in expired_rows:
+                    expired_order_row = await session.get(
+                        OMSOrderModel,
+                        expired.oms_order_id,
+                        with_for_update=True,
+                    )
+                    if expired_order_row is None:
+                        raise ValidationError(
+                            "Expired command references missing OMS order"
+                        )
+                    expired_order = self._oms_order_from_row(
+                        expired_order_row
+                    )
+                    if expired_order.status not in TERMINAL_OMS_STATUSES:
+                        unknown = expired_order.model_copy(
+                            update={
+                                "status": OMSOrderStatus.UNKNOWN,
+                                "state_version": (
+                                    expired_order.state_version + 1
+                                ),
+                                "updated_at": now,
+                                "terminal_at": None,
+                                "rejection_reason": None,
+                            }
+                        )
+                        expired_order_row.status = unknown.status.value
+                        expired_order_row.state_version = (
+                            unknown.state_version
+                        )
+                        expired_order_row.updated_at = unknown.updated_at
+                        expired_order_row.terminal_at = None
+                        expired_order_row.rejection_reason = None
+                        session.add(
+                            self._oms_order_event(
+                                unknown,
+                                "LEASE_EXPIRED_STATUS_UNKNOWN",
+                            )
+                        )
+                    expired.status = (
+                        ExecutionCommandStatus.DEAD_LETTER.value
+                    )
+                    expired.leased_by = None
+                    expired.lease_expires_at = None
+                    expired.last_error_type = "LEASE_EXPIRED"
+                    expired.completed_at = now
+                statement = (
+                    select(ExecutionCommandModel)
+                    .where(
+                        ExecutionCommandModel.attempt_count
+                        < ExecutionCommandModel.max_attempts,
+                        ExecutionCommandModel.available_at <= now,
+                        or_(
+                            ExecutionCommandModel.status
+                            == ExecutionCommandStatus.PENDING.value,
+                            and_(
+                                ExecutionCommandModel.status
+                                == ExecutionCommandStatus.LEASED.value,
+                                ExecutionCommandModel.lease_expires_at <= now,
+                            ),
+                        ),
+                    )
+                    .order_by(
+                        ExecutionCommandModel.available_at,
+                        ExecutionCommandModel.created_at,
+                    )
+                    .with_for_update(skip_locked=True)
+                    .limit(1)
+                )
+                row = await session.scalar(statement)
+                if row is None:
+                    return None
+                order_row = await session.get(
+                    OMSOrderModel,
+                    row.oms_order_id,
+                    with_for_update=True,
+                )
+                if order_row is None:
+                    raise ValidationError(
+                        "Execution command references missing OMS order"
+                    )
+                row.status = ExecutionCommandStatus.LEASED.value
+                row.attempt_count += 1
+                row.leased_by = worker_id
+                row.lease_expires_at = lease_until
+                return (
+                    self._execution_command_from_row(row),
+                    self._oms_order_from_row(order_row),
+                )
+        except DatabaseError:
+            raise
+        except ValidationError:
+            raise
+        except Exception as exc:
+            raise DatabaseError(
+                f"Failed to claim execution command: {exc}"
+            ) from exc
+
+    async def finish_execution_command(
+        self,
+        *,
+        command_id: str,
+        worker_id: str,
+        order: OMSOrder,
+        event_type: str,
+        error_type: str | None = None,
+    ) -> OMSOrder:
+        try:
+            async with self._db.session() as session, session.begin():
+                command_row = await session.get(
+                    ExecutionCommandModel,
+                    command_id,
+                    with_for_update=True,
+                )
+                if (
+                    command_row is None
+                    or command_row.status
+                    != ExecutionCommandStatus.LEASED.value
+                    or command_row.leased_by != worker_id
+                ):
+                    raise ValidationError(
+                        "Execution command lease is no longer owned"
+                    )
+                order_row = await session.get(
+                    OMSOrderModel,
+                    command_row.oms_order_id,
+                    with_for_update=True,
+                )
+                if order_row is None:
+                    raise ValidationError("OMS order no longer exists")
+                stored = self._oms_order_from_row(order_row)
+                if not self._same_oms_identity(stored, order):
+                    raise ValidationError("OMS transition changed immutable identity")
+                if order.state_version != stored.state_version + 1:
+                    raise ValidationError(
+                        "OMS transition must advance exactly one version"
+                    )
+                mutable_fields = (
+                    "status",
+                    "venue_order_id",
+                    "cumulative_filled_quantity",
+                    "average_fill_price",
+                    "rejection_reason",
+                    "state_version",
+                    "updated_at",
+                    "submitted_at",
+                    "terminal_at",
+                )
+                values = self._oms_order_values(order)
+                for field in mutable_fields:
+                    setattr(order_row, field, values[field])
+                command_row.status = ExecutionCommandStatus.COMPLETED.value
+                command_row.leased_by = None
+                command_row.lease_expires_at = None
+                command_row.last_error_type = error_type
+                command_row.completed_at = order.updated_at
+                session.add(self._oms_order_event(order, event_type))
+                return order
+        except DatabaseError:
+            raise
+        except ValidationError:
+            raise
+        except Exception as exc:
+            raise DatabaseError(
+                f"Failed to finish execution command: {exc}"
+            ) from exc
+
+    async def queue_cancel_command(
+        self,
+        order: OMSOrder,
+        command: ExecutionCommand,
+    ) -> OMSOrder:
+        if (
+            command.command_type != ExecutionCommandType.CANCEL
+            or command.oms_order_id != order.oms_order_id
+        ):
+            raise ValidationError("Invalid OMS cancellation command")
+        try:
+            async with self._db.session() as session, session.begin():
+                row = await session.get(
+                    OMSOrderModel,
+                    order.oms_order_id,
+                    with_for_update=True,
+                )
+                if row is None:
+                    raise ValidationError("OMS order does not exist")
+                stored = self._oms_order_from_row(row)
+                if not self._same_oms_identity(stored, order):
+                    raise ValidationError("OMS cancellation changed identity")
+                existing = await session.scalar(
+                    select(ExecutionCommandModel).where(
+                        ExecutionCommandModel.oms_order_id
+                        == order.oms_order_id,
+                        ExecutionCommandModel.command_type
+                        == ExecutionCommandType.CANCEL.value,
+                    )
+                )
+                if existing is not None:
+                    return stored
+                if order.state_version != stored.state_version + 1:
+                    raise ValidationError(
+                        "OMS cancellation must advance exactly one version"
+                    )
+                values = self._oms_order_values(order)
+                row.status = values["status"]
+                row.state_version = values["state_version"]
+                row.updated_at = values["updated_at"]
+                session.add(self._oms_order_event(order, "CANCEL_QUEUED"))
+                session.add(
+                    ExecutionCommandModel(
+                        **self._execution_command_values(command)
+                    )
+                )
+                return order
+        except DatabaseError:
+            raise
+        except ValidationError:
+            raise
+        except Exception as exc:
+            raise DatabaseError(
+                f"Failed to queue OMS cancellation: {exc}"
+            ) from exc
+
+    async def persist_reconciliation(
+        self,
+        run: ReconciliationRun,
+        *,
+        mismatches: list[ReconciliationMismatch],
+        snapshot: VenueStateSnapshot,
+        reconciled_orders: list[OMSOrder],
+    ) -> None:
+        """Persist one immutable venue snapshot and its OMS corrections."""
+
+        try:
+            async with self._db.session() as session, session.begin():
+                session.add(
+                    ReconciliationRunModel(
+                        run_id=run.run_id,
+                        exchange=run.exchange.value,
+                        environment=run.environment.value,
+                        status=run.status.value,
+                        local_order_count=run.local_order_count,
+                        venue_order_count=run.venue_order_count,
+                        fill_count=run.fill_count,
+                        position_count=run.position_count,
+                        balance_count=run.balance_count,
+                        mismatch_count=run.mismatch_count,
+                        critical_mismatch_count=run.critical_mismatch_count,
+                        started_at=run.started_at,
+                        completed_at=run.completed_at,
+                        error_type=run.error_type,
+                    )
+                )
+                await session.flush()
+                for reconciled in reconciled_orders:
+                    row = await session.get(
+                        OMSOrderModel,
+                        reconciled.oms_order_id,
+                        with_for_update=True,
+                    )
+                    if row is None:
+                        continue
+                    stored = self._oms_order_from_row(row)
+                    if (
+                        not self._same_oms_identity(stored, reconciled)
+                        or reconciled.state_version != stored.state_version + 1
+                    ):
+                        raise ValidationError(
+                            "Invalid OMS reconciliation transition"
+                        )
+                    values = self._oms_order_values(reconciled)
+                    for field in (
+                        "status",
+                        "venue_order_id",
+                        "cumulative_filled_quantity",
+                        "average_fill_price",
+                        "rejection_reason",
+                        "state_version",
+                        "updated_at",
+                        "submitted_at",
+                        "terminal_at",
+                    ):
+                        setattr(row, field, values[field])
+                    session.add(
+                        self._oms_order_event(reconciled, "RECONCILED")
+                    )
+
+                scoped_orders = (
+                    reconciled_orders
+                    + await self._load_oms_orders_in_session(
+                        session,
+                        exchange=run.exchange,
+                        environment=run.environment,
+                    )
+                )
+                order_ids_by_client = {
+                    order.client_order_id: order.oms_order_id
+                    for order in scoped_orders
+                }
+                order_ids_by_venue = {
+                    order.venue_order_id: order.oms_order_id
+                    for order in scoped_orders
+                    if order.venue_order_id is not None
+                }
+                scoped_order_ids = {
+                    order.oms_order_id for order in scoped_orders
+                }
+                for fill in snapshot.fills:
+                    associated_order_id = (
+                        order_ids_by_client.get(
+                            fill.client_order_id or ""
+                        )
+                        or order_ids_by_venue.get(fill.venue_order_id)
+                        or (
+                            fill.oms_order_id
+                            if fill.oms_order_id in scoped_order_ids
+                            else None
+                        )
+                    )
+                    fill_values = {
+                        "fill_id": fill.fill_id,
+                        "oms_order_id": associated_order_id,
+                        "venue_order_id": fill.venue_order_id,
+                        "client_order_id": fill.client_order_id,
+                        "exchange": fill.exchange.value,
+                        "environment": fill.environment.value,
+                        "symbol": fill.symbol,
+                        "side": fill.side.value,
+                        "quantity": fill.quantity,
+                        "price": fill.price,
+                        "fee": fill.fee,
+                        "fee_asset": fill.fee_asset,
+                        "occurred_at": fill.occurred_at,
+                        "observed_at": fill.observed_at,
+                    }
+                    statement = self._dialect_insert(ExecutionFillModel)
+                    if statement is None:
+                        if await session.get(ExecutionFillModel, fill.fill_id):
+                            continue
+                        session.add(ExecutionFillModel(**fill_values))
+                    else:
+                        await session.execute(
+                            statement.values(**fill_values).on_conflict_do_nothing(
+                                index_elements=["fill_id"]
+                            )
+                        )
+                for mismatch in mismatches:
+                    session.add(
+                        ReconciliationMismatchModel(
+                            mismatch_id=mismatch.mismatch_id,
+                            run_id=run.run_id,
+                            mismatch_type=mismatch.mismatch_type.value,
+                            severity=mismatch.severity.value,
+                            exchange=mismatch.exchange.value,
+                            environment=mismatch.environment.value,
+                            oms_order_id=mismatch.oms_order_id,
+                            venue_order_id=mismatch.venue_order_id,
+                            symbol=mismatch.symbol,
+                            expected=mismatch.expected,
+                            observed=mismatch.observed,
+                            created_at=mismatch.created_at,
+                        )
+                    )
+                for position in snapshot.positions:
+                    session.add(
+                        VenuePositionSnapshotModel(
+                            snapshot_id=str(uuid4()),
+                            run_id=run.run_id,
+                            exchange=position.exchange.value,
+                            environment=position.environment.value,
+                            symbol=position.symbol,
+                            side=position.side.value,
+                            quantity=position.quantity,
+                            entry_price=position.entry_price,
+                            mark_price=position.mark_price,
+                            unrealized_pnl=position.unrealized_pnl,
+                            observed_at=position.observed_at,
+                        )
+                    )
+                for balance in snapshot.balances:
+                    session.add(
+                        VenueBalanceSnapshotModel(
+                            snapshot_id=str(uuid4()),
+                            run_id=run.run_id,
+                            exchange=balance.exchange.value,
+                            environment=balance.environment.value,
+                            asset=balance.asset,
+                            available=balance.available,
+                            locked=balance.locked,
+                            equity=balance.equity,
+                            observed_at=balance.observed_at,
+                        )
+                    )
+        except DatabaseError:
+            raise
+        except ValidationError:
+            raise
+        except Exception as exc:
+            raise DatabaseError(
+                f"Failed to persist reconciliation: {exc}"
+            ) from exc
+
+    async def _load_oms_orders_in_session(
+        self,
+        session,
+        *,
+        exchange: Exchange,
+        environment: ExecutionEnvironment,
+    ) -> list[OMSOrder]:
+        rows = list(
+            await session.scalars(
+                select(OMSOrderModel).where(
+                    OMSOrderModel.exchange == exchange.value,
+                    OMSOrderModel.environment == environment.value,
+                )
+            )
+        )
+        return [self._oms_order_from_row(row) for row in rows]
+
+    async def load_execution_fills(
+        self,
+        *,
+        oms_order_id: str | None = None,
+        limit: int = 500,
+    ) -> list[ExecutionFill]:
+        try:
+            async with self._db.session() as session:
+                statement = select(ExecutionFillModel)
+                if oms_order_id is not None:
+                    statement = statement.where(
+                        ExecutionFillModel.oms_order_id == oms_order_id
+                    )
+                rows = list(
+                    await session.scalars(
+                        statement.order_by(
+                            ExecutionFillModel.occurred_at.desc()
+                        ).limit(max(1, min(limit, 2_000)))
+                    )
+                )
                 return [
-                    PositionExposure(
-                        paper_order_id=row.id,
+                    ExecutionFill(
+                        fill_id=row.fill_id,
+                        oms_order_id=row.oms_order_id,
+                        venue_order_id=row.venue_order_id,
+                        client_order_id=row.client_order_id,
+                        exchange=Exchange(row.exchange),
+                        environment=ExecutionEnvironment(row.environment),
                         symbol=row.symbol,
-                        timeframe=row.timeframe or "unknown",
-                        strategy=row.strategy,
                         side=OrderSide(row.side),
-                        notional=float(row.position_size),
-                        leverage=float(row.leverage),
+                        quantity=float(row.quantity),
+                        price=float(row.price),
+                        fee=float(row.fee),
+                        fee_asset=row.fee_asset,
+                        occurred_at=row.occurred_at,
+                        observed_at=row.observed_at,
                     )
                     for row in rows
                 ]
         except Exception as exc:
+            raise DatabaseError(f"Failed to load execution fills: {exc}") from exc
+
+    async def load_latest_reconciliation(
+        self,
+        *,
+        exchange: Exchange,
+        environment: ExecutionEnvironment,
+    ) -> tuple[
+        ReconciliationRun,
+        list[ReconciliationMismatch],
+        list[VenuePositionSnapshot],
+        list[VenueBalanceSnapshot],
+    ] | None:
+        try:
+            async with self._db.session() as session:
+                run_row = await session.scalar(
+                    select(ReconciliationRunModel)
+                    .where(
+                        ReconciliationRunModel.exchange == exchange.value,
+                        ReconciliationRunModel.environment == environment.value,
+                    )
+                    .order_by(ReconciliationRunModel.started_at.desc())
+                    .limit(1)
+                )
+                if run_row is None:
+                    return None
+                mismatch_rows = list(
+                    await session.scalars(
+                        select(ReconciliationMismatchModel).where(
+                            ReconciliationMismatchModel.run_id
+                            == run_row.run_id
+                        )
+                    )
+                )
+                position_rows = list(
+                    await session.scalars(
+                        select(VenuePositionSnapshotModel).where(
+                            VenuePositionSnapshotModel.run_id == run_row.run_id
+                        )
+                    )
+                )
+                balance_rows = list(
+                    await session.scalars(
+                        select(VenueBalanceSnapshotModel).where(
+                            VenueBalanceSnapshotModel.run_id == run_row.run_id
+                        )
+                    )
+                )
+                run = ReconciliationRun(
+                    run_id=run_row.run_id,
+                    exchange=Exchange(run_row.exchange),
+                    environment=ExecutionEnvironment(run_row.environment),
+                    status=ReconciliationRunStatus(run_row.status),
+                    local_order_count=run_row.local_order_count,
+                    venue_order_count=run_row.venue_order_count,
+                    fill_count=run_row.fill_count,
+                    position_count=run_row.position_count,
+                    balance_count=run_row.balance_count,
+                    mismatch_count=run_row.mismatch_count,
+                    critical_mismatch_count=run_row.critical_mismatch_count,
+                    started_at=run_row.started_at,
+                    completed_at=run_row.completed_at,
+                    error_type=run_row.error_type,
+                )
+                mismatches = [
+                    ReconciliationMismatch(
+                        mismatch_id=row.mismatch_id,
+                        run_id=row.run_id,
+                        mismatch_type=ReconciliationMismatchType(
+                            row.mismatch_type
+                        ),
+                        severity=ReconciliationSeverity(row.severity),
+                        exchange=Exchange(row.exchange),
+                        environment=ExecutionEnvironment(row.environment),
+                        oms_order_id=row.oms_order_id,
+                        venue_order_id=row.venue_order_id,
+                        symbol=row.symbol,
+                        expected=row.expected,
+                        observed=row.observed,
+                        created_at=row.created_at,
+                    )
+                    for row in mismatch_rows
+                ]
+                positions = [
+                    VenuePositionSnapshot(
+                        exchange=Exchange(row.exchange),
+                        environment=ExecutionEnvironment(row.environment),
+                        symbol=row.symbol,
+                        side=OrderSide(row.side),
+                        quantity=float(row.quantity),
+                        entry_price=(
+                            float(row.entry_price)
+                            if row.entry_price is not None
+                            else None
+                        ),
+                        mark_price=(
+                            float(row.mark_price)
+                            if row.mark_price is not None
+                            else None
+                        ),
+                        unrealized_pnl=float(row.unrealized_pnl),
+                        observed_at=row.observed_at,
+                    )
+                    for row in position_rows
+                ]
+                balances = [
+                    VenueBalanceSnapshot(
+                        exchange=Exchange(row.exchange),
+                        environment=ExecutionEnvironment(row.environment),
+                        asset=row.asset,
+                        available=float(row.available),
+                        locked=float(row.locked),
+                        equity=float(row.equity),
+                        observed_at=row.observed_at,
+                    )
+                    for row in balance_rows
+                ]
+                return run, mismatches, positions, balances
+        except Exception as exc:
             raise DatabaseError(
-                f"Failed to restore open risk exposure: {exc}"
+                f"Failed to load latest reconciliation: {exc}"
             ) from exc
 
     async def load_risk_control_state(self) -> RiskControlState | None:

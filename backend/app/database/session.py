@@ -37,6 +37,7 @@ class Database:
             await self._install_walk_forward_immutability_guards(conn)
             await self._install_agent_evidence_immutability_guards(conn)
             await self._install_central_risk_guards(conn)
+            await self._install_oms_guards(conn)
             if self.engine.dialect.name == "postgresql":
                 await conn.execute(
                     text(
@@ -53,6 +54,14 @@ class Database:
                     "order_approvals",
                     "risk_control_state",
                     "risk_control_events",
+                    "oms_orders",
+                    "oms_order_events",
+                    "execution_commands",
+                    "execution_fills",
+                    "reconciliation_runs",
+                    "reconciliation_mismatches",
+                    "venue_position_snapshots",
+                    "venue_balance_snapshots",
                 ):
                     await conn.execute(
                         text(
@@ -271,6 +280,7 @@ class Database:
                               NEW.position_snapshot_hash
                            OR OLD.decision_id <> NEW.decision_id
                            OR OLD.risk_check_id <> NEW.risk_check_id
+                           OR OLD.correlation_id <> NEW.correlation_id
                            OR OLD.symbol <> NEW.symbol
                            OR OLD.timeframe <> NEW.timeframe
                            OR OLD.strategy <> NEW.strategy
@@ -450,8 +460,386 @@ class Database:
                 )
             )
 
+    async def _install_oms_guards(self, conn) -> None:
+        """Protect OMS identity, command leases and append-only venue evidence."""
+
+        evidence_tables = (
+            "oms_order_events",
+            "execution_fills",
+            "reconciliation_runs",
+            "reconciliation_mismatches",
+            "venue_position_snapshots",
+            "venue_balance_snapshots",
+        )
+        if self.engine.dialect.name == "postgresql":
+            await conn.execute(
+                text(
+                    f"""
+                    CREATE OR REPLACE FUNCTION
+                    "{INTERNAL_SCHEMA}".reject_oms_evidence_mutation()
+                    RETURNS trigger
+                    LANGUAGE plpgsql
+                    SECURITY INVOKER
+                    SET search_path = ''
+                    AS $function$
+                    BEGIN
+                        RAISE EXCEPTION 'OMS evidence is append-only'
+                            USING ERRCODE = '55000';
+                    END;
+                    $function$
+                    """
+                )
+            )
+            await conn.execute(
+                text(
+                    f"""
+                    CREATE OR REPLACE FUNCTION
+                    "{INTERNAL_SCHEMA}".guard_oms_order_transition()
+                    RETURNS trigger
+                    LANGUAGE plpgsql
+                    SECURITY INVOKER
+                    SET search_path = ''
+                    AS $function$
+                    BEGIN
+                        IF TG_OP = 'DELETE' THEN
+                            RAISE EXCEPTION 'OMS orders cannot be deleted'
+                                USING ERRCODE = '55000';
+                        END IF;
+                        IF OLD.oms_order_id IS DISTINCT FROM NEW.oms_order_id
+                           OR OLD.client_order_id IS DISTINCT FROM
+                              NEW.client_order_id
+                           OR OLD.decision_id IS DISTINCT FROM NEW.decision_id
+                           OR OLD.risk_check_id IS DISTINCT FROM NEW.risk_check_id
+                           OR OLD.approval_id IS DISTINCT FROM NEW.approval_id
+                           OR OLD.request_fingerprint IS DISTINCT FROM
+                              NEW.request_fingerprint
+                           OR OLD.correlation_id IS DISTINCT FROM
+                              NEW.correlation_id
+                           OR OLD.exchange IS DISTINCT FROM NEW.exchange
+                           OR OLD.environment IS DISTINCT FROM NEW.environment
+                           OR OLD.symbol IS DISTINCT FROM NEW.symbol
+                           OR OLD.timeframe IS DISTINCT FROM NEW.timeframe
+                           OR OLD.strategy IS DISTINCT FROM NEW.strategy
+                           OR OLD.side IS DISTINCT FROM NEW.side
+                           OR OLD.order_type IS DISTINCT FROM NEW.order_type
+                           OR OLD.time_in_force IS DISTINCT FROM
+                              NEW.time_in_force
+                           OR OLD.quantity IS DISTINCT FROM NEW.quantity
+                           OR OLD.requested_notional IS DISTINCT FROM
+                              NEW.requested_notional
+                           OR OLD.leverage IS DISTINCT FROM NEW.leverage
+                           OR OLD.limit_price IS DISTINCT FROM NEW.limit_price
+                           OR OLD.reference_price IS DISTINCT FROM
+                              NEW.reference_price
+                           OR OLD.created_at IS DISTINCT FROM NEW.created_at THEN
+                            RAISE EXCEPTION 'OMS order identity is immutable'
+                                USING ERRCODE = '55000';
+                        END IF;
+                        IF NEW.state_version <> OLD.state_version + 1 THEN
+                            RAISE EXCEPTION 'invalid OMS state version'
+                                USING ERRCODE = '55000';
+                        END IF;
+                        IF OLD.status IN (
+                            'FILLED', 'CANCELED', 'REJECTED', 'EXPIRED',
+                            'QUARANTINED'
+                        ) OR NOT (
+                            NEW.status = OLD.status
+                            OR (
+                                OLD.status IN (
+                                    'CREATED', 'PENDING_SUBMISSION', 'SUBMITTED',
+                                    'PARTIALLY_FILLED', 'CANCEL_PENDING',
+                                    'UNKNOWN'
+                                )
+                                AND NEW.status IN (
+                                    'PENDING_SUBMISSION', 'SUBMITTED',
+                                    'PARTIALLY_FILLED', 'FILLED',
+                                    'CANCEL_PENDING', 'CANCELED', 'REJECTED',
+                                    'EXPIRED', 'UNKNOWN', 'QUARANTINED'
+                                )
+                            )
+                        ) THEN
+                            RAISE EXCEPTION 'invalid OMS status transition'
+                                USING ERRCODE = '55000';
+                        END IF;
+                        RETURN NEW;
+                    END;
+                    $function$
+                    """
+                )
+            )
+            await conn.execute(
+                text(
+                    f"""
+                    CREATE OR REPLACE FUNCTION
+                    "{INTERNAL_SCHEMA}".guard_execution_command_transition()
+                    RETURNS trigger
+                    LANGUAGE plpgsql
+                    SECURITY INVOKER
+                    SET search_path = ''
+                    AS $function$
+                    BEGIN
+                        IF TG_OP = 'DELETE' THEN
+                            RAISE EXCEPTION
+                                'execution commands cannot be deleted'
+                                USING ERRCODE = '55000';
+                        END IF;
+                        IF OLD.command_id IS DISTINCT FROM NEW.command_id
+                           OR OLD.oms_order_id IS DISTINCT FROM NEW.oms_order_id
+                           OR OLD.command_type IS DISTINCT FROM NEW.command_type
+                           OR OLD.max_attempts IS DISTINCT FROM NEW.max_attempts
+                           OR OLD.available_at IS DISTINCT FROM NEW.available_at
+                           OR OLD.created_at IS DISTINCT FROM NEW.created_at
+                           OR NOT (
+                                (OLD.status = 'PENDING'
+                                 AND NEW.status = 'LEASED')
+                                OR (OLD.status = 'LEASED'
+                                    AND NEW.status IN (
+                                        'LEASED', 'COMPLETED', 'DEAD_LETTER'
+                                    ))
+                           ) THEN
+                            RAISE EXCEPTION
+                                'invalid execution command transition'
+                                USING ERRCODE = '55000';
+                        END IF;
+                        RETURN NEW;
+                    END;
+                    $function$
+                    """
+                )
+            )
+            for function_name in (
+                "reject_oms_evidence_mutation",
+                "guard_oms_order_transition",
+                "guard_execution_command_transition",
+            ):
+                await conn.execute(
+                    text(
+                        f'REVOKE ALL ON FUNCTION "{INTERNAL_SCHEMA}".'
+                        f'{function_name}() FROM PUBLIC'
+                    )
+                )
+            for table_name in evidence_tables:
+                trigger_name = f"trg_{table_name}_immutable"
+                await conn.execute(
+                    text(
+                        f"""
+                        DO $block$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM pg_trigger
+                                WHERE tgname = '{trigger_name}'
+                                  AND tgrelid =
+                                    '{INTERNAL_SCHEMA}.{table_name}'::regclass
+                            ) THEN
+                                EXECUTE 'CREATE TRIGGER {trigger_name} BEFORE UPDATE OR DELETE ON "{INTERNAL_SCHEMA}"."{table_name}" FOR EACH ROW EXECUTE FUNCTION "{INTERNAL_SCHEMA}".reject_oms_evidence_mutation()';
+                            END IF;
+                        END;
+                        $block$
+                        """
+                    )
+                )
+            for table_name, function_name in (
+                ("oms_orders", "guard_oms_order_transition"),
+                ("execution_commands", "guard_execution_command_transition"),
+            ):
+                trigger_name = f"trg_{table_name}_transition"
+                await conn.execute(
+                    text(
+                        f"""
+                        DO $block$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM pg_trigger
+                                WHERE tgname = '{trigger_name}'
+                                  AND tgrelid =
+                                    '{INTERNAL_SCHEMA}.{table_name}'::regclass
+                            ) THEN
+                                EXECUTE 'CREATE TRIGGER {trigger_name} BEFORE UPDATE OR DELETE ON "{INTERNAL_SCHEMA}"."{table_name}" FOR EACH ROW EXECUTE FUNCTION "{INTERNAL_SCHEMA}".{function_name}()';
+                            END IF;
+                        END;
+                        $block$
+                        """
+                    )
+                )
+        elif self.engine.dialect.name == "sqlite":
+            for table_name in evidence_tables:
+                for operation in ("UPDATE", "DELETE"):
+                    await conn.execute(
+                        text(
+                            f"""
+                            CREATE TRIGGER IF NOT EXISTS
+                            trg_{table_name}_immutable_{operation.lower()}
+                            BEFORE {operation} ON {table_name}
+                            BEGIN
+                                SELECT RAISE(
+                                    ABORT,
+                                    'OMS evidence is append-only'
+                                );
+                            END
+                            """
+                        )
+                    )
+            await conn.execute(
+                text(
+                    """
+                    CREATE TRIGGER IF NOT EXISTS trg_oms_orders_no_delete
+                    BEFORE DELETE ON oms_orders
+                    BEGIN
+                        SELECT RAISE(ABORT, 'OMS orders cannot be deleted');
+                    END
+                    """
+                )
+            )
+            await conn.execute(
+                text(
+                    """
+                    CREATE TRIGGER IF NOT EXISTS trg_oms_orders_transition
+                    BEFORE UPDATE ON oms_orders
+                    WHEN OLD.oms_order_id IS NOT NEW.oms_order_id
+                      OR OLD.client_order_id IS NOT NEW.client_order_id
+                      OR OLD.decision_id IS NOT NEW.decision_id
+                      OR OLD.risk_check_id IS NOT NEW.risk_check_id
+                      OR OLD.approval_id IS NOT NEW.approval_id
+                      OR OLD.request_fingerprint IS NOT NEW.request_fingerprint
+                      OR OLD.correlation_id IS NOT NEW.correlation_id
+                      OR OLD.exchange IS NOT NEW.exchange
+                      OR OLD.environment IS NOT NEW.environment
+                      OR OLD.symbol IS NOT NEW.symbol
+                      OR OLD.timeframe IS NOT NEW.timeframe
+                      OR OLD.strategy IS NOT NEW.strategy
+                      OR OLD.side IS NOT NEW.side
+                      OR OLD.order_type IS NOT NEW.order_type
+                      OR OLD.time_in_force IS NOT NEW.time_in_force
+                      OR OLD.quantity IS NOT NEW.quantity
+                      OR OLD.requested_notional IS NOT NEW.requested_notional
+                      OR OLD.leverage IS NOT NEW.leverage
+                      OR OLD.limit_price IS NOT NEW.limit_price
+                      OR OLD.reference_price IS NOT NEW.reference_price
+                      OR OLD.created_at IS NOT NEW.created_at
+                      OR NEW.state_version <> OLD.state_version + 1
+                      OR OLD.status IN (
+                          'FILLED', 'CANCELED', 'REJECTED', 'EXPIRED',
+                          'QUARANTINED'
+                      )
+                      OR NOT (
+                          NEW.status = OLD.status
+                          OR (
+                              OLD.status IN (
+                                  'CREATED', 'PENDING_SUBMISSION', 'SUBMITTED',
+                                  'PARTIALLY_FILLED', 'CANCEL_PENDING', 'UNKNOWN'
+                              )
+                              AND NEW.status IN (
+                                  'PENDING_SUBMISSION', 'SUBMITTED',
+                                  'PARTIALLY_FILLED', 'FILLED',
+                                  'CANCEL_PENDING', 'CANCELED', 'REJECTED',
+                                  'EXPIRED', 'UNKNOWN', 'QUARANTINED'
+                              )
+                          )
+                      )
+                    BEGIN
+                        SELECT RAISE(ABORT, 'invalid OMS order transition');
+                    END
+                    """
+                )
+            )
+            await conn.execute(
+                text(
+                    """
+                    CREATE TRIGGER IF NOT EXISTS
+                    trg_execution_commands_no_delete
+                    BEFORE DELETE ON execution_commands
+                    BEGIN
+                        SELECT RAISE(
+                            ABORT,
+                            'execution commands cannot be deleted'
+                        );
+                    END
+                    """
+                )
+            )
+            await conn.execute(
+                text(
+                    """
+                    CREATE TRIGGER IF NOT EXISTS
+                    trg_execution_commands_transition
+                    BEFORE UPDATE ON execution_commands
+                    WHEN OLD.command_id IS NOT NEW.command_id
+                      OR OLD.oms_order_id IS NOT NEW.oms_order_id
+                      OR OLD.command_type IS NOT NEW.command_type
+                      OR OLD.max_attempts IS NOT NEW.max_attempts
+                      OR OLD.available_at IS NOT NEW.available_at
+                      OR OLD.created_at IS NOT NEW.created_at
+                      OR NOT (
+                          (OLD.status = 'PENDING' AND NEW.status = 'LEASED')
+                          OR (
+                              OLD.status = 'LEASED'
+                              AND NEW.status IN (
+                                  'LEASED', 'COMPLETED', 'DEAD_LETTER'
+                              )
+                          )
+                      )
+                    BEGIN
+                        SELECT RAISE(
+                            ABORT,
+                            'invalid execution command transition'
+                        );
+                    END
+                    """
+                )
+            )
+
     async def dispose(self) -> None:
         await self.engine.dispose()
+
+    async def verify_testnet_oms_schema(self) -> None:
+        """Fail TESTNET boot unless the Month 7 PostgreSQL boundary is ready."""
+
+        if self.engine.dialect.name != "postgresql":
+            raise RuntimeError("TESTNET OMS schema requires PostgreSQL")
+        async with self.engine.connect() as conn:
+            await conn.execute(
+                text(
+                    f'SELECT oms_order_id FROM "{INTERNAL_SCHEMA}".'
+                    '"order_approvals" LIMIT 0'
+                )
+            )
+            terminal_constraint = await conn.scalar(
+                text(
+                    "SELECT pg_get_constraintdef(c.oid) "
+                    "FROM pg_constraint c "
+                    "WHERE c.conname = 'ck_order_approval_terminal' "
+                    "AND c.conrelid = "
+                    f"'{INTERNAL_SCHEMA}.order_approvals'::regclass"
+                )
+            )
+            if (
+                terminal_constraint is None
+                or "oms_order_id" not in terminal_constraint
+            ):
+                raise RuntimeError(
+                    "Month 7 order approval migration is not applied"
+                )
+            rls_count = await conn.scalar(
+                text(
+                    "SELECT count(*) "
+                    "FROM pg_class c "
+                    "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                    "WHERE n.nspname = :schema_name "
+                    "AND c.relname IN "
+                    "('oms_orders', 'oms_order_events', "
+                    "'execution_commands', 'execution_fills', "
+                    "'reconciliation_runs', "
+                    "'reconciliation_mismatches', "
+                    "'venue_position_snapshots', "
+                    "'venue_balance_snapshots') "
+                    "AND c.relrowsecurity"
+                ),
+                {"schema_name": INTERNAL_SCHEMA},
+            )
+            if rls_count != 8:
+                raise RuntimeError(
+                    "Month 7 OMS tables must have row-level security"
+                )
 
     def session(self) -> AsyncSession:
         return self.session_factory()

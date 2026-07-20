@@ -2,7 +2,8 @@
 
 Follows docs/16-security-rules.md and docs/21-deployment.md:
 - no secrets in code, everything from environment variables;
-- Phase 1 system mode defaults to PAPER;
+- system mode defaults to PAPER;
+- OMS can target PAPER or an explicitly acknowledged TESTNET;
 - LIVE-related settings intentionally do not exist.
 """
 
@@ -24,9 +25,79 @@ class Settings(BaseSettings):
 
     app_env: str = Field(default="local", alias="APP_ENV")
     app_name: str = "capital-cipher-api"
-    app_version: str = "0.16.0"
+    app_version: str = "0.17.0"
 
     system_mode: str = Field(default="PAPER", alias="SYSTEM_MODE")
+    oms_execution_environment: str = Field(
+        default="PAPER",
+        alias="OMS_EXECUTION_ENVIRONMENT",
+    )
+    oms_testnet_enabled: bool = Field(
+        default=False,
+        alias="OMS_TESTNET_ENABLED",
+    )
+    oms_testnet_acknowledgement: str | None = Field(
+        default=None,
+        alias="OMS_TESTNET_ACKNOWLEDGEMENT",
+    )
+    oms_testnet_exchange: str = Field(
+        default="BINANCE",
+        alias="OMS_TESTNET_EXCHANGE",
+    )
+    binance_testnet_rest_url: str = Field(
+        default="https://testnet.binance.vision",
+        alias="BINANCE_TESTNET_REST_URL",
+    )
+    bybit_testnet_rest_url: str = Field(
+        default="https://api-testnet.bybit.com",
+        alias="BYBIT_TESTNET_REST_URL",
+    )
+    bybit_testnet_category: str = Field(
+        default="linear",
+        alias="BYBIT_TESTNET_CATEGORY",
+    )
+    oms_http_timeout_seconds: float = Field(
+        default=5.0,
+        alias="OMS_HTTP_TIMEOUT_SECONDS",
+        gt=0,
+        le=30,
+    )
+    oms_receive_window_ms: int = Field(
+        default=5_000,
+        alias="OMS_RECEIVE_WINDOW_MS",
+        ge=1_000,
+        le=5_000,
+    )
+    oms_worker_enabled: bool = Field(
+        default=True,
+        alias="OMS_WORKER_ENABLED",
+    )
+    oms_worker_poll_interval_seconds: float = Field(
+        default=0.25,
+        alias="OMS_WORKER_POLL_INTERVAL_SECONDS",
+        gt=0,
+        le=60,
+    )
+    oms_command_lease_seconds: float = Field(
+        default=15.0,
+        alias="OMS_COMMAND_LEASE_SECONDS",
+        ge=1,
+        le=300,
+    )
+    oms_reconciliation_enabled: bool = Field(
+        default=True,
+        alias="OMS_RECONCILIATION_ENABLED",
+    )
+    oms_reconciliation_interval_seconds: float = Field(
+        default=30.0,
+        alias="OMS_RECONCILIATION_INTERVAL_SECONDS",
+        ge=1,
+        le=3_600,
+    )
+    oms_halt_on_critical_drift: bool = Field(
+        default=True,
+        alias="OMS_HALT_ON_CRITICAL_DRIFT",
+    )
 
     database_url: str = Field(
         default="sqlite+aiosqlite:///./capital_cipher.db", alias="DATABASE_URL"
@@ -344,6 +415,48 @@ class Settings(BaseSettings):
             )
         return mode
 
+    @field_validator("oms_execution_environment")
+    @classmethod
+    def validate_oms_environment(cls, value: str) -> str:
+        environment = value.strip().upper()
+        if environment not in {"PAPER", "TESTNET"}:
+            raise ValueError("OMS execution is restricted to PAPER or TESTNET")
+        return environment
+
+    @field_validator("oms_testnet_exchange")
+    @classmethod
+    def validate_oms_exchange(cls, value: str) -> str:
+        exchange = value.strip().upper()
+        if exchange not in {"BINANCE", "BYBIT"}:
+            raise ValueError("OMS TESTNET exchange must be BINANCE or BYBIT")
+        return exchange
+
+    @field_validator("bybit_testnet_category")
+    @classmethod
+    def validate_bybit_testnet_category(cls, value: str) -> str:
+        category = value.strip().lower()
+        if category != "linear":
+            raise ValueError(
+                "Month 7 supports only Bybit linear TESTNET"
+            )
+        return category
+
+    @field_validator("binance_testnet_rest_url")
+    @classmethod
+    def validate_binance_testnet_url(cls, value: str) -> str:
+        if value.rstrip("/") != "https://testnet.binance.vision":
+            raise ValueError(
+                "Binance execution URL must be the exact Spot TESTNET"
+            )
+        return value.rstrip("/")
+
+    @field_validator("bybit_testnet_rest_url")
+    @classmethod
+    def validate_bybit_testnet_url(cls, value: str) -> str:
+        if value.rstrip("/") != "https://api-testnet.bybit.com":
+            raise ValueError("Bybit execution URL must be the exact TESTNET")
+        return value.rstrip("/")
+
     @field_validator("admin_api_key")
     @classmethod
     def validate_admin_api_key(cls, value: str | None) -> str | None:
@@ -400,6 +513,19 @@ class Settings(BaseSettings):
             raise ValueError(
                 "VAR_MIN_OBSERVATIONS cannot exceed VAR_LOOKBACK"
             )
+        if self.oms_execution_environment == "TESTNET":
+            if not self.oms_testnet_enabled:
+                raise ValueError(
+                    "OMS_TESTNET_ENABLED must be explicit for TESTNET"
+                )
+            if (
+                self.oms_testnet_acknowledgement
+                != "TESTNET_ONLY_NO_REAL_FUNDS"
+            ):
+                raise ValueError(
+                    "TESTNET requires OMS_TESTNET_ACKNOWLEDGEMENT="
+                    "TESTNET_ONLY_NO_REAL_FUNDS"
+                )
         return self
 
     @property

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://capital-cipher.local/contracts/v1/execution-fill.schema.json",
+  "title": "ExecutionFillV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "fill_id", "oms_order_id", "venue_order_id",
+    "client_order_id", "exchange", "environment", "symbol", "side",
+    "quantity", "price", "fee", "fee_asset", "occurred_at", "observed_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "fill_id": { "type": "string", "minLength": 1 },
+    "oms_order_id": { "type": ["string", "null"] },
+    "venue_order_id": { "type": "string", "minLength": 1 },
+    "client_order_id": { "type": ["string", "null"] },
+    "exchange": { "enum": ["BINANCE", "BYBIT"] },
+    "environment": { "enum": ["PAPER", "TESTNET"] },
+    "symbol": { "type": "string", "minLength": 1 },
+    "side": { "enum": ["BUY", "SELL"] },
+    "quantity": { "type": "number", "exclusiveMinimum": 0 },
+    "price": { "type": "number", "exclusiveMinimum": 0 },
+    "fee": { "type": "number", "minimum": 0 },
+    "fee_asset": { "type": ["string", "null"] },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "observed_at": { "type": "string", "format": "date-time" }
+  }
+}

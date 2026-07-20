@@ -55,6 +55,7 @@ class Orchestrator:
         decision_engine: DecisionEngine,
         risk_manager: RiskManager,
         paper_engine: PaperTradingEngine,
+        oms_service=None,
         audit_service: AuditService,
         market_data_agent: MarketDataAgent,
         quant_agent: QuantAgent,
@@ -73,6 +74,7 @@ class Orchestrator:
         self._decision_engine = decision_engine
         self._risk = risk_manager
         self._paper = paper_engine
+        self._oms = oms_service
         self._audit = audit_service
         self._repository = repository
         self._max_data_delay_ms = max_data_delay_ms
@@ -448,19 +450,36 @@ class Orchestrator:
             )
             return decision_after_risk
 
-        # Paper order (only APPROVED / REDUCED reach this point).
-        order = await self._paper.create_order(
-            decision_after_risk,
-            risk_check,
-            current_price=candle.close,
-            market_candle=candle,
-            occurred_at=candle.closed_at,
-        )
-        await self._bus.publish(
-            Topics.PAPER_ORDERS,
-            EventTypes.PAPER_ORDER_CREATED,
-            order.model_dump(mode="json"),
-            source="PaperTradingEngine",
-            correlation_id=correlation_id,
-        )
+        if self._oms is not None:
+            order = await self._oms.submit_approved(
+                decision_after_risk,
+                risk_check,
+                current_price=candle.close,
+                market_candle=candle,
+                occurred_at=candle.closed_at,
+            )
+            await self._bus.publish(
+                Topics.OMS_ORDERS,
+                EventTypes.OMS_ORDER_ACCEPTED,
+                order.model_dump(mode="json"),
+                source="OMSService",
+                correlation_id=correlation_id,
+            )
+        else:
+            # Compatibility path for isolated unit construction. Production
+            # composition always injects the OMS boundary.
+            order = await self._paper.create_order(
+                decision_after_risk,
+                risk_check,
+                current_price=candle.close,
+                market_candle=candle,
+                occurred_at=candle.closed_at,
+            )
+            await self._bus.publish(
+                Topics.PAPER_ORDERS,
+                EventTypes.PAPER_ORDER_CREATED,
+                order.model_dump(mode="json"),
+                source="PaperTradingEngine",
+                correlation_id=correlation_id,
+            )
         return decision_after_risk

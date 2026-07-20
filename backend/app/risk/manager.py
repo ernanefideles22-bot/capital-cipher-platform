@@ -19,6 +19,14 @@ from app.risk.portfolio import (
 )
 from app.schemas.common import CandidateAction, OrderSide, RiskStatus
 from app.schemas.decisions import Decision
+from app.schemas.oms import (
+    ExecutionCommand,
+    ExecutionEnvironment,
+    OMSOrder,
+    OMSOrderStatus,
+    OMSOrderType,
+    OMSTimeInForce,
+)
 from app.schemas.paper import PaperOrder
 from app.schemas.risk import (
     ApprovalStatus,
@@ -100,6 +108,14 @@ class RiskManager:
         self._checks_by_key: dict[str, RiskCheck] = {}
         self._approvals: dict[str, OrderApproval] = {}
 
+    @property
+    def kill_switch_active(self) -> bool:
+        return (
+            self.control_state.active
+            or self.state.kill_switch_active
+            or self._sm.kill_switch_active
+        )
+
     async def initialize(self) -> None:
         """Restore durable risk control and open PAPER exposure before boot."""
 
@@ -122,6 +138,15 @@ class RiskManager:
             position.paper_order_id: position for position in positions
         }
         self.set_open_positions(len(self._positions))
+
+    async def refresh_positions(self) -> None:
+        """Restore PAPER and reconciled TESTNET exposure from durable evidence."""
+
+        if self._repository is None:
+            return
+        self.sync_positions(
+            await self._repository.load_open_position_exposures()
+        )
 
     def register_position(self, order: PaperOrder) -> None:
         self._positions[order.paper_order_id] = PositionExposure(
@@ -715,11 +740,132 @@ class RiskManager:
                 "status": ApprovalStatus.CONSUMED,
                 "consumed_at": now,
                 "paper_order_id": order.paper_order_id,
+                "oms_order_id": None,
             }
         )
+        oms_mirror = OMSOrder(
+            oms_order_id=order.paper_order_id,
+            client_order_id=f"paper-{approval.approval_id[:24]}",
+            decision_id=order.decision_id,
+            risk_check_id=order.risk_check_id,
+            approval_id=approval.approval_id,
+            request_fingerprint=order.request_fingerprint,
+            correlation_id=order.correlation_id,
+            exchange=order.exchange,
+            environment=ExecutionEnvironment.PAPER,
+            symbol=order.symbol,
+            timeframe=order.timeframe or "unknown",
+            strategy=order.strategy,
+            side=order.side,
+            order_type=OMSOrderType.MARKET,
+            time_in_force=OMSTimeInForce.IOC,
+            quantity=order.position_size / order.entry_price,
+            requested_notional=order.position_size,
+            leverage=order.leverage,
+            reference_price=order.entry_price,
+            status=OMSOrderStatus.FILLED,
+            venue_order_id=order.paper_order_id,
+            cumulative_filled_quantity=order.position_size
+            / order.entry_price,
+            average_fill_price=order.entry_price,
+            created_at=order.created_at,
+            updated_at=order.opened_at or order.created_at,
+            submitted_at=order.opened_at or order.created_at,
+            terminal_at=order.opened_at or order.created_at,
+        )
         if self._repository is not None:
-            await self._repository.consume_order_approval(consumed, order)
+            await self._repository.consume_order_approval(
+                consumed,
+                order,
+                oms_order=oms_mirror,
+            )
         self._approvals[approval.approval_id] = consumed
+
+    async def consume_oms_approval(
+        self,
+        decision: Decision,
+        risk_check: RiskCheck,
+        order: OMSOrder,
+        command: ExecutionCommand,
+    ) -> OMSOrder:
+        """Atomically authorize and queue one TESTNET OMS command."""
+
+        if order.environment != ExecutionEnvironment.TESTNET:
+            raise RiskError("OMS approval consumption is TESTNET-only")
+        approval = self._approvals.get(risk_check.approval_id or "")
+        if approval is None:
+            raise RiskError("Order approval is unknown or was not issued centrally")
+        stored_check = self._checks_by_key.get(risk_check.idempotency_key)
+        if stored_check != risk_check:
+            raise RiskError("Risk check differs from immutable central evidence")
+        now = datetime.now(timezone.utc)
+        if approval.status != ApprovalStatus.ACTIVE:
+            raise RiskError(f"Order approval is {approval.status.value}")
+        if approval.position_snapshot_hash != _position_snapshot_hash(
+            list(self._positions.values())
+        ):
+            raise RiskError("Order approval is stale for the current portfolio")
+        if _as_utc(approval.expires_at) <= now:
+            self._approvals[approval.approval_id] = approval.model_copy(
+                update={"status": ApprovalStatus.EXPIRED}
+            )
+            raise RiskError("Order approval expired")
+        expected = (
+            approval.decision_id == decision.decision_id
+            and approval.risk_check_id == risk_check.risk_check_id
+            and approval.correlation_id == decision.correlation_id
+            and approval.symbol == decision.symbol
+            and approval.timeframe == decision.timeframe
+            and approval.strategy == decision.strategy
+            and approval.side == order.side
+            and order.requested_notional <= approval.max_notional + 1e-8
+            and order.leverage <= approval.max_leverage + 1e-8
+        )
+        deviation_bps = (
+            abs(order.reference_price - approval.reference_price)
+            / approval.reference_price
+            * 10_000
+        )
+        if not expected or deviation_bps > approval.max_entry_deviation_bps:
+            raise RiskError("OMS order does not match its central approval")
+        if self._sm.kill_switch_active or self.control_state.active:
+            raise RiskError("Kill switch prevents approval consumption")
+        if self._repository is not None:
+            created = await self._repository.create_oms_order(
+                order,
+                command=command,
+                consume_approval=True,
+            )
+        else:
+            created = order
+        remaining_quantity = max(
+            0.0,
+            created.quantity - created.cumulative_filled_quantity,
+        )
+        if remaining_quantity > 0:
+            self._positions[
+                f"oms-reservation:{created.oms_order_id}"
+            ] = PositionExposure(
+                paper_order_id=(
+                    f"oms-reservation:{created.oms_order_id}"
+                ),
+                symbol=created.symbol,
+                timeframe=created.timeframe,
+                strategy=created.strategy,
+                side=created.side,
+                notional=remaining_quantity * created.reference_price,
+                leverage=created.leverage,
+            )
+            self.set_open_positions(len(self._positions))
+        self._approvals[approval.approval_id] = approval.model_copy(
+            update={
+                "status": ApprovalStatus.CONSUMED,
+                "consumed_at": now,
+                "paper_order_id": None,
+                "oms_order_id": order.oms_order_id,
+            }
+        )
+        return created
 
     async def trigger_kill_switch(
         self,

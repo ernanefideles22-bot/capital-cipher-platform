@@ -59,6 +59,7 @@
       "type": ["string", "null"],
       "format": "date-time"
     },
-    "paper_order_id": { "type": ["string", "null"] }
+    "paper_order_id": { "type": ["string", "null"] },
+    "oms_order_id": { "type": ["string", "null"] }
   }
 }

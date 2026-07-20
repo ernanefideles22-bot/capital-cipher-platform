@@ -1,8 +1,8 @@
-# Capital Cipher AI — Backend (Phase 1)
+# Capital Cipher AI — Backend
 
-FastAPI backend implementing the Capital Cipher AI specification
-(`capital-cipher-specification` repo). **Phase 1 operates exclusively in PAPER
-mode: no real orders, no private API keys, no live trading code.**
+FastAPI backend implementing the Capital Cipher AI specification. PAPER is the
+safe default. A gated OMS may use Binance or Bybit TESTNET with runtime-only
+sandbox credentials. **LIVE execution and live exchange hosts do not exist.**
 
 ## Requirements
 
@@ -37,8 +37,8 @@ python -m pytest app/tests -q
 
 The suite covers agent and event contracts, Redis transport, durable outbox,
 deterministic replay checkpoints, indicators, risk scenarios, the decision
-engine, paper trading, data quality, state transitions, and Phase 1 security
-guarantees (LIVE mode impossible, no private exchange keys, no real orders).
+engine, PAPER trading, TESTNET OMS, reconciliation, data quality, state
+transitions, and security guarantees that keep LIVE execution impossible.
 
 Normalized candles are stored idempotently in the internal
 `capital_cipher.candle_observations` time-series table before agents, risk, or
@@ -130,6 +130,13 @@ single-use execution approvals and a durable kill switch. See
 `../docs/month-6-central-risk-engine.md` for limits, transaction semantics,
 the 40-agent cohort and completion evidence.
 
+Month 7 adds the single order-management boundary, atomic PAPER mirrors,
+durable TESTNET commands, exact Binance Spot/Bybit linear sandbox allowlists,
+immutable fills and continuous venue reconciliation. Critical drift activates
+the central durable kill switch. See
+`../docs/month-7-oms-testnet-reconciliation.md` for configuration, API,
+transaction semantics, migration and completion evidence.
+
 ## Architecture
 
 ```text
@@ -138,7 +145,8 @@ Market Data Adapter (Binance/Bybit/CSV/Replay)
   → Orchestrator → Agent Runtime (3 PRIMARY + 37 SHADOW)
   → Decision Engine (weighted consolidation, no simple voting)
   → Central Risk (portfolio VaR + single-use approval + absolute veto)
-  → Paper Trading Engine (fees + slippage simulated)
+  → OMS (atomic PAPER mirror or durable TESTNET command)
+  → Exchange reconciliation (fills + positions + balances)
   → Audit trail (correlation_id reconstructs every chain)
 ```
 
@@ -149,9 +157,10 @@ matching `ADMIN_API_KEY` from the environment. The key must contain at least
 
 The HTTP boundary also enforces `API_RATE_LIMIT_PER_MINUTE`, rejects request
 bodies larger than `MAX_REQUEST_BODY_BYTES`, adds defensive response headers,
-and accepts browser origins only from `CORS_ALLOWED_ORIGINS`. The Phase 1
-runtime accepts only `SYSTEM_MODE=OFFLINE|PAPER`; testnet and live execution
-environments are not represented in configuration or code.
+and accepts browser origins only from `CORS_ALLOWED_ORIGINS`. `SYSTEM_MODE`
+still accepts only `OFFLINE|PAPER`. The separate OMS boundary accepts PAPER or
+an explicitly acknowledged TESTNET; LIVE is not represented in configuration,
+schemas, adapters or routes.
 
 Unauthenticated WebSocket streams are not mounted. They may return only after
 the platform has a user-authenticated handshake and per-tenant authorization.

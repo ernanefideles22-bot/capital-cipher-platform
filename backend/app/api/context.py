@@ -25,6 +25,15 @@ from app.core.transports.base import EventTransport
 from app.core.transports.redis_streams import RedisStreamTransport
 from app.database.repositories.repository import Repository
 from app.database.session import Database
+from app.execution.adapters.base import ExchangeExecutionAdapter
+from app.execution.adapters.binance_testnet import (
+    BinanceTestnetExecutionAdapter,
+)
+from app.execution.adapters.bybit_testnet import (
+    BybitTestnetExecutionAdapter,
+)
+from app.execution.adapters.paper import PaperExecutionAdapter
+from app.execution.credentials import EnvironmentTestnetCredentialProvider
 from app.market_data.adapters.binance_rest import BinancePublicRestClient
 from app.market_data.adapters.bybit_rest import BybitPublicRestClient
 from app.market_data.adapters.public_rest import PublicMarketDataClient
@@ -40,9 +49,12 @@ from app.market_data.gaps import GapService
 from app.market_data.store import CandleStore
 from app.orchestrator.decision_engine import DecisionEngine
 from app.orchestrator.service import Orchestrator
+from app.oms.reconciliation import ReconciliationService
+from app.oms.service import OMSService
 from app.paper_trading.engine import PaperTradingEngine
 from app.risk.manager import RiskManager
 from app.schemas.common import Exchange
+from app.schemas.oms import ExecutionEnvironment
 from app.schemas.risk import RiskLimits
 
 
@@ -55,6 +67,12 @@ class AppContext:
     audit_service: AuditService
     risk_manager: RiskManager
     paper_engine: PaperTradingEngine
+    oms_service: OMSService
+    reconciliation_service: ReconciliationService
+    execution_adapters: dict[
+        tuple[Exchange, ExecutionEnvironment],
+        ExchangeExecutionAdapter,
+    ]
     orchestrator: Orchestrator
     backtesting_engine: BacktestingEngine = None  # type: ignore[assignment]
     walk_forward_engine: WalkForwardEngine = None  # type: ignore[assignment]
@@ -213,6 +231,74 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         slippage_rate_percent=settings.slippage_rate_percent,
         repository=repository,
     )
+    target_environment = ExecutionEnvironment(
+        settings.oms_execution_environment
+    )
+    target_exchange = (
+        Exchange.BINANCE
+        if target_environment == ExecutionEnvironment.PAPER
+        else Exchange(settings.oms_testnet_exchange)
+    )
+    execution_adapters: dict[
+        tuple[Exchange, ExecutionEnvironment],
+        ExchangeExecutionAdapter,
+    ] = {
+        (
+            Exchange.BINANCE,
+            ExecutionEnvironment.PAPER,
+        ): PaperExecutionAdapter(paper_engine)
+    }
+    if target_environment == ExecutionEnvironment.TESTNET:
+        if repository is None:
+            raise ValueError("TESTNET OMS requires with_database=True")
+        if not settings.database_url.startswith(
+            ("postgresql://", "postgresql+asyncpg://")
+        ):
+            raise ValueError(
+                "TESTNET OMS requires PostgreSQL with Month 7 migrations"
+            )
+        credentials = EnvironmentTestnetCredentialProvider().load(
+            target_exchange
+        )
+        if target_exchange == Exchange.BINANCE:
+            testnet_adapter: ExchangeExecutionAdapter = (
+                BinanceTestnetExecutionAdapter(
+                    credentials,
+                    base_url=settings.binance_testnet_rest_url,
+                    timeout_seconds=settings.oms_http_timeout_seconds,
+                    receive_window_ms=settings.oms_receive_window_ms,
+                )
+            )
+        else:
+            testnet_adapter = BybitTestnetExecutionAdapter(
+                credentials,
+                base_url=settings.bybit_testnet_rest_url,
+                category=settings.bybit_testnet_category,
+                timeout_seconds=settings.oms_http_timeout_seconds,
+                receive_window_ms=settings.oms_receive_window_ms,
+            )
+        execution_adapters[
+            (target_exchange, ExecutionEnvironment.TESTNET)
+        ] = testnet_adapter
+    oms_service = OMSService(
+        target_environment=target_environment,
+        target_exchange=target_exchange,
+        paper_engine=paper_engine,
+        risk_manager=risk_manager,
+        audit_service=audit_service,
+        adapters=execution_adapters,
+        repository=repository,
+        lease_seconds=settings.oms_command_lease_seconds,
+        poll_interval_seconds=settings.oms_worker_poll_interval_seconds,
+    )
+    reconciliation_service = ReconciliationService(
+        adapter=oms_service.adapter,
+        risk_manager=risk_manager,
+        audit_service=audit_service,
+        repository=repository,
+        halt_on_critical_drift=settings.oms_halt_on_critical_drift,
+        interval_seconds=settings.oms_reconciliation_interval_seconds,
+    )
     context_holder: dict = {}
     market_data_agent = MarketDataAgent(
         candle_store, connection_status_fn=lambda: (
@@ -257,6 +343,7 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         decision_engine=decision_engine,
         risk_manager=risk_manager,
         paper_engine=paper_engine,
+        oms_service=oms_service,
         audit_service=audit_service,
         market_data_agent=market_data_agent,
         quant_agent=quant_agent,
@@ -291,6 +378,9 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         audit_service=audit_service,
         risk_manager=risk_manager,
         paper_engine=paper_engine,
+        oms_service=oms_service,
+        reconciliation_service=reconciliation_service,
+        execution_adapters=execution_adapters,
         orchestrator=orchestrator,
         backtesting_engine=backtesting_engine,
         walk_forward_engine=walk_forward_engine,

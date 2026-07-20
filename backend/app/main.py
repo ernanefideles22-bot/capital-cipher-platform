@@ -1,6 +1,7 @@
 """Capital Cipher AI — FastAPI application entrypoint.
 
-Phase 1: PAPER mode only. No real execution, no private API keys (docs/16).
+PAPER by default, with an explicitly gated TESTNET OMS. LIVE execution does
+not exist.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from app.api.routes import (
     decisions,
     health,
     market,
+    oms,
     orchestrator,
     paper,
     reports,
@@ -54,7 +56,10 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
         app.state.context = ctx
         if ctx.database is not None:
             await ctx.database.create_all()
+            if ctx.oms_service.target_environment.value == "TESTNET":
+                await ctx.database.verify_testnet_oms_schema()
         await ctx.risk_manager.initialize()
+        await ctx.oms_service.initialize()
         if ctx.agent_runtime is not None:
             await ctx.agent_runtime.initialize()
         outbox_stop = asyncio.Event()
@@ -63,6 +68,17 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
         backfill_task = None
         agent_worker_stop = asyncio.Event()
         agent_worker_task = None
+        oms_worker_stop = asyncio.Event()
+        oms_worker_task = None
+        reconciliation_stop = asyncio.Event()
+        reconciliation_task = None
+        if ctx.oms_service.target_environment.value == "TESTNET":
+            if not await ctx.oms_service.adapter.healthcheck():
+                for execution_adapter in ctx.execution_adapters.values():
+                    await execution_adapter.aclose()
+                if ctx.database is not None:
+                    await ctx.database.dispose()
+                raise RuntimeError("Configured TESTNET venue is unavailable")
         if ctx.event_transport is not None:
             try:
                 broker_healthy = await ctx.event_transport.healthcheck()
@@ -99,12 +115,32 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
         else:
             await ctx.state_machine.transition(
                 SystemState.PAPER,
-                reason="Initialization complete - Phase 1 PAPER mode",
+                reason="Initialization complete - protected OMS boundary",
                 actor="main",
             )
             logger.info(
-                "System started in PAPER mode",
+                "System started with protected OMS boundary",
                 event_type="SYSTEM_STARTED",
+                metadata={
+                    "oms_environment": (
+                        ctx.oms_service.target_environment.value
+                    ),
+                    "oms_exchange": ctx.oms_service.target_exchange.value,
+                },
+            )
+        if (
+            settings.oms_worker_enabled
+            and ctx.oms_service.target_environment.value == "TESTNET"
+        ):
+            oms_worker_task = asyncio.create_task(
+                ctx.oms_service.run(oms_worker_stop)
+            )
+        if (
+            settings.oms_reconciliation_enabled
+            and ctx.oms_service.target_environment.value == "TESTNET"
+        ):
+            reconciliation_task = asyncio.create_task(
+                ctx.reconciliation_service.run(reconciliation_stop)
             )
         if (
             settings.agent_worker_enabled
@@ -174,6 +210,18 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
         if agent_worker_task is not None:
             agent_worker_stop.set()
             await agent_worker_task
+        if reconciliation_task is not None:
+            reconciliation_stop.set()
+            await reconciliation_task
+        if oms_worker_task is not None:
+            oms_worker_stop.set()
+            await oms_worker_task
+        await asyncio.gather(
+            *(
+                execution_adapter.aclose()
+                for execution_adapter in ctx.execution_adapters.values()
+            )
+        )
         if ctx.public_market_clients is not None:
             await asyncio.gather(
                 *(client.aclose() for client in ctx.public_market_clients.values())
@@ -190,7 +238,9 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
     app = FastAPI(
         title="Capital Cipher AI",
         version=settings.app_version,
-        description="Institutional multi-agent trading platform — Phase 1 (PAPER only)",
+        description=(
+            "Institutional multi-agent platform — PAPER and gated TESTNET OMS"
+        ),
         lifespan=lifespan,
     )
     app.add_middleware(
@@ -223,6 +273,7 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
     app.include_router(decisions.router, prefix=api_prefix)
     app.include_router(risk.router, prefix=api_prefix)
     app.include_router(paper.router, prefix=api_prefix)
+    app.include_router(oms.router, prefix=api_prefix)
     app.include_router(audit.router, prefix=api_prefix)
     app.include_router(backtest.router, prefix=api_prefix)
     app.include_router(strategies.router, prefix=api_prefix)

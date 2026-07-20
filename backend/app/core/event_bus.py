@@ -37,6 +37,7 @@ class Topics:
     DECISION_EVENTS = "decision.events.v1"
     RISK_EVENTS = "risk.events.v1"
     PAPER_ORDERS = "paper.orders.v1"
+    OMS_ORDERS = "oms.orders.v1"
     AUDIT_EVENTS = "audit.events.v1"
     SYSTEM_EVENTS = "system.events.v1"
     DEAD_LETTER = "dead_letter.events.v1"

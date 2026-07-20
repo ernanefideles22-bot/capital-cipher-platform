@@ -20,6 +20,11 @@ async def system_status(context: AppContext = Depends(get_context)) -> dict:
             "market_data": "CONNECTED" if context.market_connected else "DISCONNECTED",
             "orchestrator": "RUNNING" if context.state_machine.can_operate() else "IDLE",
             "risk": "ACTIVE",
+            "oms": {
+                "environment": context.oms_service.target_environment.value,
+                "exchange": context.oms_service.target_exchange.value,
+                "live_execution_available": False,
+            },
             "database": "CONNECTED" if context.repository is not None else "IN_MEMORY",
         }
     )
