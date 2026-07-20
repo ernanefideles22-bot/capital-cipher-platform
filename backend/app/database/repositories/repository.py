@@ -1899,6 +1899,12 @@ class Repository:
                     )
                 )
                 if approval is not None:
+                    # The approval references the evaluation, but these models
+                    # intentionally have no mutable ORM relationship. Flush the
+                    # immutable parent evidence first so PostgreSQL can enforce
+                    # the immediate foreign key without splitting the atomic
+                    # transaction.
+                    await session.flush()
                     session.add(
                         OrderApprovalModel(
                             approval_id=approval.approval_id,
