@@ -24,7 +24,7 @@ class Settings(BaseSettings):
 
     app_env: str = Field(default="local", alias="APP_ENV")
     app_name: str = "capital-cipher-api"
-    app_version: str = "0.15.0"
+    app_version: str = "0.16.0"
 
     system_mode: str = Field(default="PAPER", alias="SYSTEM_MODE")
 
@@ -78,6 +78,12 @@ class Settings(BaseSettings):
     # Risk limits for paper trading (docs/06-risk-management.md).
     risk_per_trade_percent: float = Field(default=1.0, alias="RISK_PER_TRADE_PERCENT")
     max_daily_drawdown_percent: float = Field(default=5.0, alias="MAX_DAILY_DRAWDOWN_PERCENT")
+    max_total_drawdown_percent: float = Field(
+        default=10.0,
+        alias="MAX_TOTAL_DRAWDOWN_PERCENT",
+        gt=0,
+        le=100,
+    )
     max_consecutive_losses: int = Field(default=3, alias="MAX_CONSECUTIVE_LOSSES")
     max_open_positions: int = Field(default=3, alias="MAX_OPEN_POSITIONS")
     default_leverage: float = Field(
@@ -91,6 +97,51 @@ class Settings(BaseSettings):
         alias="MAX_LEVERAGE_SIMULATED",
         ge=1,
         le=125,
+    )
+    max_gross_exposure_percent: float = Field(
+        default=200.0, alias="MAX_GROSS_EXPOSURE_PERCENT", gt=0, le=2_000
+    )
+    max_net_exposure_percent: float = Field(
+        default=150.0, alias="MAX_NET_EXPOSURE_PERCENT", gt=0, le=2_000
+    )
+    max_symbol_exposure_percent: float = Field(
+        default=100.0, alias="MAX_SYMBOL_EXPOSURE_PERCENT", gt=0, le=2_000
+    )
+    max_strategy_exposure_percent: float = Field(
+        default=100.0, alias="MAX_STRATEGY_EXPOSURE_PERCENT", gt=0, le=2_000
+    )
+    max_single_position_percent: float = Field(
+        default=100.0, alias="MAX_SINGLE_POSITION_PERCENT", gt=0, le=1_000
+    )
+    max_symbol_concentration_percent: float = Field(
+        default=90.0,
+        alias="MAX_SYMBOL_CONCENTRATION_PERCENT",
+        gt=0,
+        le=100,
+    )
+    max_portfolio_var_percent: float = Field(
+        default=5.0, alias="MAX_PORTFOLIO_VAR_PERCENT", gt=0, le=100
+    )
+    var_confidence: float = Field(
+        default=0.99, alias="VAR_CONFIDENCE", ge=0.90, lt=1
+    )
+    var_lookback: int = Field(
+        default=100, alias="VAR_LOOKBACK", ge=20, le=2_000
+    )
+    var_min_observations: int = Field(
+        default=30, alias="VAR_MIN_OBSERVATIONS", ge=10, le=1_000
+    )
+    fallback_volatility_percent: float = Field(
+        default=1.0,
+        alias="FALLBACK_VOLATILITY_PERCENT",
+        gt=0,
+        le=100,
+    )
+    risk_approval_ttl_seconds: int = Field(
+        default=60, alias="RISK_APPROVAL_TTL_SECONDS", ge=1, le=3_600
+    )
+    max_entry_deviation_bps: float = Field(
+        default=100.0, alias="MAX_ENTRY_DEVIATION_BPS", ge=0, le=10_000
     )
 
     # Paper trading account (simulated balance only — no real money, docs/18).
@@ -344,6 +395,10 @@ class Settings(BaseSettings):
         if self.default_leverage > self.max_leverage_simulated:
             raise ValueError(
                 "DEFAULT_LEVERAGE cannot exceed MAX_LEVERAGE_SIMULATED"
+            )
+        if self.var_min_observations > self.var_lookback:
+            raise ValueError(
+                "VAR_MIN_OBSERVATIONS cannot exceed VAR_LOOKBACK"
             )
         return self
 

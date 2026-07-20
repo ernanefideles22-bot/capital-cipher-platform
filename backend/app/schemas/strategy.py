@@ -26,6 +26,8 @@ class RiskProfile(BaseModel):
     risk_per_trade_percent: float
     max_open_positions: int
     risk_reward_min: float
+    max_strategy_exposure_percent: float
+    max_portfolio_var_percent: float
 
 
 RISK_PROFILES: dict[RiskProfileName, RiskProfile] = {
@@ -34,18 +36,24 @@ RISK_PROFILES: dict[RiskProfileName, RiskProfile] = {
         risk_per_trade_percent=0.5,
         max_open_positions=3,
         risk_reward_min=1.8,
+        max_strategy_exposure_percent=50.0,
+        max_portfolio_var_percent=2.5,
     ),
     RiskProfileName.MODERATE: RiskProfile(
         name=RiskProfileName.MODERATE,
         risk_per_trade_percent=1.0,
         max_open_positions=8,
         risk_reward_min=2.2,
+        max_strategy_exposure_percent=100.0,
+        max_portfolio_var_percent=5.0,
     ),
     RiskProfileName.AGGRESSIVE: RiskProfile(
         name=RiskProfileName.AGGRESSIVE,
         risk_per_trade_percent=1.5,
         max_open_positions=15,
         risk_reward_min=2.8,
+        max_strategy_exposure_percent=150.0,
+        max_portfolio_var_percent=7.5,
     ),
 }
 

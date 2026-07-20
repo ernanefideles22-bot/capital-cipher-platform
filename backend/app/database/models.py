@@ -888,20 +888,186 @@ class RiskCheckModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class RiskEvaluationModel(Base):
+    """Immutable central-risk evidence; one row per idempotent request."""
+
+    __tablename__ = "risk_evaluations"
+    __table_args__ = (
+        CheckConstraint("length(evaluation_id) = 64", name="ck_risk_evaluation_id"),
+        CheckConstraint(
+            "length(request_fingerprint) = 64",
+            name="ck_risk_evaluation_fingerprint",
+        ),
+        CheckConstraint(
+            "risk_status IN ('APPROVED', 'REDUCED', 'BLOCKED', 'KILL_SWITCH')",
+            name="ck_risk_evaluation_status",
+        ),
+        CheckConstraint(
+            "approved = (risk_status IN ('APPROVED', 'REDUCED'))",
+            name="ck_risk_evaluation_approval",
+        ),
+        UniqueConstraint(
+            "idempotency_key",
+            name="uq_risk_evaluations_idempotency_key",
+        ),
+        Index(
+            "ix_risk_evaluations_decision_created",
+            "decision_id",
+            "created_at",
+        ),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    evaluation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    risk_check_id: Mapped[str] = mapped_column(String(36), nullable=False, unique=True)
+    idempotency_key: Mapped[str] = mapped_column(Text, nullable=False)
+    request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    decision_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    correlation_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    risk_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    approved: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    payload: Mapped[dict] = mapped_column(JsonType, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class OrderApprovalModel(Base):
+    """Single-use execution capability minted by the central risk engine."""
+
+    __tablename__ = "order_approvals"
+    __table_args__ = (
+        CheckConstraint("length(approval_id) = 64", name="ck_order_approval_id"),
+        CheckConstraint(
+            "length(position_snapshot_hash) = 64",
+            name="ck_order_approval_position_snapshot",
+        ),
+        CheckConstraint(
+            "status IN ('ACTIVE', 'CONSUMED', 'REVOKED', 'EXPIRED')",
+            name="ck_order_approval_status",
+        ),
+        CheckConstraint("max_notional > 0", name="ck_order_approval_notional"),
+        CheckConstraint("max_leverage >= 1", name="ck_order_approval_leverage"),
+        CheckConstraint("reference_price > 0", name="ck_order_approval_price"),
+        CheckConstraint(
+            "max_entry_deviation_bps >= 0",
+            name="ck_order_approval_deviation",
+        ),
+        CheckConstraint(
+            "side IN ('BUY', 'SELL')",
+            name="ck_order_approval_side",
+        ),
+        CheckConstraint(
+            "expires_at > created_at",
+            name="ck_order_approval_expiry",
+        ),
+        CheckConstraint(
+            "(status = 'CONSUMED' AND consumed_at IS NOT NULL "
+            "AND paper_order_id IS NOT NULL) OR "
+            "(status <> 'CONSUMED' AND consumed_at IS NULL "
+            "AND paper_order_id IS NULL)",
+            name="ck_order_approval_terminal",
+        ),
+        UniqueConstraint(
+            "evaluation_id",
+            name="uq_order_approvals_evaluation",
+        ),
+        Index(
+            "ix_order_approvals_active_expiry",
+            "expires_at",
+            postgresql_where=text("status = 'ACTIVE'"),
+        ),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    approval_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    evaluation_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey(
+            f"{INTERNAL_SCHEMA}.risk_evaluations.evaluation_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
+    risk_check_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    decision_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    correlation_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    position_snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    symbol: Mapped[str] = mapped_column(Text, nullable=False)
+    timeframe: Mapped[str] = mapped_column(Text, nullable=False)
+    strategy: Mapped[str] = mapped_column(Text, nullable=False)
+    side: Mapped[str] = mapped_column(String(4), nullable=False)
+    max_notional: Mapped[float] = mapped_column(Numeric(38, 18), nullable=False)
+    max_leverage: Mapped[float] = mapped_column(Numeric(20, 8), nullable=False)
+    reference_price: Mapped[float] = mapped_column(Numeric(38, 18), nullable=False)
+    max_entry_deviation_bps: Mapped[float] = mapped_column(
+        Numeric(20, 8), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    paper_order_id: Mapped[str | None] = mapped_column(String(36), unique=True)
+
+
+class RiskControlStateModel(Base):
+    __tablename__ = "risk_control_state"
+    __table_args__ = (
+        CheckConstraint("singleton_id = 1", name="ck_risk_control_singleton"),
+        CheckConstraint("revision >= 0", name="ck_risk_control_revision"),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    singleton_id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    revision: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    reason: Mapped[str | None] = mapped_column(Text)
+    actor: Mapped[str | None] = mapped_column(Text)
+    triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RiskControlEventModel(Base):
+    __tablename__ = "risk_control_events"
+    __table_args__ = (
+        CheckConstraint(
+            "event_type IN ('TRIGGERED', 'RESET')",
+            name="ck_risk_control_event_type",
+        ),
+        CheckConstraint("revision > 0", name="ck_risk_control_event_revision"),
+        UniqueConstraint("revision", name="uq_risk_control_event_revision"),
+        Index("ix_risk_control_events_created", "created_at"),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    event_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    actor: Mapped[str] = mapped_column(Text, nullable=False)
+    correlation_id: Mapped[str | None] = mapped_column(String(36))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class PaperOrderModel(Base):
     __tablename__ = "paper_orders"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     decision_id: Mapped[str] = mapped_column(String(36), nullable=False)
     risk_check_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    approval_id: Mapped[str | None] = mapped_column(String(64), unique=True)
+    request_fingerprint: Mapped[str | None] = mapped_column(String(64))
     correlation_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
     exchange: Mapped[str] = mapped_column(Text, nullable=False)
     symbol: Mapped[str] = mapped_column(Text, nullable=False)
+    timeframe: Mapped[str | None] = mapped_column(Text)
+    strategy: Mapped[str] = mapped_column(Text, nullable=False, default="UNSPECIFIED")
     side: Mapped[str] = mapped_column(Text, nullable=False)
     entry_price: Mapped[float] = mapped_column(Numeric, nullable=False)
     stop_loss: Mapped[float | None] = mapped_column(Numeric)
     take_profit: Mapped[float | None] = mapped_column(Numeric)
     position_size: Mapped[float] = mapped_column(Numeric, nullable=False)
+    leverage: Mapped[float] = mapped_column(Numeric, nullable=False, default=1)
     status: Mapped[str] = mapped_column(Text, nullable=False)
     fees_estimated: Mapped[float | None] = mapped_column(Numeric)
     slippage_estimated: Mapped[float | None] = mapped_column(Numeric)

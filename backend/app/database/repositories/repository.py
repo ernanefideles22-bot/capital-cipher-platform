@@ -6,7 +6,10 @@ must not advance (enforced by callers via raised DatabaseError).
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
@@ -34,7 +37,11 @@ from app.database.models import (
     RawMarketEventModel,
     RawDataObjectModel,
     ReplayCheckpointModel,
+    RiskControlEventModel,
+    RiskControlStateModel,
+    RiskEvaluationModel,
     RiskCheckModel,
+    OrderApprovalModel,
     SystemEventModel,
     WalkForwardExperimentModel,
 )
@@ -53,7 +60,7 @@ from app.schemas.backtest import (
     WalkForwardArtifactMetadata,
     WalkForwardReport,
 )
-from app.schemas.common import AgentStatus
+from app.schemas.common import AgentStatus, OrderSide, PaperOrderStatus
 from app.schemas.data_lake import (
     BackfillQueueItem,
     BackfillRawPageLink,
@@ -65,7 +72,13 @@ from app.schemas.events import BusMessage
 from app.schemas.replay import ReplayCheckpoint
 from app.schemas.market import Candle, DataQualityReport, RawMarketEvent
 from app.schemas.paper import PaperOrder
-from app.schemas.risk import RiskCheck
+from app.schemas.risk import (
+    ApprovalStatus,
+    OrderApproval,
+    PositionExposure,
+    RiskCheck,
+    RiskControlState,
+)
 
 
 def _now() -> datetime:
@@ -76,6 +89,34 @@ def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _position_snapshot_hash(rows: list[PaperOrderModel]) -> str:
+    payload = {
+        "positions": sorted(
+            (
+                {
+                    "paper_order_id": row.id,
+                    "symbol": row.symbol,
+                    "timeframe": row.timeframe or "unknown",
+                    "strategy": row.strategy,
+                    "side": row.side,
+                    "notional": round(float(row.position_size), 8),
+                    "leverage": round(float(row.leverage), 8),
+                }
+                for row in rows
+            ),
+            key=lambda item: item["paper_order_id"],
+        )
+    }
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode()
+    ).hexdigest()
 
 
 class Repository:
@@ -1793,6 +1834,272 @@ class Repository:
         except Exception as exc:
             raise DatabaseError(f"Failed to persist risk check: {exc}") from exc
 
+    async def save_central_risk_evaluation(
+        self,
+        check: RiskCheck,
+        approval: OrderApproval | None,
+    ) -> None:
+        """Persist immutable risk evidence and its capability in one transaction."""
+
+        try:
+            async with self._db.session() as session, session.begin():
+                existing = await session.get(
+                    RiskEvaluationModel,
+                    check.evaluation_id,
+                )
+                if existing is not None:
+                    if (
+                        existing.request_fingerprint
+                        != check.request_fingerprint
+                        or existing.idempotency_key != check.idempotency_key
+                    ):
+                        raise ValidationError(
+                            "Immutable risk evaluation identity conflict"
+                        )
+                    return
+                key_owner = await session.scalar(
+                    select(RiskEvaluationModel).where(
+                        RiskEvaluationModel.idempotency_key
+                        == check.idempotency_key
+                    )
+                )
+                if key_owner is not None:
+                    raise ValidationError(
+                        "Risk idempotency key already belongs to another request"
+                    )
+                session.add(
+                    RiskEvaluationModel(
+                        evaluation_id=check.evaluation_id,
+                        risk_check_id=check.risk_check_id,
+                        idempotency_key=check.idempotency_key,
+                        request_fingerprint=check.request_fingerprint,
+                        decision_id=check.decision_id,
+                        correlation_id=check.correlation_id,
+                        risk_status=check.risk_status.value,
+                        approved=check.approved,
+                        payload=check.model_dump(mode="json"),
+                        created_at=check.created_at,
+                    )
+                )
+                session.add(
+                    RiskCheckModel(
+                        id=check.risk_check_id,
+                        decision_id=check.decision_id,
+                        correlation_id=check.correlation_id,
+                        risk_status=check.risk_status.value,
+                        approved=check.approved,
+                        position_size=check.position_size,
+                        risk_percent=check.risk_percent,
+                        stop_loss=check.stop_loss,
+                        take_profit=check.take_profit,
+                        risk_reward=check.risk_reward,
+                        reason=check.reason,
+                        warnings=check.warnings,
+                        created_at=check.created_at,
+                    )
+                )
+                if approval is not None:
+                    session.add(
+                        OrderApprovalModel(
+                            approval_id=approval.approval_id,
+                            evaluation_id=approval.evaluation_id,
+                            risk_check_id=approval.risk_check_id,
+                            decision_id=approval.decision_id,
+                            correlation_id=approval.correlation_id,
+                            request_fingerprint=approval.request_fingerprint,
+                            position_snapshot_hash=(
+                                approval.position_snapshot_hash
+                            ),
+                            symbol=approval.symbol,
+                            timeframe=approval.timeframe,
+                            strategy=approval.strategy,
+                            side=approval.side.value,
+                            max_notional=approval.max_notional,
+                            max_leverage=approval.max_leverage,
+                            reference_price=approval.reference_price,
+                            max_entry_deviation_bps=(
+                                approval.max_entry_deviation_bps
+                            ),
+                            status=approval.status.value,
+                            created_at=approval.created_at,
+                            expires_at=approval.expires_at,
+                            consumed_at=approval.consumed_at,
+                            paper_order_id=approval.paper_order_id,
+                        )
+                    )
+        except DatabaseError:
+            raise
+        except Exception as exc:
+            raise DatabaseError(
+                f"Failed to persist central risk evaluation: {exc}"
+            ) from exc
+
+    async def load_central_risk_evaluation_by_key(
+        self,
+        idempotency_key: str,
+    ) -> tuple[RiskCheck, OrderApproval | None] | None:
+        try:
+            async with self._db.session() as session:
+                evaluation = await session.scalar(
+                    select(RiskEvaluationModel).where(
+                        RiskEvaluationModel.idempotency_key
+                        == idempotency_key
+                    )
+                )
+                if evaluation is None:
+                    return None
+                check = RiskCheck.model_validate(evaluation.payload)
+                approval_row = await session.scalar(
+                    select(OrderApprovalModel).where(
+                        OrderApprovalModel.evaluation_id
+                        == evaluation.evaluation_id
+                    )
+                )
+                if approval_row is None:
+                    return check, None
+                approval = OrderApproval(
+                    approval_id=approval_row.approval_id,
+                    evaluation_id=approval_row.evaluation_id,
+                    risk_check_id=approval_row.risk_check_id,
+                    decision_id=approval_row.decision_id,
+                    correlation_id=approval_row.correlation_id,
+                    request_fingerprint=approval_row.request_fingerprint,
+                    position_snapshot_hash=(
+                        approval_row.position_snapshot_hash
+                    ),
+                    symbol=approval_row.symbol,
+                    timeframe=approval_row.timeframe,
+                    strategy=approval_row.strategy,
+                    side=OrderSide(approval_row.side),
+                    max_notional=float(approval_row.max_notional),
+                    max_leverage=float(approval_row.max_leverage),
+                    reference_price=float(approval_row.reference_price),
+                    max_entry_deviation_bps=float(
+                        approval_row.max_entry_deviation_bps
+                    ),
+                    status=ApprovalStatus(approval_row.status),
+                    created_at=approval_row.created_at,
+                    expires_at=approval_row.expires_at,
+                    consumed_at=approval_row.consumed_at,
+                    paper_order_id=approval_row.paper_order_id,
+                )
+                return check, approval
+        except Exception as exc:
+            raise DatabaseError(
+                f"Failed to load central risk evaluation: {exc}"
+            ) from exc
+
+    @staticmethod
+    def _paper_order_values(order: PaperOrder) -> dict:
+        return {
+            "id": order.paper_order_id,
+            "decision_id": order.decision_id,
+            "risk_check_id": order.risk_check_id,
+            "approval_id": order.approval_id,
+            "request_fingerprint": order.request_fingerprint,
+            "correlation_id": order.correlation_id,
+            "exchange": order.exchange.value,
+            "symbol": order.symbol,
+            "timeframe": order.timeframe,
+            "strategy": order.strategy,
+            "side": order.side.value,
+            "entry_price": order.entry_price,
+            "stop_loss": order.stop_loss,
+            "take_profit": order.take_profit,
+            "position_size": order.position_size,
+            "leverage": order.leverage,
+            "status": order.status.value,
+            "fees_estimated": order.fees_estimated,
+            "slippage_estimated": order.slippage_estimated,
+            "opened_at": order.opened_at,
+            "closed_at": order.closed_at,
+            "pnl": order.pnl,
+            "created_at": order.created_at,
+        }
+
+    async def consume_order_approval(
+        self,
+        approval: OrderApproval,
+        order: PaperOrder,
+    ) -> None:
+        """Lock, consume and insert the PAPER order atomically."""
+
+        try:
+            async with self._db.session() as session, session.begin():
+                control = await session.get(
+                    RiskControlStateModel,
+                    1,
+                    with_for_update=True,
+                )
+                if control is not None and control.active:
+                    raise ValidationError(
+                        "Durable kill switch prevents order approval"
+                    )
+                stored = await session.scalar(
+                    select(OrderApprovalModel)
+                    .where(
+                        OrderApprovalModel.approval_id
+                        == approval.approval_id
+                    )
+                    .with_for_update()
+                )
+                if stored is None:
+                    raise ValidationError("Order approval is not durable")
+                if stored.status != ApprovalStatus.ACTIVE.value:
+                    raise ValidationError(
+                        f"Order approval is {stored.status}"
+                    )
+                open_rows = list(
+                    await session.scalars(
+                        select(PaperOrderModel)
+                        .where(
+                            PaperOrderModel.status
+                            == PaperOrderStatus.FILLED.value
+                        )
+                        .with_for_update()
+                    )
+                )
+                if stored.position_snapshot_hash != _position_snapshot_hash(
+                    open_rows
+                ):
+                    raise ValidationError(
+                        "Order approval is stale for the durable portfolio"
+                    )
+                now = _now()
+                if _as_utc(stored.expires_at) <= now:
+                    stored.status = ApprovalStatus.EXPIRED.value
+                    raise ValidationError("Order approval expired")
+                if (
+                    stored.risk_check_id != order.risk_check_id
+                    or stored.decision_id != order.decision_id
+                    or stored.request_fingerprint
+                    != order.request_fingerprint
+                    or stored.symbol != order.symbol
+                    or stored.strategy != order.strategy
+                    or stored.side != order.side.value
+                    or float(stored.max_notional)
+                    + 1e-8
+                    < order.position_size
+                    or float(stored.max_leverage) + 1e-8 < order.leverage
+                ):
+                    raise ValidationError(
+                        "Order payload differs from durable approval"
+                    )
+                if await session.get(PaperOrderModel, order.paper_order_id):
+                    raise ValidationError(
+                        "Paper order already exists for this approval"
+                    )
+                stored.status = ApprovalStatus.CONSUMED.value
+                stored.consumed_at = approval.consumed_at
+                stored.paper_order_id = order.paper_order_id
+                session.add(PaperOrderModel(**self._paper_order_values(order)))
+        except DatabaseError:
+            raise
+        except Exception as exc:
+            raise DatabaseError(
+                f"Failed to consume order approval: {exc}"
+            ) from exc
+
     async def save_paper_order(self, order: PaperOrder) -> None:
         try:
             async with self._db.session() as session, session.begin():
@@ -1803,30 +2110,132 @@ class Repository:
                     existing.pnl = order.pnl
                     existing.fees_estimated = order.fees_estimated
                 else:
-                    session.add(
-                        PaperOrderModel(
-                            id=order.paper_order_id,
-                            decision_id=order.decision_id,
-                            risk_check_id=order.risk_check_id,
-                            correlation_id=order.correlation_id,
-                            exchange=order.exchange.value,
-                            symbol=order.symbol,
-                            side=order.side.value,
-                            entry_price=order.entry_price,
-                            stop_loss=order.stop_loss,
-                            take_profit=order.take_profit,
-                            position_size=order.position_size,
-                            status=order.status.value,
-                            fees_estimated=order.fees_estimated,
-                            slippage_estimated=order.slippage_estimated,
-                            opened_at=order.opened_at,
-                            closed_at=order.closed_at,
-                            pnl=order.pnl,
-                            created_at=order.created_at,
-                        )
-                    )
+                    session.add(PaperOrderModel(**self._paper_order_values(order)))
         except Exception as exc:
             raise DatabaseError(f"Failed to persist paper order: {exc}") from exc
+
+    async def load_open_position_exposures(self) -> list[PositionExposure]:
+        try:
+            async with self._db.session() as session:
+                rows = list(
+                    await session.scalars(
+                        select(PaperOrderModel).where(
+                            PaperOrderModel.status
+                            == PaperOrderStatus.FILLED.value
+                        )
+                    )
+                )
+                return [
+                    PositionExposure(
+                        paper_order_id=row.id,
+                        symbol=row.symbol,
+                        timeframe=row.timeframe or "unknown",
+                        strategy=row.strategy,
+                        side=OrderSide(row.side),
+                        notional=float(row.position_size),
+                        leverage=float(row.leverage),
+                    )
+                    for row in rows
+                ]
+        except Exception as exc:
+            raise DatabaseError(
+                f"Failed to restore open risk exposure: {exc}"
+            ) from exc
+
+    async def load_risk_control_state(self) -> RiskControlState | None:
+        try:
+            async with self._db.session() as session:
+                row = await session.get(RiskControlStateModel, 1)
+                if row is None:
+                    return None
+                return RiskControlState(
+                    active=row.active,
+                    revision=row.revision,
+                    reason=row.reason,
+                    actor=row.actor,
+                    triggered_at=row.triggered_at,
+                    reset_at=row.reset_at,
+                )
+        except Exception as exc:
+            raise DatabaseError(
+                f"Failed to restore risk control: {exc}"
+            ) from exc
+
+    async def set_risk_control(
+        self,
+        *,
+        active: bool,
+        reason: str,
+        actor: str,
+        correlation_id: str | None,
+    ) -> RiskControlState:
+        """Serialize kill-switch transitions and revoke capabilities on trigger."""
+
+        try:
+            now = _now()
+            async with self._db.session() as session, session.begin():
+                row = await session.get(
+                    RiskControlStateModel,
+                    1,
+                    with_for_update=True,
+                )
+                if row is None:
+                    row = RiskControlStateModel(
+                        singleton_id=1,
+                        active=False,
+                        revision=0,
+                        updated_at=now,
+                    )
+                    session.add(row)
+                    await session.flush()
+                if row.active == active:
+                    raise ValidationError(
+                        "Risk control is already in the requested state"
+                    )
+                row.active = active
+                row.revision += 1
+                row.reason = reason
+                row.actor = actor
+                row.updated_at = now
+                if active:
+                    row.triggered_at = now
+                    row.reset_at = None
+                    await session.execute(
+                        update(OrderApprovalModel)
+                        .where(
+                            OrderApprovalModel.status
+                            == ApprovalStatus.ACTIVE.value
+                        )
+                        .values(status=ApprovalStatus.REVOKED.value)
+                    )
+                else:
+                    row.reset_at = now
+                session.add(
+                    RiskControlEventModel(
+                        event_id=str(uuid4()),
+                        revision=row.revision,
+                        event_type="TRIGGERED" if active else "RESET",
+                        reason=reason,
+                        actor=actor,
+                        correlation_id=correlation_id,
+                        created_at=now,
+                    )
+                )
+                await session.flush()
+                return RiskControlState(
+                    active=row.active,
+                    revision=row.revision,
+                    reason=row.reason,
+                    actor=row.actor,
+                    triggered_at=row.triggered_at,
+                    reset_at=row.reset_at,
+                )
+        except DatabaseError:
+            raise
+        except Exception as exc:
+            raise DatabaseError(
+                f"Failed to update risk control: {exc}"
+            ) from exc
 
     async def save_audit_log(self, record: dict) -> None:
         try:

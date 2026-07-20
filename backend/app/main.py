@@ -54,6 +54,7 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
         app.state.context = ctx
         if ctx.database is not None:
             await ctx.database.create_all()
+        await ctx.risk_manager.initialize()
         if ctx.agent_runtime is not None:
             await ctx.agent_runtime.initialize()
         outbox_stop = asyncio.Event()
@@ -85,10 +86,26 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
         await ctx.state_machine.transition(
             SystemState.INITIALIZING, reason="System boot", actor="main"
         )
-        await ctx.state_machine.transition(
-            SystemState.PAPER, reason="Initialization complete — Phase 1 PAPER mode", actor="main"
-        )
-        logger.info("System started in PAPER mode", event_type="SYSTEM_STARTED")
+        if ctx.risk_manager.control_state.active:
+            await ctx.state_machine.transition(
+                SystemState.ERROR,
+                reason="Durable kill switch active at boot",
+                actor="main",
+            )
+            logger.critical(
+                "System started fail-safe with durable kill switch",
+                event_type="SYSTEM_START_BLOCKED",
+            )
+        else:
+            await ctx.state_machine.transition(
+                SystemState.PAPER,
+                reason="Initialization complete - Phase 1 PAPER mode",
+                actor="main",
+            )
+            logger.info(
+                "System started in PAPER mode",
+                event_type="SYSTEM_STARTED",
+            )
         if (
             settings.agent_worker_enabled
             and ctx.agent_runtime_worker is not None

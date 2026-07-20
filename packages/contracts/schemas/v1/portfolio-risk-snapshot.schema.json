@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://capital-cipher.local/contracts/v1/portfolio-risk-snapshot.schema.json",
+  "title": "PortfolioRiskSnapshotV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "balance",
+    "position_count",
+    "gross_exposure",
+    "net_exposure",
+    "proposed_notional",
+    "resulting_gross_exposure",
+    "resulting_net_exposure",
+    "symbol_exposure",
+    "strategy_exposure",
+    "symbol_concentration_percent"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "balance": { "type": "number", "exclusiveMinimum": 0 },
+    "position_count": { "type": "integer", "minimum": 0 },
+    "gross_exposure": { "type": "number", "minimum": 0 },
+    "net_exposure": { "type": "number" },
+    "proposed_notional": { "type": "number", "minimum": 0 },
+    "resulting_gross_exposure": { "type": "number", "minimum": 0 },
+    "resulting_net_exposure": { "type": "number" },
+    "symbol_exposure": { "type": "number", "minimum": 0 },
+    "strategy_exposure": { "type": "number", "minimum": 0 },
+    "symbol_concentration_percent": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100
+    }
+  }
+}

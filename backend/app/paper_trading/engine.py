@@ -8,6 +8,7 @@ No real orders, no private API keys, ever (Phase 1).
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from uuid import NAMESPACE_URL, uuid5
 
 from app.audit.service import AuditService
 from app.core.errors import RiskError, ValidationError
@@ -63,6 +64,12 @@ class PaperTradingEngine:
                 balance=initial_balance,
             )
         ]
+
+    @property
+    def simulated_leverage(self) -> float:
+        if self._margin_model is not None:
+            return self._margin_model.assumptions.leverage
+        return self._risk.limits.default_leverage
 
     # -- order creation --------------------------------------------------------
     async def create_order(
@@ -122,7 +129,9 @@ class PaperTradingEngine:
             slippage_estimate = slippage_cost
             entry_precision = 2
         opened_at = occurred_at or datetime.now(timezone.utc)
-        margin_values: dict = {}
+        margin_values: dict = {
+            "leverage": risk_check.leverage or self._risk.limits.default_leverage
+        }
         if self._margin_model is not None:
             margin = self._margin_model.assumptions
             margin_values = {
@@ -144,12 +153,21 @@ class PaperTradingEngine:
             }
 
         order = PaperOrder(
+            paper_order_id=str(
+                uuid5(
+                    NAMESPACE_URL,
+                    f"paper-order:{risk_check.approval_id}",
+                )
+            ),
             decision_id=decision.decision_id,
             risk_check_id=risk_check.risk_check_id,
+            approval_id=risk_check.approval_id,
+            request_fingerprint=risk_check.request_fingerprint,
             correlation_id=decision.correlation_id,
             exchange=Exchange.BINANCE,
             symbol=decision.symbol,
             timeframe=decision.timeframe,
+            strategy=decision.strategy,
             side=side,
             entry_price=round(entry_price, entry_precision),
             stop_loss=risk_check.stop_loss,
@@ -169,14 +187,18 @@ class PaperTradingEngine:
             entity_id=order.paper_order_id,
             payload=order.model_dump(mode="json"),
         )
+        await self._risk.consume_approval(
+            decision,
+            risk_check,
+            order,
+            current_price=current_price,
+        )
         self._processed_keys.add(key)
         self.open_orders[order.paper_order_id] = order
         if self._execution_model is not None:
             self._execution_costs[order.paper_order_id] = ledger
             self._last_funding_at[order.paper_order_id] = opened_at
-        self._risk.set_open_positions(len(self.open_orders))
-        if self._repository is not None:
-            await self._repository.save_paper_order(order)
+        self._risk.register_position(order)
         logger.info(
             f"Paper order created {order.symbol} {order.side.value}",
             event_type="PAPER_ORDER_CREATED",
@@ -322,7 +344,7 @@ class PaperTradingEngine:
         self.open_orders.pop(paper_order_id)
         self.closed_orders.append(closed)
         self.balance += net_pnl
-        self._risk.set_open_positions(len(self.open_orders))
+        self._risk.unregister_position(paper_order_id)
         self._risk.register_trade_result(net_pnl)
         self._peak_equity = max(self._peak_equity, self.balance)
         drawdown = (self._peak_equity - self.balance) / self._peak_equity * 100

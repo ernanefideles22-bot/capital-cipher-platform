@@ -406,6 +406,7 @@ class Orchestrator:
             atr=atr,
             data_quality_score=quality.data_quality_score,
             balance=self._paper.balance,
+            leverage=self._paper.simulated_leverage,
             risk_per_trade_percent_override=(
                 risk_profile.risk_per_trade_percent if risk_profile else None
             ),
@@ -413,12 +414,21 @@ class Orchestrator:
             max_open_positions_override=(
                 risk_profile.max_open_positions if risk_profile else None
             ),
+            max_strategy_exposure_percent_override=(
+                risk_profile.max_strategy_exposure_percent
+                if risk_profile
+                else None
+            ),
+            max_portfolio_var_percent_override=(
+                risk_profile.max_portfolio_var_percent
+                if risk_profile
+                else None
+            ),
         )
         decision_after_risk = decision.model_copy(update={"risk_status": risk_check.risk_status})
         self.last_decision = decision_after_risk
         self.recent_decisions[-1] = decision_after_risk
         if self._repository is not None:
-            await self._repository.save_risk_check(risk_check)
             await self._repository.update_decision_risk_status(
                 decision.decision_id, risk_check.risk_status.value
             )

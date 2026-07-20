@@ -105,8 +105,8 @@ migration—is documented in `../docs/month-4-completion.md`.
 
 ## Governed agent runtime
 
-Month 5 runs exactly 15 analytical agents through one PAPER-only runtime:
-three existing primary decision agents and 12 evidence-only shadow
+The governed runtime now hosts exactly 40 analytical PAPER agents:
+three existing primary decision agents and 37 evidence-only shadow
 specialists. Every execution has a versioned contract, deterministic
 idempotency identity, bounded retries, a recoverable lease, isolated
 append-only memory, and a complete trace.
@@ -119,19 +119,25 @@ GET  /api/v1/agents/executions
 GET  /api/v1/agents/executions/{execution_id}
 ```
 
-The 12 shadow outputs are visible in decision evidence but cannot alter
+The 37 shadow outputs are visible in decision evidence but cannot alter
 operational action, confidence, warnings, risk, or paper orders. See
 `../docs/month-5-agent-runtime.md` for the cohort, contracts, recovery
 semantics, storage migration, and exit evidence.
+
+Month 6 adds the central portfolio-risk authority, gross/net/symbol/strategy
+exposure, concentration, historical VaR with a conservative fallback,
+single-use execution approvals and a durable kill switch. See
+`../docs/month-6-central-risk-engine.md` for limits, transaction semantics,
+the 40-agent cohort and completion evidence.
 
 ## Architecture
 
 ```text
 Market Data Adapter (Binance/Bybit/CSV/Replay)
   → Data Quality → CandleStore
-  → Orchestrator → Agent Runtime (3 PRIMARY + 12 SHADOW)
+  → Orchestrator → Agent Runtime (3 PRIMARY + 37 SHADOW)
   → Decision Engine (weighted consolidation, no simple voting)
-  → Risk Manager (absolute veto, audited before anything advances)
+  → Central Risk (portfolio VaR + single-use approval + absolute veto)
   → Paper Trading Engine (fees + slippage simulated)
   → Audit trail (correlation_id reconstructs every chain)
 ```

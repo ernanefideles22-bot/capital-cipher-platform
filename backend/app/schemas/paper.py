@@ -14,10 +14,13 @@ class PaperOrder(BaseModel):
     paper_order_id: str = Field(default_factory=lambda: str(uuid4()))
     decision_id: str
     risk_check_id: str
+    approval_id: str | None = None
+    request_fingerprint: str | None = None
     correlation_id: str
     exchange: Exchange
     symbol: str = Field(min_length=1)
     timeframe: str | None = None
+    strategy: str = "UNSPECIFIED"
     side: OrderSide
     entry_price: float
     stop_loss: float | None = None

@@ -187,14 +187,12 @@ async def test_liquidation_precedes_stop_and_charges_liquidation_fee(
         started_at=start,
     )
     decision = make_decision()
-    check = RiskCheck(
-        decision_id=decision.decision_id,
-        correlation_id=decision.correlation_id,
-        risk_status=RiskStatus.APPROVED,
-        approved=True,
-        position_size=1_000,
-        stop_loss=95,
-        take_profit=110,
+    risk_manager.limits.risk_per_trade_percent = 0.5
+    check = await risk_manager.check(
+        decision,
+        entry_price=100,
+        atr=10 / 3,
+        leverage=5,
     )
     order = await engine.create_order(
         decision,

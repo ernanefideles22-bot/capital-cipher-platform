@@ -6,6 +6,9 @@ import asyncio
 from dataclasses import dataclass
 
 from app.agents.market_data import MarketDataAgent
+from app.agents.advanced_specialists import (
+    build_advanced_shadow_specialists,
+)
 from app.agents.quant import QuantAgent
 from app.agents.registry import AgentRegistry
 from app.agents.runtime import AgentRuntime, AgentRuntimeWorker
@@ -172,14 +175,35 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
     limits = RiskLimits(
         risk_per_trade_percent=settings.risk_per_trade_percent,
         max_daily_drawdown_percent=settings.max_daily_drawdown_percent,
+        max_total_drawdown_percent=settings.max_total_drawdown_percent,
         max_consecutive_losses=settings.max_consecutive_losses,
         max_open_positions=settings.max_open_positions,
         default_leverage=settings.default_leverage,
         max_leverage=settings.max_leverage_simulated,
         max_market_data_delay_ms=settings.max_market_data_delay_ms,
+        max_gross_exposure_percent=settings.max_gross_exposure_percent,
+        max_net_exposure_percent=settings.max_net_exposure_percent,
+        max_symbol_exposure_percent=settings.max_symbol_exposure_percent,
+        max_strategy_exposure_percent=settings.max_strategy_exposure_percent,
+        max_single_position_percent=settings.max_single_position_percent,
+        max_symbol_concentration_percent=(
+            settings.max_symbol_concentration_percent
+        ),
+        max_portfolio_var_percent=settings.max_portfolio_var_percent,
+        var_confidence=settings.var_confidence,
+        var_lookback=settings.var_lookback,
+        var_min_observations=settings.var_min_observations,
+        fallback_volatility_percent=settings.fallback_volatility_percent,
+        approval_ttl_seconds=settings.risk_approval_ttl_seconds,
+        max_entry_deviation_bps=settings.max_entry_deviation_bps,
     )
     risk_manager = RiskManager(
-        limits, state_machine, audit_service, initial_balance=settings.paper_initial_balance
+        limits,
+        state_machine,
+        audit_service,
+        initial_balance=settings.paper_initial_balance,
+        repository=repository,
+        candle_store=candle_store,
     )
     paper_engine = PaperTradingEngine(
         audit_service,
@@ -202,12 +226,13 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         quant_agent,
         trend_agent,
         *build_shadow_specialists(candle_store),
+        *build_advanced_shadow_specialists(candle_store),
     ]
     for agent in runtime_agents:
         agent.timeout_ms = settings.agent_timeout_ms
         agent.max_attempts = settings.agent_max_attempts
     agent_registry = AgentRegistry(runtime_agents)
-    agent_registry.validate_cohort(expected_count=15)
+    agent_registry.validate_cohort(expected_count=40)
     agent_runtime = AgentRuntime(
         agent_registry,
         repository=repository,

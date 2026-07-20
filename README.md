@@ -13,7 +13,7 @@ frontend/            React + Vite + TypeScript dashboard
 packages/contracts/  versioned, language-neutral JSON Schema contracts
 Redis Streams        optional durable broker with PostgreSQL outbox
 Data warehouse       time-series, manifests, clock gates, gaps, backfills
-Agent runtime        registry, durable queue, isolated memory, 15 PAPER agents
+Agent runtime        registry, durable queue, isolated memory, 40 PAPER agents
 turbo.json           monorepo task graph
 docker-compose.yml   backend + PostgreSQL (development)
 ```
@@ -54,3 +54,7 @@ Supabase migration complete Month 4 in
 The governed, versioned PAPER runtime, durable leased queue, isolated
 execution memory, complete traces, and fixed 15-agent cohort complete Month 5
 in [`docs/month-5-agent-runtime.md`](docs/month-5-agent-runtime.md).
+The central portfolio-risk authority, VaR, exposure and concentration limits,
+single-use approvals, durable kill switch, and 40-agent PAPER cohort complete
+Month 6 in
+[`docs/month-6-central-risk-engine.md`](docs/month-6-central-risk-engine.md).

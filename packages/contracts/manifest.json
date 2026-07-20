@@ -25,6 +25,10 @@
     "schemas/v1/agent-registration.schema.json",
     "schemas/v1/agent-execution-request.schema.json",
     "schemas/v1/agent-execution-job.schema.json",
-    "schemas/v1/agent-execution-trace.schema.json"
+    "schemas/v1/agent-execution-trace.schema.json",
+    "schemas/v1/portfolio-risk-snapshot.schema.json",
+    "schemas/v1/risk-evaluation.schema.json",
+    "schemas/v1/order-approval.schema.json",
+    "schemas/v1/risk-control-event.schema.json"
   ]
 }

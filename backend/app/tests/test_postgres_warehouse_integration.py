@@ -18,6 +18,8 @@ from app.backtesting.walk_forward import WalkForwardEngine
 from app.database.models import (
     AgentExecutionAttemptModel,
     INTERNAL_SCHEMA,
+    OrderApprovalModel,
+    RiskEvaluationModel,
     WalkForwardExperimentModel,
 )
 from app.database.repositories.repository import Repository
@@ -25,6 +27,10 @@ from app.database.session import Database
 from app.market_data.catalog import DataCatalog
 from app.market_data.gaps import GapService
 from app.market_data.store import CandleStore
+from app.audit.service import AuditService
+from app.core.state_machine import SystemState, SystemStateMachine
+from app.paper_trading.engine import PaperTradingEngine
+from app.risk.manager import RiskManager
 from app.schemas.agents import AgentExecutionRequest, AgentInput
 from app.schemas.backfill import HistoricalBackfillJob
 from app.schemas.backtest import WalkForwardProtocol, WalkForwardRequest
@@ -33,7 +39,8 @@ from app.schemas.data_lake import (
     BackfillRawPageLink,
     RawDataObject,
 )
-from app.tests.conftest import make_series
+from app.schemas.risk import ApprovalStatus, RiskLimits
+from app.tests.conftest import make_decision, make_series
 
 
 @pytest.mark.skipif(
@@ -180,6 +187,40 @@ async def test_real_postgres_internal_warehouse_round_trip():
             ),
         )
     )
+    risk_state_machine = SystemStateMachine()
+    await risk_state_machine.transition(
+        SystemState.INITIALIZING,
+        reason="postgres test",
+        actor="test",
+    )
+    await risk_state_machine.transition(
+        SystemState.PAPER,
+        reason="postgres test",
+        actor="test",
+    )
+    risk_audit = AuditService(repository=repository)
+    risk_manager = RiskManager(
+        RiskLimits(),
+        risk_state_machine,
+        risk_audit,
+        repository=repository,
+    )
+    paper_engine = PaperTradingEngine(
+        risk_audit,
+        risk_manager,
+        repository=repository,
+    )
+    risk_decision = make_decision()
+    central_check = await risk_manager.check(
+        risk_decision,
+        entry_price=100,
+        atr=1,
+    )
+    central_order = await paper_engine.create_order(
+        risk_decision,
+        central_check,
+        current_price=100,
+    )
     with pytest.raises(SQLAlchemyError, match="append-only"):
         async with database.session() as session, session.begin():
             await session.execute(
@@ -199,6 +240,16 @@ async def test_real_postgres_internal_warehouse_round_trip():
                     == runtime_trace.job.execution_id
                 )
                 .values(worker_id="tampered-worker")
+            )
+    with pytest.raises(SQLAlchemyError, match="append-only"):
+        async with database.session() as session, session.begin():
+            await session.execute(
+                update(RiskEvaluationModel)
+                .where(
+                    RiskEvaluationModel.evaluation_id
+                    == central_check.evaluation_id
+                )
+                .values(risk_status="BLOCKED")
             )
 
     async with database.engine.connect() as connection:
@@ -279,6 +330,40 @@ async def test_real_postgres_internal_warehouse_round_trip():
             ),
             {"schema_name": INTERNAL_SCHEMA},
         )
+        central_risk_rls_count = await connection.scalar(
+            text(
+                "SELECT count(*) "
+                "FROM pg_class c "
+                "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                "WHERE n.nspname = :schema_name "
+                "AND c.relname IN "
+                "('risk_evaluations', 'order_approvals', "
+                "'risk_control_state', 'risk_control_events') "
+                "AND c.relrowsecurity"
+            ),
+            {"schema_name": INTERNAL_SCHEMA},
+        )
+        approval_status = await connection.scalar(
+            text(
+                "SELECT status FROM capital_cipher.order_approvals "
+                "WHERE approval_id = :approval_id"
+            ),
+            {"approval_id": central_check.approval_id},
+        )
+        central_risk_security_definers = await connection.scalar(
+            text(
+                "SELECT count(*) "
+                "FROM pg_proc p "
+                "JOIN pg_namespace n ON n.oid = p.pronamespace "
+                "WHERE n.nspname = :schema_name "
+                "AND p.proname IN "
+                "('reject_central_risk_evidence_mutation', "
+                "'guard_order_approval_transition', "
+                "'guard_risk_control_transition') "
+                "AND p.prosecdef"
+            ),
+            {"schema_name": INTERNAL_SCHEMA},
+        )
     await database.dispose()
 
     assert loaded == manifest
@@ -306,6 +391,10 @@ async def test_real_postgres_internal_warehouse_round_trip():
         "agent_execution_jobs",
         "agent_execution_attempts",
         "agent_memory_entries",
+        "risk_evaluations",
+        "order_approvals",
+        "risk_control_state",
+        "risk_control_events",
     } <= tables
     assert "trg_walk_forward_experiments_immutable" in immutable_triggers
     assert row_security_enabled is True
@@ -316,3 +405,7 @@ async def test_real_postgres_internal_warehouse_round_trip():
     }
     assert agent_rls_count == 3
     assert agent_function_is_security_definer is False
+    assert central_order.approval_id == central_check.approval_id
+    assert approval_status == ApprovalStatus.CONSUMED.value
+    assert central_risk_rls_count == 4
+    assert central_risk_security_definers == 0
