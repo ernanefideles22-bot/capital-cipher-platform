@@ -29,6 +29,13 @@ def test_no_private_api_key_settings_exist():
     assert not (field_names & forbidden)
 
 
+def test_required_broker_cannot_start_without_redis_url():
+    from app.core.config import Settings
+
+    with pytest.raises(Exception):
+        Settings(EVENT_BROKER_REQUIRED=True)
+
+
 def test_no_real_order_code_in_backend():
     """No module may reference private exchange order endpoints."""
     forbidden_fragments = [

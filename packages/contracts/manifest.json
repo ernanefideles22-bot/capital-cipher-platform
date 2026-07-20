@@ -5,6 +5,7 @@
   "schemas": [
     "schemas/v1/event-envelope.schema.json",
     "schemas/v1/market-candle.schema.json",
-    "schemas/v1/raw-market-event.schema.json"
+    "schemas/v1/raw-market-event.schema.json",
+    "schemas/v1/replay-checkpoint.schema.json"
   ]
 }

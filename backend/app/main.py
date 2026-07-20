@@ -5,6 +5,7 @@ Phase 1: PAPER mode only. No real execution, no private API keys (docs/16).
 
 from __future__ import annotations
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 
@@ -52,6 +53,27 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
         app.state.context = ctx
         if ctx.database is not None:
             await ctx.database.create_all()
+        outbox_stop = asyncio.Event()
+        outbox_task = None
+        if ctx.event_transport is not None:
+            try:
+                broker_healthy = await ctx.event_transport.healthcheck()
+            except Exception as exc:
+                broker_healthy = False
+                logger.error(
+                    "Redis Streams healthcheck failed",
+                    event_type="BROKER_UNAVAILABLE",
+                    metadata={"error_type": type(exc).__name__},
+                )
+            if not broker_healthy and settings.event_broker_required:
+                await ctx.event_transport.close()
+                if ctx.database is not None:
+                    await ctx.database.dispose()
+                raise RuntimeError("Required Redis Streams broker is unavailable")
+            if ctx.outbox_dispatcher is not None:
+                outbox_task = asyncio.create_task(
+                    ctx.outbox_dispatcher.run(outbox_stop)
+                )
         # State machine boot: OFFLINE -> INITIALIZING -> PAPER (docs/30).
         await ctx.state_machine.transition(
             SystemState.INITIALIZING, reason="System boot", actor="main"
@@ -98,6 +120,11 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
 
         if adapter is not None:
             await adapter.disconnect()
+        if outbox_task is not None:
+            outbox_stop.set()
+            await outbox_task
+        if ctx.event_transport is not None:
+            await ctx.event_transport.close()
         if ctx.database is not None:
             await ctx.database.dispose()
         logger.info("System stopped", event_type="SYSTEM_STOPPED")

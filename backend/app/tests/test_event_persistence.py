@@ -9,6 +9,7 @@ from app.database.models import EventJournalModel, RawMarketEventModel
 from app.database.repositories.repository import Repository
 from app.database.session import Database
 from app.market_data.adapters.binance import build_raw_kline_event
+from app.schemas.replay import ReplayCheckpoint
 
 
 async def test_raw_market_payload_is_persisted_idempotently():
@@ -87,3 +88,35 @@ async def test_bus_message_is_journaled_once_before_delivery():
     assert stored.schema_version == "1.0.0"
     assert stored.payload == {"mode": "PAPER"}
     assert received == ["journal-event-id", "other-event-id"]
+
+
+async def test_replay_checkpoint_upsert_is_atomic_and_loadable():
+    database = Database("sqlite+aiosqlite:///:memory:")
+    await database.create_all()
+    repository = Repository(database)
+    initial = ReplayCheckpoint(
+        replay_id="database-replay",
+        consumer_name="market-replay",
+        topic="market.replay.v1",
+        dataset_hash="a" * 64,
+    )
+    await repository.save_replay_checkpoint(initial)
+    await repository.save_replay_checkpoint(
+        initial.model_copy(
+            update={
+                "next_offset": 12,
+                "last_event_id": "b" * 64,
+                "events_processed": 12,
+                "status": "RUNNING",
+            }
+        )
+    )
+
+    loaded = await repository.load_replay_checkpoint(
+        "database-replay", "market-replay", "market.replay.v1"
+    )
+    await database.dispose()
+
+    assert loaded is not None
+    assert loaded.next_offset == 12
+    assert loaded.last_event_id == "b" * 64

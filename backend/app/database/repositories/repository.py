@@ -9,6 +9,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from app.core.errors import DatabaseError
 from app.database.models import (
@@ -16,9 +18,11 @@ from app.database.models import (
     AuditLogModel,
     DecisionModel,
     EventJournalModel,
+    EventOutboxModel,
     MarketCandleModel,
     PaperOrderModel,
     RawMarketEventModel,
+    ReplayCheckpointModel,
     RiskCheckModel,
     SystemEventModel,
 )
@@ -26,6 +30,7 @@ from app.database.session import Database
 from app.schemas.agents import AgentOutput
 from app.schemas.decisions import Decision
 from app.schemas.events import BusMessage
+from app.schemas.replay import ReplayCheckpoint
 from app.schemas.market import Candle, RawMarketEvent
 from app.schemas.paper import PaperOrder
 from app.schemas.risk import RiskCheck
@@ -54,33 +59,227 @@ class Repository:
         except Exception as exc:
             raise DatabaseError(f"Failed to persist system event: {exc}") from exc
 
-    async def save_bus_message(self, message: BusMessage) -> bool:
+    def _dialect_insert(self, model):
+        dialect = self._db.engine.dialect.name
+        if dialect == "postgresql":
+            return postgresql_insert(model)
+        if dialect == "sqlite":
+            return sqlite_insert(model)
+        return None
+
+    async def save_bus_message(self, message: BusMessage):
         """Append a versioned event before any consumer handles it."""
+        from app.core.journal import JournalWriteResult
+
         try:
             async with self._db.session() as session, session.begin():
-                existing = await session.scalar(
-                    select(EventJournalModel.message_id).where(
-                        EventJournalModel.event_id == message.event_id
+                values = {
+                    "message_id": message.message_id,
+                    "event_id": message.event_id,
+                    "correlation_id": message.correlation_id,
+                    "topic": message.topic,
+                    "event_type": message.event_type,
+                    "source": message.source,
+                    "schema_version": message.schema_version,
+                    "payload": message.payload,
+                    "created_at": message.timestamp,
+                }
+                insert_statement = self._dialect_insert(EventJournalModel)
+                if insert_statement is not None:
+                    statement = (
+                        insert_statement.values(**values)
+                        .on_conflict_do_nothing(index_elements=["event_id"])
+                        .returning(EventJournalModel.event_id)
+                    )
+                    inserted_event_id = await session.scalar(statement)
+                    if inserted_event_id is not None:
+                        return JournalWriteResult(inserted=True, broker_published=False)
+                else:
+                    existing_id = await session.scalar(
+                        select(EventJournalModel.event_id).where(
+                            EventJournalModel.event_id == message.event_id
+                        )
+                    )
+                    if existing_id is None:
+                        session.add(EventJournalModel(**values))
+                        return JournalWriteResult(inserted=True, broker_published=False)
+
+                published_at = await session.scalar(
+                    select(EventOutboxModel.published_at).where(
+                        EventOutboxModel.event_id == message.event_id
                     )
                 )
-                if existing is not None:
-                    return False
-                session.add(
-                    EventJournalModel(
-                        message_id=message.message_id,
-                        event_id=message.event_id,
-                        correlation_id=message.correlation_id,
-                        topic=message.topic,
-                        event_type=message.event_type,
-                        source=message.source,
-                        schema_version=message.schema_version,
-                        payload=message.payload,
-                        created_at=message.timestamp,
-                    )
+                return JournalWriteResult(
+                    inserted=False,
+                    broker_published=published_at is not None,
                 )
-            return True
         except Exception as exc:
             raise DatabaseError(f"Failed to journal bus message: {exc}") from exc
+
+    async def mark_bus_message_published(
+        self, event_id: str, broker_message_id: str
+    ) -> None:
+        now = _now()
+        try:
+            async with self._db.session() as session, session.begin():
+                insert_statement = self._dialect_insert(EventOutboxModel)
+                values = {
+                    "event_id": event_id,
+                    "broker_message_id": broker_message_id,
+                    "published_at": now,
+                    "publish_attempts": 1,
+                    "last_error_type": None,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                if insert_statement is not None:
+                    await session.execute(
+                        insert_statement.values(**values).on_conflict_do_update(
+                            index_elements=["event_id"],
+                            set_={
+                                "broker_message_id": broker_message_id,
+                                "published_at": now,
+                                "publish_attempts": EventOutboxModel.publish_attempts + 1,
+                                "last_error_type": None,
+                                "updated_at": now,
+                            },
+                        )
+                    )
+                else:
+                    row = await session.get(EventOutboxModel, event_id)
+                    if row is None:
+                        session.add(EventOutboxModel(**values))
+                    else:
+                        row.broker_message_id = broker_message_id
+                        row.published_at = now
+                        row.publish_attempts += 1
+                        row.last_error_type = None
+                        row.updated_at = now
+        except Exception as exc:
+            raise DatabaseError(f"Failed to mark bus message published: {exc}") from exc
+
+    async def mark_bus_message_failed(self, event_id: str, error_type: str) -> None:
+        now = _now()
+        try:
+            async with self._db.session() as session, session.begin():
+                insert_statement = self._dialect_insert(EventOutboxModel)
+                values = {
+                    "event_id": event_id,
+                    "broker_message_id": None,
+                    "published_at": None,
+                    "publish_attempts": 1,
+                    "last_error_type": error_type,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                if insert_statement is not None:
+                    await session.execute(
+                        insert_statement.values(**values).on_conflict_do_update(
+                            index_elements=["event_id"],
+                            set_={
+                                "publish_attempts": EventOutboxModel.publish_attempts + 1,
+                                "last_error_type": error_type,
+                                "updated_at": now,
+                            },
+                        )
+                    )
+                else:
+                    row = await session.get(EventOutboxModel, event_id)
+                    if row is None:
+                        session.add(EventOutboxModel(**values))
+                    else:
+                        row.publish_attempts += 1
+                        row.last_error_type = error_type
+                        row.updated_at = now
+        except Exception as exc:
+            raise DatabaseError(f"Failed to mark bus message failed: {exc}") from exc
+
+    async def list_pending_bus_messages(self, limit: int = 100) -> list[BusMessage]:
+        async with self._db.session() as session:
+            result = await session.execute(
+                select(EventJournalModel)
+                .outerjoin(
+                    EventOutboxModel,
+                    EventOutboxModel.event_id == EventJournalModel.event_id,
+                )
+                .where(EventOutboxModel.published_at.is_(None))
+                .order_by(EventJournalModel.created_at, EventJournalModel.message_id)
+                .limit(limit)
+            )
+            return [
+                BusMessage(
+                    message_id=row.message_id,
+                    event_id=row.event_id,
+                    correlation_id=row.correlation_id,
+                    topic=row.topic,
+                    event_type=row.event_type,
+                    source=row.source,
+                    timestamp=row.created_at,
+                    schema_version=row.schema_version,
+                    payload=row.payload,
+                )
+                for row in result.scalars()
+            ]
+
+    async def load_replay_checkpoint(
+        self,
+        replay_id: str,
+        consumer_name: str,
+        topic: str,
+    ) -> ReplayCheckpoint | None:
+        async with self._db.session() as session:
+            row = await session.get(
+                ReplayCheckpointModel,
+                (replay_id, consumer_name, topic),
+            )
+            if row is None:
+                return None
+            return ReplayCheckpoint(
+                replay_id=row.replay_id,
+                consumer_name=row.consumer_name,
+                topic=row.topic,
+                schema_version=row.schema_version,
+                dataset_hash=row.dataset_hash,
+                next_offset=row.next_offset,
+                last_event_id=row.last_event_id,
+                events_processed=row.events_processed,
+                status=row.status,
+                updated_at=row.updated_at,
+                completed_at=row.completed_at,
+            )
+
+    async def save_replay_checkpoint(self, checkpoint: ReplayCheckpoint) -> None:
+        values = checkpoint.model_dump()
+        insert_statement = self._dialect_insert(ReplayCheckpointModel)
+        try:
+            async with self._db.session() as session, session.begin():
+                if insert_statement is not None:
+                    statement = insert_statement.values(**values).on_conflict_do_update(
+                        index_elements=["replay_id", "consumer_name", "topic"],
+                        set_={
+                            "schema_version": checkpoint.schema_version,
+                            "dataset_hash": checkpoint.dataset_hash,
+                            "next_offset": checkpoint.next_offset,
+                            "last_event_id": checkpoint.last_event_id,
+                            "events_processed": checkpoint.events_processed,
+                            "status": checkpoint.status,
+                            "updated_at": checkpoint.updated_at,
+                            "completed_at": checkpoint.completed_at,
+                        },
+                    )
+                    await session.execute(statement)
+                else:
+                    row = await session.get(
+                        ReplayCheckpointModel,
+                        (checkpoint.replay_id, checkpoint.consumer_name, checkpoint.topic),
+                    )
+                    if row is None:
+                        session.add(ReplayCheckpointModel(**values))
+                    else:
+                        for key, value in values.items():
+                            setattr(row, key, value)
+        except Exception as exc:
+            raise DatabaseError(f"Failed to save replay checkpoint: {exc}") from exc
 
     async def save_raw_market_event(self, event: RawMarketEvent) -> None:
         """Persist a public exchange payload once, before normalization."""

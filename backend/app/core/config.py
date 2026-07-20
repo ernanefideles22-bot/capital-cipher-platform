@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PHASE_1_ALLOWED_MODES: tuple[str, ...] = ("OFFLINE", "PAPER")
@@ -23,12 +23,37 @@ class Settings(BaseSettings):
 
     app_env: str = Field(default="local", alias="APP_ENV")
     app_name: str = "capital-cipher-api"
-    app_version: str = "0.5.0"
+    app_version: str = "0.7.0"
 
     system_mode: str = Field(default="PAPER", alias="SYSTEM_MODE")
 
     database_url: str = Field(
         default="sqlite+aiosqlite:///./capital_cipher.db", alias="DATABASE_URL"
+    )
+    redis_url: str | None = Field(default=None, alias="REDIS_URL")
+    event_broker_required: bool = Field(default=False, alias="EVENT_BROKER_REQUIRED")
+    redis_stream_prefix: str = Field(
+        default="capital-cipher",
+        alias="REDIS_STREAM_PREFIX",
+        pattern=r"^[a-z0-9][a-z0-9:-]{1,63}$",
+    )
+    redis_stream_max_length: int = Field(
+        default=100_000,
+        alias="REDIS_STREAM_MAX_LENGTH",
+        ge=1_000,
+        le=10_000_000,
+    )
+    broker_max_message_bytes: int = Field(
+        default=1_000_000,
+        alias="BROKER_MAX_MESSAGE_BYTES",
+        ge=1_024,
+        le=10_000_000,
+    )
+    outbox_poll_interval_seconds: float = Field(
+        default=1.0,
+        alias="OUTBOX_POLL_INTERVAL_SECONDS",
+        ge=0.1,
+        le=60.0,
     )
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     cors_allowed_origins: str = Field(
@@ -103,6 +128,12 @@ class Settings(BaseSettings):
         if len(candidate) < 32:
             raise ValueError("ADMIN_API_KEY must contain at least 32 characters")
         return candidate
+
+    @model_validator(mode="after")
+    def validate_event_broker_configuration(self) -> "Settings":
+        if self.event_broker_required and not self.redis_url:
+            raise ValueError("REDIS_URL is required when EVENT_BROKER_REQUIRED is enabled")
+        return self
 
     @property
     def allowed_symbols_list(self) -> list[str]:

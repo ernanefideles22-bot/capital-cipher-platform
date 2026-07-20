@@ -45,5 +45,6 @@ replayed or audited.
 - No external broker selection yet.
 - No claim of exactly-once delivery across processes.
 
-The next increment will add a production broker adapter and replay checkpoints
-behind the existing `EventBus` boundary. PAPER mode remains mandatory.
+The Redis Streams adapter and deterministic replay checkpoints are documented
+in [`month-2-redis-replay.md`](month-2-redis-replay.md). PAPER mode remains
+mandatory.

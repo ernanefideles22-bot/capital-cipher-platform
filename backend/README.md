@@ -35,11 +35,21 @@ ENABLE_MARKET_DATA=1 uvicorn app.main:app
 python -m pytest app/tests -q
 ```
 
-106 tests cover: agent contracts, indicators, risk scenarios (approve/reduce/
-block/kill-switch/drawdown/losses/latency/audit-failure), decision engine
-(weights, conflicts, minimum confidence), paper trading (SL/TP, fees,
-slippage, idempotency), data quality, state machine and Phase 1 security
-guarantees (LIVE mode impossible, no API key fields, no real order code).
+The suite covers agent and event contracts, Redis transport, durable outbox,
+deterministic replay checkpoints, indicators, risk scenarios, the decision
+engine, paper trading, data quality, state transitions, and Phase 1 security
+guarantees (LIVE mode impossible, no private exchange keys, no real orders).
+
+## Event transport and replay
+
+Without `REDIS_URL`, the backend uses only the in-process bus. With a Redis
+URL, every event is first journaled in PostgreSQL/SQLite, then published to a
+bounded Redis Stream. Failed publications stay in `event_outbox` for retry.
+
+Set `EVENT_BROKER_REQUIRED=1` only when Redis must be healthy before local
+PAPER consumers receive events. Replay checkpoints are stored after successful
+consumer handling and resume from the next confirmed event. See
+`../docs/month-2-redis-replay.md` for delivery and failure semantics.
 
 ## Phase 2 additions
 

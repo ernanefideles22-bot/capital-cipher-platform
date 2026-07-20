@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/replay-checkpoint.schema.json",
+  "title": "Capital Cipher Replay Checkpoint v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "replay_id",
+    "consumer_name",
+    "topic",
+    "dataset_hash",
+    "next_offset",
+    "last_event_id",
+    "events_processed",
+    "status",
+    "updated_at",
+    "completed_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "replay_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]{3,128}$"
+    },
+    "consumer_name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]{3,128}$"
+    },
+    "topic": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_.-]+\\.v[1-9][0-9]*$"
+    },
+    "dataset_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "next_offset": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "last_event_id": {
+      "type": ["string", "null"]
+    },
+    "events_processed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "status": {
+      "enum": ["RUNNING", "COMPLETED", "FAILED"]
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "completed_at": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    }
+  },
+  "additionalProperties": false
+}

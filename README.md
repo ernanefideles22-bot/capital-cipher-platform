@@ -11,6 +11,7 @@ live execution — by design and by test.**
 backend/             FastAPI + Pydantic + SQLAlchemy
 frontend/            React + Vite + TypeScript dashboard
 packages/contracts/  versioned, language-neutral JSON Schema contracts
+Redis Streams        optional durable broker with PostgreSQL outbox
 turbo.json           monorepo task graph
 docker-compose.yml   backend + PostgreSQL (development)
 ```
@@ -26,3 +27,6 @@ repository remains the authoritative product and architecture specification.
 See [MIGRATION.md](MIGRATION.md) for repository roles and
 [`docs/month-2-event-foundation.md`](docs/month-2-event-foundation.md) for the
 current contracts and data-ingestion foundation.
+
+The Redis transport and replay guarantees are documented in
+[`docs/month-2-redis-replay.md`](docs/month-2-redis-replay.md).

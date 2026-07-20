@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 from app.agents.market_data import MarketDataAgent
@@ -11,7 +12,10 @@ from app.audit.service import AuditService
 from app.backtesting.engine import BacktestingEngine
 from app.core.config import Settings
 from app.core.event_bus import EventBus
+from app.core.outbox import OutboxDispatcher
 from app.core.state_machine import SystemStateMachine
+from app.core.transports.base import EventTransport
+from app.core.transports.redis_streams import RedisStreamTransport
 from app.database.repositories.repository import Repository
 from app.database.session import Database
 from app.market_data.store import CandleStore
@@ -35,6 +39,8 @@ class AppContext:
     backtesting_engine: BacktestingEngine = None  # type: ignore[assignment]
     database: Database | None = None
     repository: Repository | None = None
+    event_transport: EventTransport | None = None
+    outbox_dispatcher: OutboxDispatcher | None = None
     market_connected: bool = False
 
 
@@ -47,8 +53,35 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
     if with_database:
         database = Database(settings.database_url)
         repository = Repository(database)
+    event_transport: EventTransport | None = None
+    outbox_dispatcher: OutboxDispatcher | None = None
+    publication_lock = asyncio.Lock()
+    if settings.redis_url:
+        if repository is None:
+            raise ValueError("Redis Streams requires durable database journaling")
+        event_transport = RedisStreamTransport(
+            settings.redis_url,
+            stream_prefix=settings.redis_stream_prefix,
+            max_stream_length=settings.redis_stream_max_length,
+            max_message_bytes=settings.broker_max_message_bytes,
+        )
+        outbox_dispatcher = OutboxDispatcher(
+            repository,
+            event_transport,
+            poll_interval_seconds=settings.outbox_poll_interval_seconds,
+            publication_lock=publication_lock,
+        )
     event_bus = EventBus(
-        journal=repository.save_bus_message if repository is not None else None
+        journal=repository.save_bus_message if repository is not None else None,
+        transport=event_transport,
+        transport_required=settings.event_broker_required,
+        mark_published=(
+            repository.mark_bus_message_published if repository is not None else None
+        ),
+        mark_failed=(
+            repository.mark_bus_message_failed if repository is not None else None
+        ),
+        publication_lock=publication_lock,
     )
 
     audit_service = AuditService(repository=repository)
@@ -115,6 +148,8 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         backtesting_engine=backtesting_engine,
         database=database,
         repository=repository,
+        event_transport=event_transport,
+        outbox_dispatcher=outbox_dispatcher,
     )
     context_holder["ctx"] = ctx
     return ctx

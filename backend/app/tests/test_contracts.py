@@ -15,6 +15,7 @@ from app.schemas.common import AgentStatus, Signal
 from app.schemas.decisions import Decision
 from app.schemas.events import BusMessage
 from app.schemas.market import Candle
+from app.schemas.replay import ReplayCheckpoint
 from app.tests.conftest import make_candle
 
 CONTRACT_ROOT = Path(__file__).resolve().parents[3] / "packages" / "contracts" / "schemas" / "v1"
@@ -116,3 +117,14 @@ def test_bus_message_matches_published_v1_contract():
     )
     validator = Draft202012Validator(load_contract("event-envelope.schema.json"))
     assert list(validator.iter_errors(message.model_dump(mode="json"))) == []
+
+
+def test_replay_checkpoint_matches_published_v1_contract():
+    checkpoint = ReplayCheckpoint(
+        replay_id="contract-replay",
+        consumer_name="market-replay",
+        topic="market.replay.v1",
+        dataset_hash="a" * 64,
+    )
+    validator = Draft202012Validator(load_contract("replay-checkpoint.schema.json"))
+    assert list(validator.iter_errors(checkpoint.model_dump(mode="json"))) == []

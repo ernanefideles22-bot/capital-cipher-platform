@@ -5,7 +5,17 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, Integer, Numeric, String, Text
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import JSON
@@ -47,6 +57,29 @@ class EventJournalModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
 
 
+class EventOutboxModel(Base):
+    __tablename__ = "event_outbox"
+    __table_args__ = (
+        Index(
+            "ix_event_outbox_pending_created",
+            "created_at",
+            postgresql_where=text("published_at IS NULL"),
+        ),
+    )
+
+    event_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("event_journal.event_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    broker_message_id: Mapped[str | None] = mapped_column(Text)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    publish_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error_type: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class RawMarketEventModel(Base):
     __tablename__ = "raw_market_events"
 
@@ -60,6 +93,29 @@ class RawMarketEventModel(Base):
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     payload: Mapped[dict] = mapped_column(JsonType, nullable=False)
     payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+
+
+class ReplayCheckpointModel(Base):
+    __tablename__ = "replay_checkpoints"
+    __table_args__ = (
+        Index(
+            "ix_replay_checkpoints_status_updated",
+            "status",
+            "updated_at",
+        ),
+    )
+
+    replay_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    consumer_name: Mapped[str] = mapped_column(String(128), primary_key=True)
+    topic: Mapped[str] = mapped_column(String(128), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    dataset_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    next_offset: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_event_id: Mapped[str | None] = mapped_column(String(64))
+    events_processed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="RUNNING")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class MarketCandleModel(Base):

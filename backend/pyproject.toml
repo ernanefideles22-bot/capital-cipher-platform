@@ -1,6 +1,6 @@
 [project]
 name = "capital-cipher-backend"
-version = "0.6.0"
+version = "0.7.0"
 description = "Capital Cipher AI — institutional multi-agent trading platform (Phase 1, PAPER only)"
 readme = "README.md"
 # Spec target is Python 3.13+ (docs/09). Code is compatible with 3.10+ for CI portability.
@@ -13,6 +13,7 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.0",
     "aiosqlite>=0.20",
     "websockets>=12.0",
+    "redis>=8.0.1,<9",
 ]
 
 [project.optional-dependencies]
