@@ -35,6 +35,7 @@ from app.core.event_bus import Topics
 from app.core.logging import ServiceLogger, configure_logging
 from app.core.state_machine import SystemState
 from app.market_data.adapters.binance import BinanceMarketDataAdapter
+from app.schemas.common import Exchange
 from app.schemas.api import error_response
 from app.schemas.events import EventTypes
 
@@ -84,7 +85,19 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
         logger.info("System started in PAPER mode", event_type="SYSTEM_STARTED")
 
         adapter = None
+        clock_stop = asyncio.Event()
+        clock_task = None
         if with_market_data:
+            if ctx.clock_monitor is not None:
+                try:
+                    await ctx.clock_monitor.probe(Exchange.BINANCE)
+                except Exception as exc:
+                    logger.error(
+                        "Initial Binance clock probe failed; normalized ingestion remains blocked",
+                        event_type="CLOCK_PROBE_FAILED",
+                        metadata={"error_type": type(exc).__name__},
+                    )
+                clock_task = asyncio.create_task(ctx.clock_monitor.run(clock_stop))
             adapter = BinanceMarketDataAdapter()
             for symbol in ctx.settings.allowed_symbols_list:
                 await adapter.subscribe_candles(symbol, ctx.settings.default_timeframe)
@@ -118,6 +131,13 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
 
         if adapter is not None:
             await adapter.disconnect()
+        if clock_task is not None:
+            clock_stop.set()
+            await clock_task
+        if ctx.public_market_clients is not None:
+            await asyncio.gather(
+                *(client.aclose() for client in ctx.public_market_clients.values())
+            )
         if outbox_task is not None:
             outbox_stop.set()
             await outbox_task

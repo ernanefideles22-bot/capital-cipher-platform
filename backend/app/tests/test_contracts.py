@@ -11,6 +11,7 @@ from jsonschema import Draft202012Validator
 from pydantic import ValidationError
 
 from app.schemas.agents import AgentOutput
+from app.schemas.backfill import HistoricalBackfillJob, MarketDataGap
 from app.schemas.common import AgentStatus, Signal
 from app.schemas.data_catalog import CandleDatasetManifest
 from app.schemas.decisions import Decision
@@ -162,3 +163,40 @@ def test_clock_observation_matches_published_v1_contract():
     )
     validator = Draft202012Validator(load_contract("clock-observation.schema.json"))
     assert list(validator.iter_errors(observation.model_dump(mode="json"))) == []
+
+
+def test_market_data_gap_matches_published_v1_contract():
+    from datetime import datetime, timezone
+
+    at = datetime.now(timezone.utc)
+    gap = MarketDataGap(
+        gap_id="b" * 64,
+        exchange="BINANCE",
+        symbol="BTCUSDT",
+        timeframe="15m",
+        start_at=at,
+        end_at=at,
+        missing_count=1,
+    )
+    validator = Draft202012Validator(load_contract("market-data-gap.schema.json"))
+    assert list(validator.iter_errors(gap.model_dump(mode="json"))) == []
+
+
+def test_historical_backfill_matches_published_v1_contract():
+    from datetime import datetime, timezone
+
+    at = datetime.now(timezone.utc)
+    job = HistoricalBackfillJob(
+        job_id="c" * 64,
+        request_fingerprint="c" * 64,
+        exchange="BINANCE",
+        symbol="BTCUSDT",
+        timeframe="15m",
+        start_at=at,
+        end_at=at,
+        source="binance.public-rest",
+    )
+    validator = Draft202012Validator(
+        load_contract("historical-backfill-job.schema.json")
+    )
+    assert list(validator.iter_errors(job.model_dump(mode="json"))) == []

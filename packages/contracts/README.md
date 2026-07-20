@@ -12,3 +12,7 @@ event bus, agents, APIs, and storage.
 The Python backend remains the first consumer. Future agent runtimes and
 services must validate messages at their boundaries rather than importing
 backend implementation classes.
+
+The v1 family currently includes event, candle, raw source, replay checkpoint,
+dataset manifest, clock observation, market-data gap, and historical backfill
+job contracts.

@@ -28,6 +28,8 @@ async def security_client(settings: Settings):
         ("POST", "/api/v1/orchestrator/evaluate", {}),
         ("POST", "/api/v1/backtest/run", {}),
         ("POST", "/api/v1/market/datasets", {}),
+        ("POST", "/api/v1/market/gaps/scan", {}),
+        ("POST", "/api/v1/market/backfills", {}),
         ("POST", "/api/v1/risk/kill-switch", {"reason": "security test"}),
     ],
 )
@@ -100,3 +102,17 @@ async def test_body_limit_and_security_headers():
 def test_short_admin_key_is_rejected():
     with pytest.raises(ValueError):
         Settings(ADMIN_API_KEY="short-placeholder")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://api.binance.test",
+        "https://user:password@api.binance.test",
+        "file:///tmp/provider",
+        "https://api.binance.test?redirect=http://127.0.0.1",
+    ],
+)
+def test_public_market_provider_urls_fail_closed(url: str):
+    with pytest.raises(ValueError):
+        Settings(BINANCE_PUBLIC_REST_URL=url)

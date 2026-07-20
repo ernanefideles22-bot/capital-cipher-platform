@@ -46,6 +46,22 @@ paper trading can consume them. Dataset manifests make every backtest input
 content-addressable and reproducible. Internal catalog endpoints are protected
 by `X-API-Key`; see `../docs/month-3-data-foundation.md`.
 
+Public Binance and Bybit server clocks now gate trusted ingestion. Missing,
+stale, or unsafe clock evidence prevents normalized candles from reaching the
+warehouse or decision chain. Streaming gaps are persisted automatically, and
+administrators can scan or repair bounded historical ranges:
+
+```text
+POST /api/v1/market/gaps/scan
+GET  /api/v1/market/gaps
+POST /api/v1/market/backfills
+GET  /api/v1/market/backfills/{job_id}
+```
+
+These endpoints use public market data only and require `X-API-Key`. See
+`../docs/month-3-clock-gap-backfill.md` for clock thresholds, idempotency,
+provider pagination, and failure semantics.
+
 ## Event transport and replay
 
 Without `REDIS_URL`, the backend uses only the in-process bus. With a Redis

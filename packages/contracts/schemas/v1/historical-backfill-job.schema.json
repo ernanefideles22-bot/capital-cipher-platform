@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/historical-backfill-job.schema.json",
+  "title": "Capital Cipher Historical Backfill Job v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "job_id",
+    "request_fingerprint",
+    "exchange",
+    "symbol",
+    "timeframe",
+    "start_at",
+    "end_at",
+    "source",
+    "status",
+    "retrieved_count",
+    "inserted_count",
+    "remaining_gap_count",
+    "attempt_count",
+    "dataset_hash",
+    "clock_observation_id",
+    "clock_status",
+    "error_code",
+    "error_message",
+    "created_at",
+    "started_at",
+    "completed_at",
+    "updated_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "job_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "request_fingerprint": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "exchange": {
+      "enum": ["BINANCE", "BYBIT"]
+    },
+    "symbol": {
+      "type": "string",
+      "pattern": "^[A-Z0-9._-]{2,32}$"
+    },
+    "timeframe": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*[mhdw]$"
+    },
+    "start_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "end_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._:-]{2,127}$"
+    },
+    "status": {
+      "enum": ["PENDING", "RUNNING", "COMPLETED", "PARTIAL", "BLOCKED", "FAILED"]
+    },
+    "retrieved_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "inserted_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "remaining_gap_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "attempt_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "dataset_hash": {
+      "type": ["string", "null"],
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "clock_observation_id": {
+      "type": ["string", "null"],
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "clock_status": {
+      "enum": ["SYNCED", "WARNING", "UNSAFE", "UNKNOWN"]
+    },
+    "error_code": {
+      "type": ["string", "null"],
+      "pattern": "^[A-Z][A-Z0-9_]+$"
+    },
+    "error_message": {
+      "type": ["string", "null"],
+      "maxLength": 500
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "started_at": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    },
+    "completed_at": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "additionalProperties": false
+}

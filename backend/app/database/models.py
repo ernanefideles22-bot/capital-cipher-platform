@@ -237,6 +237,121 @@ class ClockObservationModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class MarketDataGapModel(Base):
+    """Persisted continuity defect for one normalized candle series."""
+
+    __tablename__ = "market_data_gaps"
+    __table_args__ = (
+        CheckConstraint(
+            "missing_count > 0",
+            name="ck_market_data_gaps_missing_count",
+        ),
+        CheckConstraint(
+            "start_at <= end_at",
+            name="ck_market_data_gaps_time_range",
+        ),
+        CheckConstraint(
+            "status IN ('OPEN', 'FILLING', 'RESOLVED', 'FAILED')",
+            name="ck_market_data_gaps_status",
+        ),
+        Index(
+            "ix_market_data_gaps_series_status_range",
+            "exchange",
+            "symbol",
+            "timeframe",
+            "status",
+            "start_at",
+        ),
+        Index(
+            "ix_market_data_gaps_status_detected",
+            "status",
+            "detected_at",
+        ),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    gap_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    exchange: Mapped[str] = mapped_column(Text, nullable=False)
+    symbol: Mapped[str] = mapped_column(Text, nullable=False)
+    timeframe: Mapped[str] = mapped_column(Text, nullable=False)
+    start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    missing_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    backfill_job_id: Mapped[str | None] = mapped_column(String(64))
+
+
+class HistoricalBackfillJobModel(Base):
+    """Idempotent audit record for a public historical-data import."""
+
+    __tablename__ = "historical_backfill_jobs"
+    __table_args__ = (
+        CheckConstraint(
+            "start_at <= end_at",
+            name="ck_historical_backfill_jobs_time_range",
+        ),
+        CheckConstraint(
+            "retrieved_count >= 0 AND inserted_count >= 0 "
+            "AND remaining_gap_count >= 0 AND attempt_count >= 0",
+            name="ck_historical_backfill_jobs_counts",
+        ),
+        CheckConstraint(
+            "status IN ('PENDING', 'RUNNING', 'COMPLETED', 'PARTIAL', "
+            "'BLOCKED', 'FAILED')",
+            name="ck_historical_backfill_jobs_status",
+        ),
+        CheckConstraint(
+            "clock_status IN ('SYNCED', 'WARNING', 'UNSAFE', 'UNKNOWN')",
+            name="ck_historical_backfill_jobs_clock_status",
+        ),
+        Index(
+            "ix_historical_backfill_jobs_series_range",
+            "exchange",
+            "symbol",
+            "timeframe",
+            "start_at",
+            "end_at",
+        ),
+        Index(
+            "ix_historical_backfill_jobs_status_updated",
+            "status",
+            "updated_at",
+        ),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    job_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    request_fingerprint: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        unique=True,
+    )
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    exchange: Mapped[str] = mapped_column(Text, nullable=False)
+    symbol: Mapped[str] = mapped_column(Text, nullable=False)
+    timeframe: Mapped[str] = mapped_column(Text, nullable=False)
+    start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    retrieved_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    inserted_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    remaining_gap_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    dataset_hash: Mapped[str | None] = mapped_column(String(64))
+    clock_observation_id: Mapped[str | None] = mapped_column(String(64))
+    clock_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    error_message: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ReplayCheckpointModel(Base):
     __tablename__ = "replay_checkpoints"
     __table_args__ = (

@@ -22,11 +22,13 @@ from app.agents.market_data import MarketDataAgent
 from app.agents.quant import QuantAgent
 from app.agents.trend import TrendAgent
 from app.audit.service import AuditService
-from app.core.errors import AuditError, CapitalCipherError
+from app.core.errors import AuditError, CapitalCipherError, DataQualityError
 from app.core.event_bus import EventBus, Topics
 from app.core.logging import ServiceLogger
 from app.core.state_machine import SystemStateMachine
 from app.market_data.data_quality import evaluate_candles
+from app.market_data.clock import ExchangeClockRegistry
+from app.market_data.gaps import GapService
 from app.market_data.store import CandleStore
 from app.orchestrator.decision_engine import DecisionEngine
 from app.paper_trading.engine import PaperTradingEngine
@@ -58,6 +60,9 @@ class Orchestrator:
         repository=None,
         max_data_delay_ms: int = 5000,
         strategy_engine: StrategyEngine | None = None,
+        clock_registry: ExchangeClockRegistry | None = None,
+        require_trusted_clock: bool = False,
+        gap_service: GapService | None = None,
     ) -> None:
         self._sm = state_machine
         self._bus = event_bus
@@ -68,6 +73,9 @@ class Orchestrator:
         self._audit = audit_service
         self._repository = repository
         self._max_data_delay_ms = max_data_delay_ms
+        self._clock_registry = clock_registry
+        self._require_trusted_clock = require_trusted_clock
+        self._gap_service = gap_service
         self.strategy_engine = strategy_engine or StrategyEngine()
         self._current_day = None
         self.agents: dict[str, BaseAgent] = {
@@ -104,6 +112,45 @@ class Orchestrator:
         started = time.monotonic()
         correlation_id = str(uuid4())
         try:
+            clock_verdict = None
+            if self._require_trusted_clock:
+                if self._clock_registry is None:
+                    raise DataQualityError(
+                        "Trusted market-data ingestion requires a clock registry"
+                    )
+                clock_verdict = self._clock_registry.verdict(candle.exchange)
+                if not clock_verdict.trusted:
+                    self.failures.append(
+                        {
+                            "correlation_id": correlation_id,
+                            "error": "CLOCK_UNTRUSTED",
+                        }
+                    )
+                    if self._repository is not None:
+                        await self._repository.save_system_event(
+                            {
+                                "event_type": "CLOCK_GATE_BLOCKED",
+                                "source": "Orchestrator",
+                                "correlation_id": correlation_id,
+                                "payload": {
+                                    "exchange": candle.exchange.value,
+                                    "clock_status": clock_verdict.status,
+                                    "reason": clock_verdict.reason,
+                                },
+                            }
+                        )
+                    logger.error(
+                        "Candle blocked by trusted clock gate",
+                        event_type="CLOCK_GATE_BLOCKED",
+                        correlation_id=correlation_id,
+                        metadata={
+                            "exchange": candle.exchange.value,
+                            "clock_status": clock_verdict.status,
+                            "reason": clock_verdict.reason,
+                        },
+                    )
+                    return None
+
             existing = self._store.get(
                 candle.exchange.value,
                 candle.symbol,
@@ -115,6 +162,23 @@ class Orchestrator:
                 timeframe=candle.timeframe,
                 max_delay_ms=self._max_data_delay_ms,
             )
+            if clock_verdict is not None and clock_verdict.status == "WARNING":
+                quality = quality.model_copy(
+                    update={
+                        "data_quality_score": max(
+                            0,
+                            quality.data_quality_score - 5,
+                        ),
+                        "status": (
+                            quality.status
+                            if quality.status in {"SUSPECT", "INVALID"}
+                            else "WARNING"
+                        ),
+                        "warnings": sorted(
+                            set([*quality.warnings, "CLOCK_WARNING"])
+                        ),
+                    }
+                )
 
             # Normalized data is persisted before it can reach agents, risk, or
             # paper trading. A duplicate database identity stops redelivery.
@@ -133,6 +197,19 @@ class Orchestrator:
                         },
                     )
                     return None
+                if (
+                    self._gap_service is not None
+                    and existing
+                    and candle.closed_at > existing[-1].closed_at
+                ):
+                    await self._gap_service.scan(
+                        exchange=candle.exchange.value,
+                        symbol=candle.symbol,
+                        timeframe=candle.timeframe,
+                        start_at=existing[-1].closed_at,
+                        end_at=candle.closed_at,
+                        limit=10_000,
+                    )
 
             if quality.errors:
                 self.failures.append(

@@ -18,12 +18,19 @@ from app.core.transports.base import EventTransport
 from app.core.transports.redis_streams import RedisStreamTransport
 from app.database.repositories.repository import Repository
 from app.database.session import Database
+from app.market_data.adapters.binance_rest import BinancePublicRestClient
+from app.market_data.adapters.bybit_rest import BybitPublicRestClient
+from app.market_data.adapters.public_rest import PublicMarketDataClient
+from app.market_data.backfill import HistoricalBackfillService
 from app.market_data.catalog import DataCatalog
+from app.market_data.clock import ExchangeClockMonitor, ExchangeClockRegistry
+from app.market_data.gaps import GapService
 from app.market_data.store import CandleStore
 from app.orchestrator.decision_engine import DecisionEngine
 from app.orchestrator.service import Orchestrator
 from app.paper_trading.engine import PaperTradingEngine
 from app.risk.manager import RiskManager
+from app.schemas.common import Exchange
 from app.schemas.risk import RiskLimits
 
 
@@ -41,6 +48,11 @@ class AppContext:
     database: Database | None = None
     repository: Repository | None = None
     data_catalog: DataCatalog | None = None
+    gap_service: GapService | None = None
+    backfill_service: HistoricalBackfillService | None = None
+    clock_registry: ExchangeClockRegistry | None = None
+    clock_monitor: ExchangeClockMonitor | None = None
+    public_market_clients: dict[Exchange, PublicMarketDataClient] | None = None
     event_transport: EventTransport | None = None
     outbox_dispatcher: OutboxDispatcher | None = None
     market_connected: bool = False
@@ -56,6 +68,43 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         database = Database(settings.database_url)
         repository = Repository(database)
     data_catalog = DataCatalog(repository) if repository is not None else None
+    gap_service = GapService(repository) if repository is not None else None
+    clock_registry = ExchangeClockRegistry(
+        max_age_seconds=settings.clock_observation_max_age_seconds
+    )
+    public_market_clients: dict[Exchange, PublicMarketDataClient] | None = None
+    clock_monitor: ExchangeClockMonitor | None = None
+    backfill_service: HistoricalBackfillService | None = None
+    if repository is not None and data_catalog is not None and gap_service is not None:
+        public_market_clients = {
+            Exchange.BINANCE: BinancePublicRestClient(
+                base_url=settings.binance_public_rest_url,
+                timeout_seconds=settings.public_market_http_timeout_seconds,
+            ),
+            Exchange.BYBIT: BybitPublicRestClient(
+                base_url=settings.bybit_public_rest_url,
+                timeout_seconds=settings.public_market_http_timeout_seconds,
+            ),
+        }
+        clock_monitor = ExchangeClockMonitor(
+            public_market_clients,
+            clock_registry,
+            repository,
+            interval_seconds=settings.clock_probe_interval_seconds,
+            warning_offset_ms=settings.clock_warning_offset_ms,
+            unsafe_offset_ms=settings.clock_unsafe_offset_ms,
+            warning_round_trip_ms=settings.clock_warning_round_trip_ms,
+            unsafe_round_trip_ms=settings.clock_unsafe_round_trip_ms,
+        )
+        backfill_service = HistoricalBackfillService(
+            repository=repository,
+            clients=public_market_clients,
+            clock_monitor=clock_monitor,
+            clock_registry=clock_registry,
+            gap_service=gap_service,
+            data_catalog=data_catalog,
+            max_candles=settings.historical_backfill_max_candles,
+        )
     event_transport: EventTransport | None = None
     outbox_dispatcher: OutboxDispatcher | None = None
     publication_lock = asyncio.Lock()
@@ -132,6 +181,9 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         trend_agent=trend_agent,
         repository=repository,
         max_data_delay_ms=settings.max_market_data_delay_ms,
+        clock_registry=clock_registry,
+        require_trusted_clock=settings.require_trusted_market_clock,
+        gap_service=gap_service,
     )
     backtesting_engine = BacktestingEngine(
         limits=limits,
@@ -152,6 +204,11 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         database=database,
         repository=repository,
         data_catalog=data_catalog,
+        gap_service=gap_service,
+        backfill_service=backfill_service,
+        clock_registry=clock_registry,
+        clock_monitor=clock_monitor,
+        public_market_clients=public_market_clients,
         event_transport=event_transport,
         outbox_dispatcher=outbox_dispatcher,
     )

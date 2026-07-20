@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/market-data-gap.schema.json",
+  "title": "Capital Cipher Market Data Gap v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "gap_id",
+    "exchange",
+    "symbol",
+    "timeframe",
+    "start_at",
+    "end_at",
+    "missing_count",
+    "status",
+    "detected_at",
+    "resolved_at",
+    "backfill_job_id"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "gap_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "exchange": {
+      "enum": ["BINANCE", "BYBIT"]
+    },
+    "symbol": {
+      "type": "string",
+      "pattern": "^[A-Z0-9._-]{2,32}$"
+    },
+    "timeframe": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*[mhdw]$"
+    },
+    "start_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "end_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "missing_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "status": {
+      "enum": ["OPEN", "FILLING", "RESOLVED", "FAILED"]
+    },
+    "detected_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "resolved_at": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    },
+    "backfill_job_id": {
+      "type": ["string", "null"],
+      "pattern": "^[a-f0-9]{64}$"
+    }
+  },
+  "additionalProperties": false
+}

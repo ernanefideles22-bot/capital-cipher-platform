@@ -11,6 +11,8 @@ from app.database.models import INTERNAL_SCHEMA
 from app.database.repositories.repository import Repository
 from app.database.session import Database
 from app.market_data.catalog import DataCatalog
+from app.market_data.gaps import GapService
+from app.schemas.backfill import HistoricalBackfillJob
 from app.tests.conftest import make_series
 
 
@@ -32,6 +34,25 @@ async def test_real_postgres_internal_warehouse_round_trip():
         clock_status="SYNCED",
     )
     loaded = await repository.load_dataset_manifest(manifest.dataset_hash)
+    gaps = await GapService(repository).scan(
+        exchange="BINANCE",
+        symbol="BTCUSDT",
+        timeframe="15m",
+        start_at=candles[0].closed_at,
+        end_at=candles[-1].closed_at,
+    )
+    job = HistoricalBackfillJob(
+        job_id="d" * 64,
+        request_fingerprint="d" * 64,
+        exchange="BINANCE",
+        symbol="BTCUSDT",
+        timeframe="15m",
+        start_at=candles[0].closed_at,
+        end_at=candles[-1].closed_at,
+        source="binance.public-rest",
+    )
+    await repository.save_historical_backfill_job(job)
+    loaded_job = await repository.load_historical_backfill_job(job.job_id)
 
     async with database.engine.connect() as connection:
         tables = set(
@@ -46,8 +67,12 @@ async def test_real_postgres_internal_warehouse_round_trip():
     await database.dispose()
 
     assert loaded == manifest
+    assert gaps == []
+    assert loaded_job == job
     assert {
         "candle_observations",
         "dataset_manifests",
         "clock_observations",
+        "market_data_gaps",
+        "historical_backfill_jobs",
     } <= tables

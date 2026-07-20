@@ -9,6 +9,7 @@ Follows docs/16-security-rules.md and docs/21-deployment.md:
 from __future__ import annotations
 
 from functools import lru_cache
+from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -23,7 +24,7 @@ class Settings(BaseSettings):
 
     app_env: str = Field(default="local", alias="APP_ENV")
     app_name: str = "capital-cipher-api"
-    app_version: str = "0.8.0"
+    app_version: str = "0.9.0"
 
     system_mode: str = Field(default="PAPER", alias="SYSTEM_MODE")
 
@@ -93,6 +94,62 @@ class Settings(BaseSettings):
     # Data quality (docs/32-data-quality.md).
     max_market_data_delay_ms: int = Field(default=5000, alias="MAX_MARKET_DATA_DELAY_MS")
     min_data_quality_score: int = Field(default=60, alias="MIN_DATA_QUALITY_SCORE")
+    require_trusted_market_clock: bool = Field(
+        default=True,
+        alias="REQUIRE_TRUSTED_MARKET_CLOCK",
+    )
+    clock_probe_interval_seconds: float = Field(
+        default=30.0,
+        alias="CLOCK_PROBE_INTERVAL_SECONDS",
+        ge=5.0,
+        le=3600.0,
+    )
+    clock_observation_max_age_seconds: float = Field(
+        default=90.0,
+        alias="CLOCK_OBSERVATION_MAX_AGE_SECONDS",
+        ge=5.0,
+        le=7200.0,
+    )
+    clock_warning_offset_ms: float = Field(
+        default=500.0,
+        alias="CLOCK_WARNING_OFFSET_MS",
+        ge=0,
+    )
+    clock_unsafe_offset_ms: float = Field(
+        default=2000.0,
+        alias="CLOCK_UNSAFE_OFFSET_MS",
+        ge=0,
+    )
+    clock_warning_round_trip_ms: float = Field(
+        default=1000.0,
+        alias="CLOCK_WARNING_ROUND_TRIP_MS",
+        ge=0,
+    )
+    clock_unsafe_round_trip_ms: float = Field(
+        default=5000.0,
+        alias="CLOCK_UNSAFE_ROUND_TRIP_MS",
+        ge=0,
+    )
+    historical_backfill_max_candles: int = Field(
+        default=100_000,
+        alias="HISTORICAL_BACKFILL_MAX_CANDLES",
+        ge=1,
+        le=1_000_000,
+    )
+    public_market_http_timeout_seconds: float = Field(
+        default=10.0,
+        alias="PUBLIC_MARKET_HTTP_TIMEOUT_SECONDS",
+        ge=1.0,
+        le=60.0,
+    )
+    binance_public_rest_url: str = Field(
+        default="https://data-api.binance.vision",
+        alias="BINANCE_PUBLIC_REST_URL",
+    )
+    bybit_public_rest_url: str = Field(
+        default="https://api.bybit.com",
+        alias="BYBIT_PUBLIC_REST_URL",
+    )
 
     # Agent execution (docs/28-agent-lifecycle.md).
     agent_timeout_ms: int = Field(default=5000, alias="AGENT_TIMEOUT_MS")
@@ -129,10 +186,34 @@ class Settings(BaseSettings):
             raise ValueError("ADMIN_API_KEY must contain at least 32 characters")
         return candidate
 
+    @field_validator("binance_public_rest_url", "bybit_public_rest_url")
+    @classmethod
+    def validate_public_market_url(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                "Public market REST URLs must be credential-free HTTPS origins"
+            )
+        return value.rstrip("/")
+
     @model_validator(mode="after")
     def validate_event_broker_configuration(self) -> "Settings":
         if self.event_broker_required and not self.redis_url:
             raise ValueError("REDIS_URL is required when EVENT_BROKER_REQUIRED is enabled")
+        if self.clock_warning_offset_ms > self.clock_unsafe_offset_ms:
+            raise ValueError("Clock offset thresholds are inconsistent")
+        if (
+            self.clock_warning_round_trip_ms
+            > self.clock_unsafe_round_trip_ms
+        ):
+            raise ValueError("Clock round-trip thresholds are inconsistent")
         return self
 
     @property

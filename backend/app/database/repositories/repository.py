@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -22,6 +22,8 @@ from app.database.models import (
     DatasetManifestModel,
     EventJournalModel,
     EventOutboxModel,
+    HistoricalBackfillJobModel,
+    MarketDataGapModel,
     PaperOrderModel,
     RawMarketEventModel,
     ReplayCheckpointModel,
@@ -31,6 +33,7 @@ from app.database.models import (
 from app.database.session import Database
 from app.market_data.identity import candle_event_id
 from app.schemas.agents import AgentOutput
+from app.schemas.backfill import HistoricalBackfillJob, MarketDataGap
 from app.schemas.data_catalog import CandleDatasetManifest, ClockObservation
 from app.schemas.decisions import Decision
 from app.schemas.events import BusMessage
@@ -533,6 +536,211 @@ class Repository:
                 return True
         except Exception as exc:
             raise DatabaseError(f"Failed to persist clock observation: {exc}") from exc
+
+    async def save_market_data_gaps(
+        self,
+        gaps: list[MarketDataGap],
+    ) -> int:
+        """Upsert deterministic gaps so repeat scans remain idempotent."""
+        if not gaps:
+            return 0
+        values = [gap.model_dump() for gap in gaps]
+        try:
+            async with self._db.session() as session, session.begin():
+                insert_statement = self._dialect_insert(MarketDataGapModel)
+                if insert_statement is not None:
+                    result = await session.scalars(
+                        insert_statement.values(values)
+                        .on_conflict_do_update(
+                            index_elements=["gap_id"],
+                            set_={
+                                "missing_count": insert_statement.excluded.missing_count,
+                                "status": insert_statement.excluded.status,
+                                "detected_at": insert_statement.excluded.detected_at,
+                                "resolved_at": insert_statement.excluded.resolved_at,
+                                "backfill_job_id": func.coalesce(
+                                    insert_statement.excluded.backfill_job_id,
+                                    MarketDataGapModel.backfill_job_id,
+                                ),
+                            },
+                        )
+                        .returning(MarketDataGapModel.gap_id)
+                    )
+                    return len(list(result))
+
+                for item in values:
+                    row = await session.get(MarketDataGapModel, item["gap_id"])
+                    if row is None:
+                        session.add(MarketDataGapModel(**item))
+                    else:
+                        row.missing_count = item["missing_count"]
+                        row.status = item["status"]
+                        row.detected_at = item["detected_at"]
+                        row.resolved_at = item["resolved_at"]
+                        if item["backfill_job_id"] is not None:
+                            row.backfill_job_id = item["backfill_job_id"]
+                return len(values)
+        except Exception as exc:
+            raise DatabaseError(f"Failed to persist market-data gaps: {exc}") from exc
+
+    async def resolve_market_data_gaps(
+        self,
+        *,
+        exchange: str,
+        symbol: str,
+        timeframe: str,
+        start_at: datetime,
+        end_at: datetime,
+        unresolved_gap_ids: set[str],
+        backfill_job_id: str | None = None,
+    ) -> int:
+        """Resolve known open gaps no longer present in a repeat scan."""
+        conditions = [
+            MarketDataGapModel.exchange == exchange.upper(),
+            MarketDataGapModel.symbol == symbol.upper(),
+            MarketDataGapModel.timeframe == timeframe,
+            MarketDataGapModel.status.in_(("OPEN", "FILLING", "FAILED")),
+            MarketDataGapModel.end_at >= start_at,
+            MarketDataGapModel.start_at <= end_at,
+        ]
+        if unresolved_gap_ids:
+            conditions.append(
+                MarketDataGapModel.gap_id.not_in(sorted(unresolved_gap_ids))
+            )
+        values: dict = {
+            "status": "RESOLVED",
+            "resolved_at": _now(),
+        }
+        if backfill_job_id is not None:
+            values["backfill_job_id"] = backfill_job_id
+        try:
+            async with self._db.session() as session, session.begin():
+                result = await session.execute(
+                    update(MarketDataGapModel)
+                    .where(*conditions)
+                    .values(**values)
+                )
+                return int(result.rowcount or 0)
+        except Exception as exc:
+            raise DatabaseError(f"Failed to resolve market-data gaps: {exc}") from exc
+
+    async def list_market_data_gaps(
+        self,
+        *,
+        exchange: str | None = None,
+        symbol: str | None = None,
+        timeframe: str | None = None,
+        status: str | None = None,
+        limit: int = 500,
+    ) -> list[MarketDataGap]:
+        if limit < 1 or limit > 10_000:
+            raise ValueError("limit must be between 1 and 10000")
+        conditions = []
+        if exchange is not None:
+            conditions.append(MarketDataGapModel.exchange == exchange.upper())
+        if symbol is not None:
+            conditions.append(MarketDataGapModel.symbol == symbol.upper())
+        if timeframe is not None:
+            conditions.append(MarketDataGapModel.timeframe == timeframe)
+        if status is not None:
+            conditions.append(MarketDataGapModel.status == status.upper())
+        async with self._db.session() as session:
+            rows = await session.scalars(
+                select(MarketDataGapModel)
+                .where(*conditions)
+                .order_by(MarketDataGapModel.detected_at.desc())
+                .limit(limit)
+            )
+            return [
+                MarketDataGap(
+                    schema_version=row.schema_version,
+                    gap_id=row.gap_id,
+                    exchange=row.exchange,
+                    symbol=row.symbol,
+                    timeframe=row.timeframe,
+                    start_at=_as_utc(row.start_at),
+                    end_at=_as_utc(row.end_at),
+                    missing_count=row.missing_count,
+                    status=row.status,
+                    detected_at=_as_utc(row.detected_at),
+                    resolved_at=(
+                        _as_utc(row.resolved_at) if row.resolved_at else None
+                    ),
+                    backfill_job_id=row.backfill_job_id,
+                )
+                for row in rows
+            ]
+
+    async def save_historical_backfill_job(
+        self,
+        job: HistoricalBackfillJob,
+    ) -> None:
+        """Insert or update one idempotent historical import job."""
+        values = job.model_dump()
+        try:
+            async with self._db.session() as session, session.begin():
+                insert_statement = self._dialect_insert(HistoricalBackfillJobModel)
+                if insert_statement is not None:
+                    update_values = {
+                        key: getattr(insert_statement.excluded, key)
+                        for key in values
+                        if key not in {"job_id", "request_fingerprint", "created_at"}
+                    }
+                    await session.execute(
+                        insert_statement.values(**values).on_conflict_do_update(
+                            index_elements=["job_id"],
+                            set_=update_values,
+                        )
+                    )
+                    return
+
+                row = await session.get(HistoricalBackfillJobModel, job.job_id)
+                if row is None:
+                    session.add(HistoricalBackfillJobModel(**values))
+                else:
+                    for key, value in values.items():
+                        if key not in {"job_id", "request_fingerprint", "created_at"}:
+                            setattr(row, key, value)
+        except Exception as exc:
+            raise DatabaseError(
+                f"Failed to persist historical backfill job: {exc}"
+            ) from exc
+
+    async def load_historical_backfill_job(
+        self,
+        job_id: str,
+    ) -> HistoricalBackfillJob | None:
+        async with self._db.session() as session:
+            row = await session.get(HistoricalBackfillJobModel, job_id)
+            if row is None:
+                return None
+            return HistoricalBackfillJob(
+                schema_version=row.schema_version,
+                job_id=row.job_id,
+                request_fingerprint=row.request_fingerprint,
+                exchange=row.exchange,
+                symbol=row.symbol,
+                timeframe=row.timeframe,
+                start_at=_as_utc(row.start_at),
+                end_at=_as_utc(row.end_at),
+                source=row.source,
+                status=row.status,
+                retrieved_count=row.retrieved_count,
+                inserted_count=row.inserted_count,
+                remaining_gap_count=row.remaining_gap_count,
+                attempt_count=row.attempt_count,
+                dataset_hash=row.dataset_hash,
+                clock_observation_id=row.clock_observation_id,
+                clock_status=row.clock_status,
+                error_code=row.error_code,
+                error_message=row.error_message,
+                created_at=_as_utc(row.created_at),
+                started_at=_as_utc(row.started_at) if row.started_at else None,
+                completed_at=(
+                    _as_utc(row.completed_at) if row.completed_at else None
+                ),
+                updated_at=_as_utc(row.updated_at),
+            )
 
     async def save_agent_output(self, correlation_id: str, output: AgentOutput) -> None:
         try:
