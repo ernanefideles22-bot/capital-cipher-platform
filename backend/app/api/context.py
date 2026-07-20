@@ -10,6 +10,7 @@ from app.agents.quant import QuantAgent
 from app.agents.trend import TrendAgent
 from app.audit.service import AuditService
 from app.backtesting.engine import BacktestingEngine
+from app.backtesting.walk_forward import WalkForwardEngine
 from app.core.config import Settings
 from app.core.event_bus import EventBus
 from app.core.outbox import OutboxDispatcher
@@ -50,6 +51,7 @@ class AppContext:
     paper_engine: PaperTradingEngine
     orchestrator: Orchestrator
     backtesting_engine: BacktestingEngine = None  # type: ignore[assignment]
+    walk_forward_engine: WalkForwardEngine = None  # type: ignore[assignment]
     database: Database | None = None
     repository: Repository | None = None
     data_catalog: DataCatalog | None = None
@@ -220,6 +222,7 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
             settings.backtest_funding_rate_bps_per_8h
         ),
     )
+    walk_forward_engine = WalkForwardEngine(backtesting_engine)
     ctx = AppContext(
         settings=settings,
         state_machine=state_machine,
@@ -230,6 +233,7 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         paper_engine=paper_engine,
         orchestrator=orchestrator,
         backtesting_engine=backtesting_engine,
+        walk_forward_engine=walk_forward_engine,
         database=database,
         repository=repository,
         data_catalog=data_catalog,

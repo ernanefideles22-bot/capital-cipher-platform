@@ -42,3 +42,5 @@ backfill lineage are documented in
 The first Month 4 increment—versioned spread, slippage, volume impact, fees,
 and funding assumptions—is documented in
 [`docs/month-4-realistic-execution.md`](docs/month-4-realistic-execution.md).
+Leakage-resistant, pre-registered walk-forward folds are documented in
+[`docs/month-4-walk-forward-protocol.md`](docs/month-4-walk-forward-protocol.md).

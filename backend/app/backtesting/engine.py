@@ -39,6 +39,7 @@ from app.schemas.risk import RiskLimits
 from app.strategy.engine import StrategyEngine
 
 logger = ServiceLogger("backtesting")
+BACKTEST_ENGINE_VERSION = "backtesting-v1"
 
 
 async def _paper_state_machine() -> SystemStateMachine:
@@ -77,7 +78,41 @@ class BacktestingEngine:
         self._strategy_engine = strategy_engine
         self.reports: list[BacktestReport] = []
 
-    async def run(self, request: BacktestRequest, candles: list[Candle]) -> BacktestReport:
+    def resolve_execution_assumptions(
+        self, request: BacktestRequest
+    ) -> BacktestExecutionAssumptions:
+        return request.execution or self._execution_assumptions
+
+    def resolve_strategy_version(self, request: BacktestRequest) -> str:
+        strategy_engine = self._strategy_engine or StrategyEngine()
+        strategy = strategy_engine.select(request.symbol, request.timeframe)
+        if strategy is None:
+            raise ValueError(
+                f"No enabled strategy for {request.symbol} {request.timeframe}"
+            )
+        return strategy.versioned_id
+
+    def simulation_context(self, request: BacktestRequest) -> dict[str, Any]:
+        strategy_engine = self._strategy_engine or StrategyEngine()
+        strategy = strategy_engine.select(request.symbol, request.timeframe)
+        if strategy is None:
+            raise ValueError(
+                f"No enabled strategy for {request.symbol} {request.timeframe}"
+            )
+        return {
+            "backtest_engine_version": BACKTEST_ENGINE_VERSION,
+            "initial_balance": self._initial_balance,
+            "risk_limits": self._limits.model_dump(mode="json"),
+            "strategy": strategy.model_dump(mode="json"),
+        }
+
+    async def run(
+        self,
+        request: BacktestRequest,
+        candles: list[Candle],
+        *,
+        record_report: bool = True,
+    ) -> BacktestReport:
         started = time.monotonic()
         if not candles:
             raise ValueError("Backtest requires at least one candle")
@@ -85,9 +120,7 @@ class BacktestingEngine:
         # Candles must be processed in temporal order (docs/17, docs/32).
         ordered = sorted(candles, key=lambda c: c.closed_at)
         dataset_manifest = build_candle_dataset_manifest(ordered)
-        execution_assumptions = (
-            request.execution or self._execution_assumptions
-        )
+        execution_assumptions = self.resolve_execution_assumptions(request)
 
         sm = await _paper_state_machine()
         audit = AuditService()
@@ -157,7 +190,8 @@ class BacktestingEngine:
         report = report.model_copy(
             update={"duration_ms": int((time.monotonic() - started) * 1000)}
         )
-        self.reports.append(report)
+        if record_report:
+            self.reports.append(report)
         logger.info(
             f"Backtest completed: {report.total_trades} trades",
             event_type="BACKTEST_COMPLETED",

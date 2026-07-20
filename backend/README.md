@@ -86,13 +86,17 @@ consumer handling and resume from the next confirmed event. See
   no lookahead (input order irrelevant), mandatory metrics, and versioned
   adverse entry/exit costs for fees, spread, slippage, volume impact, and
   signed funding.
-  API: `POST /api/v1/backtest/run` (source: store | inline | csv).
+  APIs: `POST /api/v1/backtest/run` and
+  `POST /api/v1/backtest/walk-forward` (source: store | inline | csv).
 - Reports: `GET /api/v1/reports/performance?by=symbol|timeframe` (equity curve
   included), `GET /api/v1/reports/agents/ranking` (report-only, docs/27).
 - Risk: total-drawdown gate (10% default) + daily reset on UTC day change.
 
 See `../docs/month-4-realistic-execution.md` for formulas, configuration,
-report fields, safety boundaries, and deferred liquidation/walk-forward work.
+report fields, and safety boundaries. See
+`../docs/month-4-walk-forward-protocol.md` for pre-registration, embargoed
+temporal folds, reproducible experiment identities, and deferred fitting and
+promotion controls.
 
 ## Architecture
 

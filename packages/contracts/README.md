@@ -18,3 +18,5 @@ dataset manifest, clock observation, market-data gap, historical backfill job,
 durable backfill queue, and content-addressed raw object contracts.
 Backtest execution assumptions are also versioned so cost-model changes cannot
 silently alter experiment results.
+The walk-forward protocol fixes train/validation/test sizing, embargo, step,
+anchoring, and fold limits for reproducible research evaluations.

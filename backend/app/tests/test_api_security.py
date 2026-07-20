@@ -27,6 +27,7 @@ async def security_client(settings: Settings):
     [
         ("POST", "/api/v1/orchestrator/evaluate", {}),
         ("POST", "/api/v1/backtest/run", {}),
+        ("POST", "/api/v1/backtest/walk-forward", {}),
         ("POST", "/api/v1/market/datasets", {}),
         ("POST", "/api/v1/market/gaps/scan", {}),
         ("POST", "/api/v1/market/backfills", {}),

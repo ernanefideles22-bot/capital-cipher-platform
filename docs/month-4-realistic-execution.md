@@ -93,6 +93,8 @@ impact is disclosed separately but is already included in slippage.
 ## Deferred Month 4 work
 
 The next increments must add historical spread/funding datasets, margin and
-liquidation mechanics, walk-forward folds, durable experiment storage, and
-out-of-sample acceptance criteria. Until then, this model is a conservative
-simulation assumption—not proof that a strategy is tradeable or profitable.
+liquidation mechanics, durable experiment storage, and out-of-sample
+acceptance criteria. The first walk-forward protocol is documented in
+[`month-4-walk-forward-protocol.md`](month-4-walk-forward-protocol.md).
+Until then, this model is a conservative simulation assumption—not proof that
+a strategy is tradeable or profitable.

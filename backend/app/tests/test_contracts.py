@@ -12,7 +12,10 @@ from pydantic import ValidationError
 
 from app.schemas.agents import AgentOutput
 from app.schemas.backfill import HistoricalBackfillJob, MarketDataGap
-from app.schemas.backtest import BacktestExecutionAssumptions
+from app.schemas.backtest import (
+    BacktestExecutionAssumptions,
+    WalkForwardProtocol,
+)
 from app.schemas.common import AgentStatus, Signal
 from app.schemas.data_catalog import CandleDatasetManifest
 from app.schemas.data_lake import BackfillQueueItem, RawDataObject
@@ -246,4 +249,14 @@ def test_backtest_execution_matches_published_v1_contract():
     )
     assert list(
         validator.iter_errors(assumptions.model_dump(mode="json"))
+    ) == []
+
+
+def test_walk_forward_protocol_matches_published_v1_contract():
+    protocol = WalkForwardProtocol()
+    validator = Draft202012Validator(
+        load_contract("walk-forward-protocol.schema.json")
+    )
+    assert list(
+        validator.iter_errors(protocol.model_dump(mode="json"))
     ) == []
