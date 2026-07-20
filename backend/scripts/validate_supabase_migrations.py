@@ -31,6 +31,7 @@ async def main() -> None:
     if not migrations:
         raise RuntimeError("No Supabase migrations were found")
     connection = await asyncpg.connect(database_url)
+    disposable_schema_owned = False
     try:
         existing = await connection.fetchval(
             "select to_regnamespace('capital_cipher') is not null"
@@ -39,6 +40,7 @@ async def main() -> None:
             raise RuntimeError(
                 "Migration validation refuses a non-empty platform schema"
             )
+        disposable_schema_owned = True
         for migration in migrations:
             statement = migration.read_text(encoding="utf-8")
             async with connection.transaction():
@@ -56,6 +58,10 @@ async def main() -> None:
             f"Validated {len(migrations)} migrations and {tables} private tables"
         )
     finally:
+        if disposable_schema_owned:
+            await connection.execute(
+                "drop schema if exists capital_cipher cascade"
+            )
         await connection.close()
 
 
