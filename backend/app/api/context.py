@@ -222,7 +222,10 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
             settings.backtest_funding_rate_bps_per_8h
         ),
     )
-    walk_forward_engine = WalkForwardEngine(backtesting_engine)
+    walk_forward_engine = WalkForwardEngine(
+        backtesting_engine,
+        repository=repository,
+    )
     ctx = AppContext(
         settings=settings,
         state_machine=state_machine,

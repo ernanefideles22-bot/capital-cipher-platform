@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import statistics
 import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import Protocol
 
+from app.backtesting.artifacts import (
+    canonical_sha256,
+    walk_forward_artifact_hash,
+)
 from app.backtesting.engine import BacktestingEngine
 from app.market_data.catalog import build_candle_dataset_manifest
 from app.schemas.backtest import (
@@ -24,15 +26,22 @@ from app.schemas.backtest import (
 from app.schemas.market import Candle
 
 
-def _canonical_hash(payload: dict[str, Any]) -> str:
-    encoded = json.dumps(
-        payload,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False,
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+class WalkForwardReportRepository(Protocol):
+    async def save_walk_forward_report(
+        self,
+        report: WalkForwardReport,
+    ) -> WalkForwardReport: ...
+
+    async def load_walk_forward_report(
+        self,
+        experiment_id: str,
+    ) -> WalkForwardReport | None: ...
+
+    async def list_walk_forward_reports(
+        self,
+        *,
+        limit: int = 100,
+    ) -> list[WalkForwardReport]: ...
 
 
 def _build_segment(
@@ -159,9 +168,36 @@ def _aggregate(
 class WalkForwardEngine:
     """Evaluates a pre-registered candidate on isolated validation/test folds."""
 
-    def __init__(self, backtesting_engine: BacktestingEngine) -> None:
+    def __init__(
+        self,
+        backtesting_engine: BacktestingEngine,
+        repository: WalkForwardReportRepository | None = None,
+    ) -> None:
         self._backtesting_engine = backtesting_engine
+        self._repository = repository
         self.reports: list[WalkForwardReport] = []
+
+    async def list_reports(self, *, limit: int = 100) -> list[WalkForwardReport]:
+        if self._repository is not None:
+            return await self._repository.list_walk_forward_reports(limit=limit)
+        return list(reversed(self.reports[-limit:]))
+
+    async def get_report(
+        self,
+        experiment_id: str,
+    ) -> WalkForwardReport | None:
+        if self._repository is not None:
+            return await self._repository.load_walk_forward_report(
+                experiment_id
+            )
+        return next(
+            (
+                report
+                for report in reversed(self.reports)
+                if report.experiment_id == experiment_id
+            ),
+            None,
+        )
 
     async def run(
         self,
@@ -197,7 +233,7 @@ class WalkForwardEngine:
         simulation_context = self._backtesting_engine.simulation_context(
             request.backtest
         )
-        simulation_context_hash = _canonical_hash(simulation_context)
+        simulation_context_hash = canonical_sha256(simulation_context)
         identity_payload = {
             "dataset_hash": full_manifest.dataset_hash,
             "candidate_version": actual_candidate,
@@ -206,7 +242,15 @@ class WalkForwardEngine:
             "execution_assumptions": assumptions.model_dump(mode="json"),
             "simulation_context_hash": simulation_context_hash,
         }
-        experiment_id = f"walk-forward:v1:{_canonical_hash(identity_payload)}"
+        experiment_id = (
+            f"walk-forward:v1:{canonical_sha256(identity_payload)}"
+        )
+        if self._repository is not None:
+            existing = await self._repository.load_walk_forward_report(
+                experiment_id
+            )
+            if existing is not None:
+                return existing
 
         folds: list[WalkForwardFoldReport] = []
         validation_summaries: list[WalkForwardBacktestSummary] = []
@@ -227,7 +271,7 @@ class WalkForwardEngine:
             validation_summaries.append(validation_summary)
             test_summaries.append(test_summary)
 
-            fold_hash = _canonical_hash(
+            fold_hash = canonical_sha256(
                 {
                     "experiment_id": experiment_id,
                     "fold_index": fold_index,
@@ -250,6 +294,7 @@ class WalkForwardEngine:
 
         report = WalkForwardReport(
             experiment_id=experiment_id,
+            artifact_hash="0" * 64,
             dataset_id=full_manifest.dataset_id,
             dataset_hash=full_manifest.dataset_hash,
             symbol=request.backtest.symbol,
@@ -266,5 +311,14 @@ class WalkForwardEngine:
             duration_ms=int((time.monotonic() - started) * 1000),
             created_at=datetime.now(timezone.utc),
         )
-        self.reports.append(report)
+        report = report.model_copy(
+            update={"artifact_hash": walk_forward_artifact_hash(report)}
+        )
+        if self._repository is not None:
+            report = await self._repository.save_walk_forward_report(report)
+        if not any(
+            item.experiment_id == report.experiment_id
+            for item in self.reports
+        ):
+            self.reports.append(report)
         return report

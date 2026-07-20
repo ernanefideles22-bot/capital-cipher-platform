@@ -14,6 +14,7 @@
     "schemas/v1/backfill-queue-item.schema.json",
     "schemas/v1/raw-data-object.schema.json",
     "schemas/v1/backtest-execution-assumptions.schema.json",
-    "schemas/v1/walk-forward-protocol.schema.json"
+    "schemas/v1/walk-forward-protocol.schema.json",
+    "schemas/v1/walk-forward-artifact.schema.json"
   ]
 }

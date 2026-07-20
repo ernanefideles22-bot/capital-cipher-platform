@@ -106,11 +106,12 @@ async def run_walk_forward(
 async def list_walk_forward_reports(
     context: AppContext = Depends(get_context),
 ) -> dict:
+    reports = await context.walk_forward_engine.list_reports(limit=100)
     return success_response(
         {
             "reports": [
                 report.model_dump(mode="json", exclude={"folds"})
-                for report in context.walk_forward_engine.reports
+                for report in reports
             ]
         }
     )
@@ -121,11 +122,11 @@ async def get_walk_forward_report(
     experiment_id: str,
     context: AppContext = Depends(get_context),
 ) -> dict:
-    for report in context.walk_forward_engine.reports:
-        if report.experiment_id == experiment_id:
-            return success_response(
-                {"report": report.model_dump(mode="json")}
-            )
+    report = await context.walk_forward_engine.get_report(experiment_id)
+    if report is not None:
+        return success_response(
+            {"report": report.model_dump(mode="json")}
+        )
     return error_response(
         "NOT_FOUND",
         f"Walk-forward experiment {experiment_id} not found",

@@ -6,14 +6,21 @@ import asyncio
 import os
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import text, update
+from sqlalchemy.exc import SQLAlchemyError
 
-from app.database.models import INTERNAL_SCHEMA
+from app.backtesting.engine import BacktestingEngine
+from app.backtesting.walk_forward import WalkForwardEngine
+from app.database.models import (
+    INTERNAL_SCHEMA,
+    WalkForwardExperimentModel,
+)
 from app.database.repositories.repository import Repository
 from app.database.session import Database
 from app.market_data.catalog import DataCatalog
 from app.market_data.gaps import GapService
 from app.schemas.backfill import HistoricalBackfillJob
+from app.schemas.backtest import WalkForwardProtocol, WalkForwardRequest
 from app.schemas.data_lake import (
     BackfillQueueItem,
     BackfillRawPageLink,
@@ -106,6 +113,36 @@ async def test_real_postgres_internal_warehouse_round_trip():
     )
     await repository.save_backfill_raw_page(raw_object, raw_link)
     loaded_raw_pages = await repository.list_backfill_raw_pages(jobs[0].job_id)
+    artifact_candles = make_series(
+        [100.0 + index * 0.1 for index in range(30)]
+    )
+    artifact = await WalkForwardEngine(BacktestingEngine()).run(
+        WalkForwardRequest(
+            candidate_version="SCALP_15M_v1",
+            protocol=WalkForwardProtocol(
+                train_candles=10,
+                validation_candles=10,
+                test_candles=10,
+                embargo_candles=0,
+                max_folds=1,
+            ),
+        ),
+        artifact_candles,
+    )
+    await repository.save_walk_forward_report(artifact)
+    loaded_artifact = await repository.load_walk_forward_report(
+        artifact.experiment_id
+    )
+    with pytest.raises(SQLAlchemyError, match="append-only"):
+        async with database.session() as session, session.begin():
+            await session.execute(
+                update(WalkForwardExperimentModel)
+                .where(
+                    WalkForwardExperimentModel.experiment_id
+                    == artifact.experiment_id
+                )
+                .values(symbol="ETHUSDT")
+            )
 
     async with database.engine.connect() as connection:
         tables = set(
@@ -117,11 +154,24 @@ async def test_real_postgres_internal_warehouse_round_trip():
                 {"schema_name": INTERNAL_SCHEMA},
             )
         )
+        immutable_triggers = set(
+            await connection.scalars(
+                text(
+                    "SELECT trigger_name "
+                    "FROM information_schema.triggers "
+                    "WHERE trigger_schema = :schema_name "
+                    "AND event_object_table = "
+                    "'walk_forward_experiments'"
+                ),
+                {"schema_name": INTERNAL_SCHEMA},
+            )
+        )
     await database.dispose()
 
     assert loaded == manifest
     assert gaps == []
     assert loaded_job == jobs[0]
+    assert loaded_artifact == artifact
     assert {claim.queue_id for claim in claims if claim is not None} == {
         jobs[0].job_id,
         jobs[1].job_id,
@@ -136,4 +186,6 @@ async def test_real_postgres_internal_warehouse_round_trip():
         "backfill_queue_items",
         "raw_data_objects",
         "backfill_raw_pages",
+        "walk_forward_experiments",
     } <= tables
+    assert "trg_walk_forward_experiments_immutable" in immutable_triggers

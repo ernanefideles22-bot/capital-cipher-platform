@@ -4,8 +4,15 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import AwareDatetime, BaseModel, Field, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    Field,
+    field_validator,
+    model_validator,
+)
 
+from app.schemas.common import Exchange
 from app.schemas.events import CONTRACT_VERSION
 
 
@@ -26,13 +33,21 @@ class BacktestExecutionAssumptions(BaseModel):
 
 
 class BacktestRequest(BaseModel):
-    symbol: str = "BTCUSDT"
-    timeframe: str = "15m"
+    symbol: str = Field(
+        default="BTCUSDT",
+        pattern=r"^[A-Z0-9._-]{2,32}$",
+    )
+    timeframe: str = Field(default="15m", pattern=r"^[1-9][0-9]*[mhdw]$")
     source: Literal["store", "inline", "csv"] = "store"
-    exchange: str = "BINANCE"
+    exchange: Exchange = Exchange.BINANCE
     candles: list[dict] | None = None
     csv_path: str | None = None
     execution: BacktestExecutionAssumptions | None = None
+
+    @field_validator("symbol", mode="before")
+    @classmethod
+    def normalize_symbol(cls, value: str) -> str:
+        return value.strip().upper()
 
 
 class BacktestReport(BaseModel):
@@ -170,6 +185,7 @@ class WalkForwardReport(BaseModel):
 
     schema_version: Literal["1.0.0"] = CONTRACT_VERSION
     experiment_id: str = Field(pattern=r"^walk-forward:v1:[a-f0-9]{64}$")
+    artifact_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     dataset_id: str
     dataset_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     symbol: str
@@ -186,3 +202,23 @@ class WalkForwardReport(BaseModel):
     promotion_status: Literal["RESEARCH_ONLY"] = "RESEARCH_ONLY"
     duration_ms: int = Field(default=0, ge=0)
     created_at: AwareDatetime
+
+
+class WalkForwardArtifactMetadata(BaseModel):
+    """Language-neutral metadata stored beside an immutable report payload."""
+
+    schema_version: Literal["1.0.0"] = CONTRACT_VERSION
+    artifact_version: Literal["walk-forward-artifact-v1"] = (
+        "walk-forward-artifact-v1"
+    )
+    experiment_id: str = Field(pattern=r"^walk-forward:v1:[a-f0-9]{64}$")
+    artifact_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    protocol_version: Literal["walk-forward-v1"] = "walk-forward-v1"
+    dataset_id: str
+    dataset_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    symbol: str = Field(pattern=r"^[A-Z0-9._-]{2,32}$")
+    timeframe: str = Field(pattern=r"^[1-9][0-9]*[mhdw]$")
+    candidate_version: str = Field(min_length=3, max_length=128)
+    promotion_status: Literal["RESEARCH_ONLY"] = "RESEARCH_ONLY"
+    created_at: AwareDatetime
+    recorded_at: AwareDatetime

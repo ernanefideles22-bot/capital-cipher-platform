@@ -13,6 +13,7 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from app.core.errors import DatabaseError
+from app.backtesting.artifacts import walk_forward_artifact_hash
 from app.database.models import (
     AgentOutputModel,
     AuditLogModel,
@@ -32,11 +33,16 @@ from app.database.models import (
     ReplayCheckpointModel,
     RiskCheckModel,
     SystemEventModel,
+    WalkForwardExperimentModel,
 )
 from app.database.session import Database
 from app.market_data.identity import candle_event_id
 from app.schemas.agents import AgentOutput
 from app.schemas.backfill import HistoricalBackfillJob, MarketDataGap
+from app.schemas.backtest import (
+    WalkForwardArtifactMetadata,
+    WalkForwardReport,
+)
 from app.schemas.data_lake import (
     BackfillQueueItem,
     BackfillRawPageLink,
@@ -87,6 +93,29 @@ class Repository:
         if dialect == "sqlite":
             return sqlite_insert(model)
         return None
+
+    @staticmethod
+    def _walk_forward_report_from_row(
+        row: WalkForwardExperimentModel,
+    ) -> WalkForwardReport:
+        report = WalkForwardReport.model_validate(row.report_payload)
+        expected_hash = walk_forward_artifact_hash(report)
+        if (
+            report.experiment_id != row.experiment_id
+            or report.artifact_hash != row.artifact_hash
+            or expected_hash != row.artifact_hash
+            or report.dataset_hash != row.dataset_hash
+            or report.dataset_id != row.dataset_id
+            or report.candidate_version != row.candidate_version
+            or report.promotion_status != row.promotion_status
+            or report.schema_version != row.schema_version
+            or row.artifact_version != "walk-forward-artifact-v1"
+            or report.protocol.protocol_version != row.protocol_version
+        ):
+            raise ValueError(
+                "Stored walk-forward artifact failed integrity validation"
+            )
+        return report
 
     async def save_bus_message(self, message: BusMessage):
         """Append a versioned event before any consumer handles it."""
@@ -1296,6 +1325,136 @@ class Repository:
                 )
         except Exception as exc:
             raise DatabaseError(f"Failed to persist audit log: {exc}") from exc
+
+    async def save_walk_forward_report(
+        self,
+        report: WalkForwardReport,
+    ) -> WalkForwardReport:
+        """Insert an immutable artifact or return the identical stored copy."""
+
+        expected_hash = walk_forward_artifact_hash(report)
+        if report.artifact_hash != expected_hash:
+            raise DatabaseError(
+                "Walk-forward artifact_hash does not match report content"
+            )
+        metadata = WalkForwardArtifactMetadata(
+            experiment_id=report.experiment_id,
+            artifact_hash=report.artifact_hash,
+            protocol_version=report.protocol.protocol_version,
+            dataset_id=report.dataset_id,
+            dataset_hash=report.dataset_hash,
+            symbol=report.symbol,
+            timeframe=report.timeframe,
+            candidate_version=report.candidate_version,
+            promotion_status=report.promotion_status,
+            created_at=report.created_at,
+            recorded_at=_now(),
+        )
+        values = {
+            **metadata.model_dump(),
+            "report_payload": report.model_dump(mode="json"),
+        }
+        try:
+            async with self._db.session() as session, session.begin():
+                insert_statement = self._dialect_insert(
+                    WalkForwardExperimentModel
+                )
+                if insert_statement is not None:
+                    inserted_id = await session.scalar(
+                        insert_statement.values(**values)
+                        .on_conflict_do_nothing(
+                            index_elements=["experiment_id"]
+                        )
+                        .returning(
+                            WalkForwardExperimentModel.experiment_id
+                        )
+                    )
+                    if inserted_id is not None:
+                        return report
+                else:
+                    existing_id = await session.scalar(
+                        select(
+                            WalkForwardExperimentModel.experiment_id
+                        ).where(
+                            WalkForwardExperimentModel.experiment_id
+                            == report.experiment_id
+                        )
+                    )
+                    if existing_id is None:
+                        session.add(WalkForwardExperimentModel(**values))
+                        await session.flush()
+                        return report
+
+                row = await session.scalar(
+                    select(WalkForwardExperimentModel).where(
+                        WalkForwardExperimentModel.experiment_id
+                        == report.experiment_id
+                    )
+                )
+                if row is None:
+                    raise RuntimeError(
+                        "Walk-forward insert conflict has no stored artifact"
+                    )
+                stored = self._walk_forward_report_from_row(row)
+                if stored.artifact_hash != report.artifact_hash:
+                    raise RuntimeError(
+                        "Immutable walk-forward experiment identity conflict"
+                    )
+                return stored
+        except DatabaseError:
+            raise
+        except Exception as exc:
+            raise DatabaseError(
+                f"Failed to persist walk-forward artifact: {exc}"
+            ) from exc
+
+    async def load_walk_forward_report(
+        self,
+        experiment_id: str,
+    ) -> WalkForwardReport | None:
+        try:
+            async with self._db.session() as session:
+                row = await session.scalar(
+                    select(WalkForwardExperimentModel).where(
+                        WalkForwardExperimentModel.experiment_id
+                        == experiment_id
+                    )
+                )
+                if row is None:
+                    return None
+                return self._walk_forward_report_from_row(row)
+        except Exception as exc:
+            raise DatabaseError(
+                f"Failed to load walk-forward artifact: {exc}"
+            ) from exc
+
+    async def list_walk_forward_reports(
+        self,
+        *,
+        limit: int = 100,
+    ) -> list[WalkForwardReport]:
+        if not 1 <= limit <= 1_000:
+            raise ValueError("Walk-forward report limit must be 1..1000")
+        try:
+            async with self._db.session() as session:
+                rows = list(
+                    await session.scalars(
+                        select(WalkForwardExperimentModel)
+                        .order_by(
+                            WalkForwardExperimentModel.created_at.desc(),
+                            WalkForwardExperimentModel.row_id.desc(),
+                        )
+                        .limit(limit)
+                    )
+                )
+                return [
+                    self._walk_forward_report_from_row(row)
+                    for row in rows
+                ]
+        except Exception as exc:
+            raise DatabaseError(
+                f"Failed to list walk-forward artifacts: {exc}"
+            ) from exc
 
     async def get_decisions(self, limit: int = 50) -> list[DecisionModel]:
         async with self._db.session() as session:

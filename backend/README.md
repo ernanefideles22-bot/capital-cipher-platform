@@ -97,6 +97,9 @@ report fields, and safety boundaries. See
 `../docs/month-4-walk-forward-protocol.md` for pre-registration, embargoed
 temporal folds, reproducible experiment identities, and deferred fitting and
 promotion controls.
+Durable content-addressed reports, atomic idempotency, private PostgreSQL
+storage, and mutation guards are documented in
+`../docs/month-4-durable-experiments.md`.
 
 ## Architecture
 

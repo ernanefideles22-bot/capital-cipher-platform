@@ -6,10 +6,12 @@ from datetime import datetime
 from uuid import uuid4
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Identity,
     Index,
     Integer,
     Numeric,
@@ -198,6 +200,75 @@ class DatasetManifestModel(Base):
     quality_summary: Mapped[dict] = mapped_column(JsonType, nullable=False)
     clock_status: Mapped[str] = mapped_column(String(16), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class WalkForwardExperimentModel(Base):
+    """Append-only, content-addressed walk-forward research artifact."""
+
+    __tablename__ = "walk_forward_experiments"
+    __table_args__ = (
+        CheckConstraint(
+            "promotion_status = 'RESEARCH_ONLY'",
+            name="ck_walk_forward_experiments_research_only",
+        ),
+        CheckConstraint(
+            "artifact_version = 'walk-forward-artifact-v1'",
+            name="ck_walk_forward_experiments_artifact_version",
+        ),
+        CheckConstraint(
+            "length(dataset_hash) = 64",
+            name="ck_walk_forward_experiments_dataset_hash",
+        ),
+        CheckConstraint(
+            "length(artifact_hash) = 64",
+            name="ck_walk_forward_experiments_artifact_hash",
+        ),
+        Index(
+            "ix_walk_forward_experiments_candidate_created",
+            "candidate_version",
+            "created_at",
+        ),
+        Index(
+            "ix_walk_forward_experiments_dataset_created",
+            "dataset_hash",
+            "created_at",
+        ),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    row_id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        Identity(always=True),
+        primary_key=True,
+    )
+    experiment_id: Mapped[str] = mapped_column(
+        String(80),
+        nullable=False,
+        unique=True,
+    )
+    artifact_hash: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        unique=True,
+    )
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    artifact_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    protocol_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    dataset_id: Mapped[str] = mapped_column(String(96), nullable=False)
+    dataset_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    symbol: Mapped[str] = mapped_column(Text, nullable=False)
+    timeframe: Mapped[str] = mapped_column(Text, nullable=False)
+    candidate_version: Mapped[str] = mapped_column(Text, nullable=False)
+    promotion_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    report_payload: Mapped[dict] = mapped_column(JsonType, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
 
 
 class ClockObservationModel(Base):

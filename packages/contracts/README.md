@@ -20,3 +20,5 @@ Backtest execution assumptions are also versioned so cost-model changes cannot
 silently alter experiment results.
 The walk-forward protocol fixes train/validation/test sizing, embargo, step,
 anchoring, and fold limits for reproducible research evaluations.
+Walk-forward artifact metadata is versioned separately so future runtimes can
+verify storage identity, checksums, lineage, and research-only status.

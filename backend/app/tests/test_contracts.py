@@ -14,6 +14,7 @@ from app.schemas.agents import AgentOutput
 from app.schemas.backfill import HistoricalBackfillJob, MarketDataGap
 from app.schemas.backtest import (
     BacktestExecutionAssumptions,
+    WalkForwardArtifactMetadata,
     WalkForwardProtocol,
 )
 from app.schemas.common import AgentStatus, Signal
@@ -259,4 +260,27 @@ def test_walk_forward_protocol_matches_published_v1_contract():
     )
     assert list(
         validator.iter_errors(protocol.model_dump(mode="json"))
+    ) == []
+
+
+def test_walk_forward_artifact_matches_published_v1_contract():
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    artifact = WalkForwardArtifactMetadata(
+        experiment_id=f"walk-forward:v1:{'a' * 64}",
+        artifact_hash="b" * 64,
+        dataset_id=f"candles:v1:{'c' * 64}",
+        dataset_hash="c" * 64,
+        symbol="BTCUSDT",
+        timeframe="15m",
+        candidate_version="SCALP_15M_v1",
+        created_at=now,
+        recorded_at=now,
+    )
+    validator = Draft202012Validator(
+        load_contract("walk-forward-artifact.schema.json")
+    )
+    assert list(
+        validator.iter_errors(artifact.model_dump(mode="json"))
     ) == []

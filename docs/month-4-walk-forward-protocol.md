@@ -4,8 +4,9 @@ This is the second Month 4 increment. It adds a versioned protocol for
 evaluating one pre-registered strategy candidate across ordered train,
 validation, and test windows. Every result remains `RESEARCH_ONLY`.
 
-It does not tune a model, select a winning parameter set, authorize live
-trading, or persist experiments durably.
+It does not tune a model, select a winning parameter set, or authorize live
+trading. Durable report persistence is added by the next increment documented
+in [`month-4-durable-experiments.md`](month-4-durable-experiments.md).
 
 ## Request
 
@@ -99,7 +100,7 @@ aggregate containing fold count, trade count, profitable-fold ratio, mean and
 median PnL percentage, worst drawdown, and mean expectancy.
 
 Ordinary backtest history is not polluted by internal fold runs. Walk-forward
-results have separate in-memory report endpoints:
+results have separate report endpoints:
 
 ```text
 GET /api/v1/backtest/walk-forward/reports
@@ -118,7 +119,6 @@ risk limits, strategy enablement, or execution permissions.
 ## Deferred work
 
 - a versioned fitting interface that consumes train data without test access;
-- immutable/durable experiment storage and lineage in PostgreSQL;
 - pre-registered acceptance rules and minimum sample sizes;
 - multiple-testing correction and parameter-search budgets;
 - historical spread/funding series;
