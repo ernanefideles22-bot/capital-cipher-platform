@@ -56,6 +56,8 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
             await ctx.database.create_all()
         outbox_stop = asyncio.Event()
         outbox_task = None
+        backfill_stop = asyncio.Event()
+        backfill_task = None
         if ctx.event_transport is not None:
             try:
                 broker_healthy = await ctx.event_transport.healthcheck()
@@ -83,6 +85,10 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
             SystemState.PAPER, reason="Initialization complete — Phase 1 PAPER mode", actor="main"
         )
         logger.info("System started in PAPER mode", event_type="SYSTEM_STARTED")
+        if settings.backfill_worker_enabled and ctx.backfill_worker is not None:
+            backfill_task = asyncio.create_task(
+                ctx.backfill_worker.run(backfill_stop)
+            )
 
         adapter = None
         clock_stop = asyncio.Event()
@@ -134,6 +140,9 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
         if clock_task is not None:
             clock_stop.set()
             await clock_task
+        if backfill_task is not None:
+            backfill_stop.set()
+            await backfill_task
         if ctx.public_market_clients is not None:
             await asyncio.gather(
                 *(client.aclose() for client in ctx.public_market_clients.values())

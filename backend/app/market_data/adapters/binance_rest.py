@@ -7,10 +7,12 @@ from datetime import datetime, timezone
 import httpx
 
 from app.core.errors import ExternalServiceError
+from app.market_data.adapters.public_rest import RawPageHandler
 from app.market_data.clock import evaluate_clock_probe
 from app.market_data.data_quality import TIMEFRAME_SECONDS
 from app.schemas.common import Exchange
 from app.schemas.data_catalog import ClockObservation
+from app.schemas.data_lake import RawProviderPage
 from app.schemas.market import Candle
 
 BINANCE_PUBLIC_REST_URL = "https://data-api.binance.vision"
@@ -31,7 +33,7 @@ class BinancePublicRestClient:
         self._client = client or httpx.AsyncClient(
             base_url=base_url,
             timeout=timeout_seconds,
-            headers={"User-Agent": "capital-cipher-platform/0.9"},
+            headers={"User-Agent": "capital-cipher-platform/0.10"},
         )
 
     async def _get_json(self, path: str, *, params: dict | None = None):
@@ -94,6 +96,7 @@ class BinancePublicRestClient:
         start_at: datetime,
         end_at: datetime,
         limit: int,
+        on_page: RawPageHandler | None = None,
     ) -> list[Candle]:
         step_seconds = TIMEFRAME_SECONDS.get(timeframe)
         if step_seconds is None:
@@ -112,24 +115,37 @@ class BinancePublicRestClient:
         end_open_ms = end_close_ms - step_ms + 1
         received_at = datetime.now(timezone.utc)
         candles: dict[int, Candle] = {}
+        page_index = 0
 
         while cursor <= end_open_ms and len(candles) < limit:
             page_limit = min(1_000, limit - len(candles))
+            request_params = {
+                "symbol": symbol.upper(),
+                "interval": timeframe,
+                "startTime": cursor,
+                "endTime": end_open_ms,
+                "limit": page_limit,
+            }
             payload = await self._get_json(
                 "/api/v3/klines",
-                params={
-                    "symbol": symbol.upper(),
-                    "interval": timeframe,
-                    "startTime": cursor,
-                    "endTime": end_open_ms,
-                    "limit": page_limit,
-                },
+                params=request_params,
             )
             if not isinstance(payload, list):
                 raise ExternalServiceError(
                     "Binance kline payload is invalid",
                     metadata={"provider": "BINANCE"},
                 )
+            if on_page is not None:
+                await on_page(
+                    RawProviderPage(
+                        source=self.source_name,
+                        endpoint="/api/v3/klines",
+                        request_params=request_params,
+                        payload=payload,
+                        page_index=page_index,
+                    )
+                )
+            page_index += 1
             if not payload:
                 break
             try:

@@ -9,6 +9,7 @@ from app.core.errors import CapitalCipherError, DataQualityError, DatabaseError
 from app.market_data.adapters.public_rest import PublicMarketDataClient
 from app.market_data.catalog import DataCatalog
 from app.market_data.clock import ExchangeClockMonitor, ExchangeClockRegistry
+from app.market_data.data_lake import RawDataLake
 from app.market_data.data_quality import TIMEFRAME_SECONDS, evaluate_candles
 from app.market_data.gaps import GapService
 from app.schemas.backfill import (
@@ -17,6 +18,7 @@ from app.schemas.backfill import (
     backfill_request_fingerprint,
 )
 from app.schemas.common import Exchange, utcnow
+from app.schemas.data_lake import BackfillQueueItem, RawProviderPage
 from app.schemas.market import Candle, DataQualityReport
 
 
@@ -30,6 +32,17 @@ class BackfillRepository(Protocol):
         self,
         job: HistoricalBackfillJob,
     ) -> None: ...
+
+    async def submit_historical_backfill(
+        self,
+        job: HistoricalBackfillJob,
+        queue_item: BackfillQueueItem,
+    ) -> bool: ...
+
+    async def load_backfill_queue_item(
+        self,
+        queue_id: str,
+    ) -> BackfillQueueItem | None: ...
 
     async def save_candles(
         self,
@@ -49,6 +62,7 @@ class HistoricalBackfillService:
         clock_registry: ExchangeClockRegistry,
         gap_service: GapService,
         data_catalog: DataCatalog,
+        raw_data_lake: RawDataLake | None = None,
         max_candles: int = 100_000,
     ) -> None:
         if max_candles < 1 or max_candles > 1_000_000:
@@ -59,7 +73,70 @@ class HistoricalBackfillService:
         self._clock_registry = clock_registry
         self._gap_service = gap_service
         self._data_catalog = data_catalog
+        self._raw_data_lake = raw_data_lake
         self._max_candles = max_candles
+
+    async def submit(
+        self,
+        request: HistoricalBackfillRequest,
+        *,
+        max_attempts: int = 5,
+    ) -> HistoricalBackfillJob:
+        """Validate and atomically enqueue an idempotent historical request."""
+        self._validate_request_size(request)
+        if max_attempts < 1 or max_attempts > 100:
+            raise ValueError("max_attempts must be between 1 and 100")
+        client = self._clients.get(request.exchange)
+        if client is None:
+            raise ValueError(
+                f"No public market-data client for {request.exchange.value}"
+            )
+
+        fingerprint = backfill_request_fingerprint(request)
+        previous = await self._repository.load_historical_backfill_job(fingerprint)
+        if previous is not None and previous.status == "COMPLETED":
+            return previous
+        if previous is not None and previous.status in {"PENDING", "RUNNING"}:
+            existing_queue = await self._repository.load_backfill_queue_item(
+                fingerprint
+            )
+            if existing_queue is not None:
+                return previous
+
+        now = utcnow()
+        job = HistoricalBackfillJob(
+            job_id=fingerprint,
+            request_fingerprint=fingerprint,
+            exchange=request.exchange,
+            symbol=request.symbol,
+            timeframe=request.timeframe,
+            start_at=request.start_at,
+            end_at=request.end_at,
+            source=client.source_name,
+            status="PENDING",
+            attempt_count=previous.attempt_count if previous else 0,
+            created_at=previous.created_at if previous else now,
+            updated_at=now,
+        )
+        queue_item = BackfillQueueItem(
+            queue_id=fingerprint,
+            job_id=fingerprint,
+            exchange=request.exchange,
+            symbol=request.symbol,
+            timeframe=request.timeframe,
+            start_at=request.start_at,
+            end_at=request.end_at,
+            max_candles=request.max_candles,
+            max_attempts=max_attempts,
+            available_at=now,
+            created_at=previous.created_at if previous else now,
+            updated_at=now,
+        )
+        await self._repository.submit_historical_backfill(job, queue_item)
+        return (
+            await self._repository.load_historical_backfill_job(fingerprint)
+            or job
+        )
 
     async def run(
         self,
@@ -111,12 +188,21 @@ class HistoricalBackfillService:
                     },
                 )
 
+            async def archive_page(page: RawProviderPage) -> None:
+                if self._raw_data_lake is not None:
+                    await self._raw_data_lake.archive_page(
+                        job_id=job.job_id,
+                        attempt_count=job.attempt_count,
+                        page=page,
+                    )
+
             candles = await client.fetch_candles(
                 symbol=request.symbol,
                 timeframe=request.timeframe,
                 start_at=request.start_at,
                 end_at=request.end_at,
                 limit=min(request.max_candles, self._max_candles),
+                on_page=archive_page if self._raw_data_lake is not None else None,
             )
             self._validate_provider_batch(request, candles)
             quality = evaluate_candles(

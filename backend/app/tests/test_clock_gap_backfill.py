@@ -80,6 +80,10 @@ def test_clock_registry_fails_closed_for_unknown_stale_and_unsafe():
 async def test_binance_public_rest_probes_clock_and_paginates_klines():
     start = _closed_at(0)
     second = _closed_at(1)
+    raw_pages = []
+
+    async def archive(page):
+        raw_pages.append(page)
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/v3/time":
@@ -124,16 +128,24 @@ async def test_binance_public_rest_probes_clock_and_paginates_klines():
             start_at=start,
             end_at=second,
             limit=10,
+            on_page=archive,
         )
 
     assert observation.status == "SYNCED"
     assert [candle.closed_at for candle in candles] == [start, second]
     assert candles[-1].close == 102
+    assert len(raw_pages) == 1
+    assert raw_pages[0].endpoint == "/api/v3/klines"
+    assert raw_pages[0].payload[0][1] == "100"
 
 
 async def test_bybit_public_rest_normalizes_reverse_order_klines():
     start = _closed_at(0)
     second = _closed_at(1)
+    raw_pages = []
+
+    async def archive(page):
+        raw_pages.append(page)
 
     def row(closed_at: datetime, close: str) -> list[str]:
         open_at = closed_at - timedelta(minutes=15) + timedelta(milliseconds=1)
@@ -178,11 +190,14 @@ async def test_bybit_public_rest_normalizes_reverse_order_klines():
             start_at=start,
             end_at=second,
             limit=10,
+            on_page=archive,
         )
 
     assert observation.status == "SYNCED"
     assert [candle.closed_at for candle in candles] == [start, second]
     assert candles[-1].exchange == Exchange.BYBIT
+    assert len(raw_pages) == 1
+    assert raw_pages[0].endpoint == "/v5/market/kline"
 
 
 def test_gap_detector_finds_leading_internal_and_trailing_ranges():

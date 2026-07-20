@@ -56,11 +56,15 @@ POST /api/v1/market/gaps/scan
 GET  /api/v1/market/gaps
 POST /api/v1/market/backfills
 GET  /api/v1/market/backfills/{job_id}
+GET  /api/v1/market/backfills/{job_id}/lineage
 ```
 
 These endpoints use public market data only and require `X-API-Key`. See
 `../docs/month-3-clock-gap-backfill.md` for clock thresholds, idempotency,
-provider pagination, and failure semantics.
+provider pagination, and failure semantics. Submission now uses a durable
+leased worker queue, archives every raw REST page before normalization, and
+exposes request-to-dataset lineage; see
+`../docs/month-3-durable-data-lake.md`.
 
 ## Event transport and replay
 

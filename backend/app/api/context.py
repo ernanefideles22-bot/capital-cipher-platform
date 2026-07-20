@@ -22,8 +22,13 @@ from app.market_data.adapters.binance_rest import BinancePublicRestClient
 from app.market_data.adapters.bybit_rest import BybitPublicRestClient
 from app.market_data.adapters.public_rest import PublicMarketDataClient
 from app.market_data.backfill import HistoricalBackfillService
+from app.market_data.backfill_worker import HistoricalBackfillWorker
 from app.market_data.catalog import DataCatalog
 from app.market_data.clock import ExchangeClockMonitor, ExchangeClockRegistry
+from app.market_data.data_lake import (
+    LocalContentAddressedBlobStore,
+    RawDataLake,
+)
 from app.market_data.gaps import GapService
 from app.market_data.store import CandleStore
 from app.orchestrator.decision_engine import DecisionEngine
@@ -50,6 +55,9 @@ class AppContext:
     data_catalog: DataCatalog | None = None
     gap_service: GapService | None = None
     backfill_service: HistoricalBackfillService | None = None
+    backfill_worker: HistoricalBackfillWorker | None = None
+    raw_data_lake: RawDataLake | None = None
+    raw_blob_store: LocalContentAddressedBlobStore | None = None
     clock_registry: ExchangeClockRegistry | None = None
     clock_monitor: ExchangeClockMonitor | None = None
     public_market_clients: dict[Exchange, PublicMarketDataClient] | None = None
@@ -75,7 +83,12 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
     public_market_clients: dict[Exchange, PublicMarketDataClient] | None = None
     clock_monitor: ExchangeClockMonitor | None = None
     backfill_service: HistoricalBackfillService | None = None
+    backfill_worker: HistoricalBackfillWorker | None = None
+    raw_data_lake: RawDataLake | None = None
+    raw_blob_store: LocalContentAddressedBlobStore | None = None
     if repository is not None and data_catalog is not None and gap_service is not None:
+        raw_blob_store = LocalContentAddressedBlobStore(settings.data_lake_root)
+        raw_data_lake = RawDataLake(repository, raw_blob_store)
         public_market_clients = {
             Exchange.BINANCE: BinancePublicRestClient(
                 base_url=settings.binance_public_rest_url,
@@ -103,7 +116,18 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
             clock_registry=clock_registry,
             gap_service=gap_service,
             data_catalog=data_catalog,
+            raw_data_lake=raw_data_lake,
             max_candles=settings.historical_backfill_max_candles,
+        )
+        backfill_worker = HistoricalBackfillWorker(
+            repository=repository,
+            service=backfill_service,
+            poll_interval_seconds=(
+                settings.backfill_worker_poll_interval_seconds
+            ),
+            lease_seconds=settings.backfill_lease_seconds,
+            retry_base_seconds=settings.backfill_retry_base_seconds,
+            retry_max_seconds=settings.backfill_retry_max_seconds,
         )
     event_transport: EventTransport | None = None
     outbox_dispatcher: OutboxDispatcher | None = None
@@ -206,6 +230,9 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         data_catalog=data_catalog,
         gap_service=gap_service,
         backfill_service=backfill_service,
+        backfill_worker=backfill_worker,
+        raw_data_lake=raw_data_lake,
+        raw_blob_store=raw_blob_store,
         clock_registry=clock_registry,
         clock_monitor=clock_monitor,
         public_market_clients=public_market_clients,

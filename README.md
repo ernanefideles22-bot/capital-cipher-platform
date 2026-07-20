@@ -36,3 +36,6 @@ The first Month 3 data foundation is documented in
 Trusted Binance/Bybit clocks, continuity scans, and public historical
 backfills are documented in
 [`docs/month-3-clock-gap-backfill.md`](docs/month-3-clock-gap-backfill.md).
+Durable worker leases, retries, dead letters, raw provider storage, and full
+backfill lineage are documented in
+[`docs/month-3-durable-data-lake.md`](docs/month-3-durable-data-lake.md).

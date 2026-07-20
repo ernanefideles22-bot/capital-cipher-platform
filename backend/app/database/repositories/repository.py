@@ -6,9 +6,9 @@ must not advance (enforced by callers via raised DatabaseError).
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -16,6 +16,8 @@ from app.core.errors import DatabaseError
 from app.database.models import (
     AgentOutputModel,
     AuditLogModel,
+    BackfillQueueItemModel,
+    BackfillRawPageModel,
     CandleObservationModel,
     ClockObservationModel,
     DecisionModel,
@@ -26,6 +28,7 @@ from app.database.models import (
     MarketDataGapModel,
     PaperOrderModel,
     RawMarketEventModel,
+    RawDataObjectModel,
     ReplayCheckpointModel,
     RiskCheckModel,
     SystemEventModel,
@@ -34,6 +37,11 @@ from app.database.session import Database
 from app.market_data.identity import candle_event_id
 from app.schemas.agents import AgentOutput
 from app.schemas.backfill import HistoricalBackfillJob, MarketDataGap
+from app.schemas.data_lake import (
+    BackfillQueueItem,
+    BackfillRawPageLink,
+    RawDataObject,
+)
 from app.schemas.data_catalog import CandleDatasetManifest, ClockObservation
 from app.schemas.decisions import Decision
 from app.schemas.events import BusMessage
@@ -631,6 +639,7 @@ class Repository:
         symbol: str | None = None,
         timeframe: str | None = None,
         status: str | None = None,
+        backfill_job_id: str | None = None,
         limit: int = 500,
     ) -> list[MarketDataGap]:
         if limit < 1 or limit > 10_000:
@@ -644,6 +653,10 @@ class Repository:
             conditions.append(MarketDataGapModel.timeframe == timeframe)
         if status is not None:
             conditions.append(MarketDataGapModel.status == status.upper())
+        if backfill_job_id is not None:
+            conditions.append(
+                MarketDataGapModel.backfill_job_id == backfill_job_id
+            )
         async with self._db.session() as session:
             rows = await session.scalars(
                 select(MarketDataGapModel)
@@ -740,6 +753,422 @@ class Repository:
                     _as_utc(row.completed_at) if row.completed_at else None
                 ),
                 updated_at=_as_utc(row.updated_at),
+            )
+
+    @staticmethod
+    def _queue_item_from_row(row: BackfillQueueItemModel) -> BackfillQueueItem:
+        return BackfillQueueItem(
+            schema_version=row.schema_version,
+            queue_id=row.queue_id,
+            job_id=row.job_id,
+            exchange=row.exchange,
+            symbol=row.symbol,
+            timeframe=row.timeframe,
+            start_at=_as_utc(row.start_at),
+            end_at=_as_utc(row.end_at),
+            max_candles=row.max_candles,
+            status=row.status,
+            attempt_count=row.attempt_count,
+            max_attempts=row.max_attempts,
+            available_at=_as_utc(row.available_at),
+            leased_by=row.leased_by,
+            lease_expires_at=(
+                _as_utc(row.lease_expires_at)
+                if row.lease_expires_at
+                else None
+            ),
+            last_error_code=row.last_error_code,
+            last_error_message=row.last_error_message,
+            created_at=_as_utc(row.created_at),
+            updated_at=_as_utc(row.updated_at),
+            completed_at=_as_utc(row.completed_at) if row.completed_at else None,
+        )
+
+    async def submit_historical_backfill(
+        self,
+        job: HistoricalBackfillJob,
+        queue_item: BackfillQueueItem,
+    ) -> bool:
+        """Atomically persist a job summary and its durable queue item."""
+        if job.job_id != queue_item.job_id:
+            raise ValueError("job and queue item identities must match")
+        job_values = job.model_dump()
+        queue_values = queue_item.model_dump()
+        try:
+            async with self._db.session() as session, session.begin():
+                job_insert = self._dialect_insert(HistoricalBackfillJobModel)
+                queue_insert = self._dialect_insert(BackfillQueueItemModel)
+                if job_insert is not None:
+                    await session.execute(
+                        job_insert.values(**job_values).on_conflict_do_nothing(
+                            index_elements=["job_id"]
+                        )
+                    )
+                else:
+                    existing_job = await session.get(
+                        HistoricalBackfillJobModel,
+                        job.job_id,
+                    )
+                    if existing_job is None:
+                        session.add(HistoricalBackfillJobModel(**job_values))
+                        await session.flush()
+
+                if queue_insert is not None:
+                    await session.execute(
+                        queue_insert.values(**queue_values).on_conflict_do_nothing(
+                            index_elements=["queue_id"]
+                        )
+                    )
+                else:
+                    existing_queue = await session.get(
+                        BackfillQueueItemModel,
+                        queue_item.queue_id,
+                    )
+                    if existing_queue is None:
+                        session.add(BackfillQueueItemModel(**queue_values))
+                        await session.flush()
+
+                queue_row = await session.get(
+                    BackfillQueueItemModel,
+                    queue_item.queue_id,
+                    with_for_update=True,
+                )
+                if queue_row is None:
+                    raise RuntimeError("backfill queue insert did not materialize")
+                job_row = await session.get(
+                    HistoricalBackfillJobModel,
+                    job.job_id,
+                    with_for_update=True,
+                )
+                if job_row is None:
+                    raise RuntimeError("backfill job insert did not materialize")
+                if job_row.status == "COMPLETED":
+                    return False
+                if queue_row.status == "LEASED":
+                    return False
+                if queue_row.status == "DEAD_LETTER":
+                    queue_row.attempt_count = 0
+                for key, value in job_values.items():
+                    if key not in {
+                        "job_id",
+                        "request_fingerprint",
+                        "created_at",
+                        "attempt_count",
+                    }:
+                        setattr(job_row, key, value)
+                for key, value in queue_values.items():
+                    if key not in {"queue_id", "job_id", "created_at", "attempt_count"}:
+                        setattr(queue_row, key, value)
+                return True
+        except Exception as exc:
+            if isinstance(exc, DatabaseError):
+                raise
+            raise DatabaseError(
+                f"Failed to submit historical backfill: {exc}"
+            ) from exc
+
+    async def load_backfill_queue_item(
+        self,
+        queue_id: str,
+    ) -> BackfillQueueItem | None:
+        async with self._db.session() as session:
+            row = await session.get(BackfillQueueItemModel, queue_id)
+            return self._queue_item_from_row(row) if row is not None else None
+
+    async def claim_next_backfill(
+        self,
+        *,
+        worker_id: str,
+        lease_seconds: int,
+        now: datetime | None = None,
+    ) -> BackfillQueueItem | None:
+        """Atomically claim one ready item; PostgreSQL workers skip locks."""
+        if lease_seconds < 1:
+            raise ValueError("lease_seconds must be positive")
+        now = now or _now()
+        claimable = or_(
+            and_(
+                BackfillQueueItemModel.status.in_(("PENDING", "RETRY")),
+                BackfillQueueItemModel.available_at <= now,
+                BackfillQueueItemModel.attempt_count
+                < BackfillQueueItemModel.max_attempts,
+            ),
+            and_(
+                BackfillQueueItemModel.status == "LEASED",
+                BackfillQueueItemModel.lease_expires_at <= now,
+                BackfillQueueItemModel.attempt_count
+                < BackfillQueueItemModel.max_attempts,
+            ),
+        )
+        statement = (
+            select(BackfillQueueItemModel)
+            .where(claimable)
+            .order_by(
+                BackfillQueueItemModel.available_at,
+                BackfillQueueItemModel.created_at,
+            )
+            .limit(1)
+        )
+        if self._db.engine.dialect.name == "postgresql":
+            statement = statement.with_for_update(skip_locked=True)
+        else:
+            statement = statement.with_for_update()
+        try:
+            async with self._db.session() as session, session.begin():
+                exhausted_statement = select(BackfillQueueItemModel).where(
+                    BackfillQueueItemModel.attempt_count
+                    >= BackfillQueueItemModel.max_attempts,
+                    or_(
+                        BackfillQueueItemModel.status.in_(
+                            ("PENDING", "RETRY")
+                        ),
+                        and_(
+                            BackfillQueueItemModel.status == "LEASED",
+                            BackfillQueueItemModel.lease_expires_at <= now,
+                        ),
+                    ),
+                )
+                if self._db.engine.dialect.name == "postgresql":
+                    exhausted_statement = exhausted_statement.with_for_update(
+                        skip_locked=True
+                    )
+                else:
+                    exhausted_statement = (
+                        exhausted_statement.with_for_update()
+                    )
+                exhausted = await session.scalars(
+                    exhausted_statement
+                )
+                for exhausted_row in exhausted:
+                    exhausted_row.status = "DEAD_LETTER"
+                    exhausted_row.leased_by = None
+                    exhausted_row.lease_expires_at = None
+                    exhausted_row.last_error_code = "BACKFILL_ATTEMPTS_EXHAUSTED"
+                    exhausted_row.last_error_message = (
+                        "Maximum durable backfill attempts were exhausted"
+                    )
+                    exhausted_row.completed_at = now
+                    exhausted_row.updated_at = now
+                    exhausted_job = await session.get(
+                        HistoricalBackfillJobModel,
+                        exhausted_row.job_id,
+                        with_for_update=True,
+                    )
+                    if exhausted_job is not None:
+                        exhausted_job.status = "FAILED"
+                        exhausted_job.error_code = (
+                            "BACKFILL_ATTEMPTS_EXHAUSTED"
+                        )
+                        exhausted_job.error_message = (
+                            "Maximum durable backfill attempts were exhausted"
+                        )
+                        exhausted_job.completed_at = now
+                        exhausted_job.updated_at = now
+
+                row = await session.scalar(statement)
+                if row is None:
+                    return None
+                row.status = "LEASED"
+                row.attempt_count += 1
+                row.leased_by = worker_id
+                row.lease_expires_at = now + timedelta(seconds=lease_seconds)
+                row.updated_at = now
+                row.completed_at = None
+
+                job_row = await session.get(
+                    HistoricalBackfillJobModel,
+                    row.job_id,
+                    with_for_update=True,
+                )
+                if job_row is None:
+                    raise RuntimeError("queue item references a missing job")
+                job_row.status = "RUNNING"
+                job_row.started_at = now
+                job_row.completed_at = None
+                job_row.updated_at = now
+                await session.flush()
+                return self._queue_item_from_row(row)
+        except Exception as exc:
+            raise DatabaseError(f"Failed to claim historical backfill: {exc}") from exc
+
+    async def finish_backfill_queue_item(
+        self,
+        *,
+        queue_id: str,
+        worker_id: str,
+        result: HistoricalBackfillJob,
+        retryable: bool,
+        retry_delay_seconds: float,
+        now: datetime | None = None,
+    ) -> BackfillQueueItem:
+        """Acknowledge, reschedule, or dead-letter a worker-owned lease."""
+        if retry_delay_seconds < 0:
+            raise ValueError("retry_delay_seconds must not be negative")
+        now = now or _now()
+        try:
+            async with self._db.session() as session, session.begin():
+                row = await session.get(
+                    BackfillQueueItemModel,
+                    queue_id,
+                    with_for_update=True,
+                )
+                if row is None:
+                    raise RuntimeError("backfill queue item does not exist")
+                if row.status != "LEASED" or row.leased_by != worker_id:
+                    raise RuntimeError("backfill lease ownership was lost")
+                if result.job_id != row.job_id:
+                    raise RuntimeError(
+                        "backfill result does not match the leased job"
+                    )
+
+                job_row = await session.get(
+                    HistoricalBackfillJobModel,
+                    row.job_id,
+                    with_for_update=True,
+                )
+                if job_row is None:
+                    raise RuntimeError("queue item references a missing job")
+                result_values = result.model_dump()
+                for key, value in result_values.items():
+                    if key not in {
+                        "job_id",
+                        "request_fingerprint",
+                        "created_at",
+                    }:
+                        setattr(job_row, key, value)
+
+                error_code = result.error_code
+                error_message = result.error_message
+                if result.status == "PARTIAL" and error_code is None:
+                    error_code = "BACKFILL_PARTIAL"
+                    error_message = (
+                        f"{result.remaining_gap_count} market-data gaps remain"
+                    )
+
+                should_retry = (
+                    result.status != "COMPLETED"
+                    and retryable
+                    and row.attempt_count < row.max_attempts
+                )
+                if result.status == "COMPLETED":
+                    row.status = "COMPLETED"
+                    row.completed_at = now
+                elif should_retry:
+                    row.status = "RETRY"
+                    row.available_at = now + timedelta(
+                        seconds=retry_delay_seconds
+                    )
+                    row.completed_at = None
+                else:
+                    row.status = "DEAD_LETTER"
+                    row.completed_at = now
+
+                row.leased_by = None
+                row.lease_expires_at = None
+                row.last_error_code = error_code
+                row.last_error_message = (error_message or "")[:500] or None
+                row.updated_at = now
+
+                if should_retry:
+                    job_row.status = "PENDING"
+                    job_row.completed_at = None
+                    job_row.updated_at = now
+                await session.flush()
+                return self._queue_item_from_row(row)
+        except Exception as exc:
+            raise DatabaseError(
+                f"Failed to finish historical backfill queue item: {exc}"
+            ) from exc
+
+    async def save_backfill_raw_page(
+        self,
+        raw_object: RawDataObject,
+        link: BackfillRawPageLink,
+    ) -> None:
+        """Persist object metadata and its immutable lineage edge atomically."""
+        object_values = raw_object.model_dump()
+        link_values = link.model_dump()
+        try:
+            async with self._db.session() as session, session.begin():
+                object_insert = self._dialect_insert(RawDataObjectModel)
+                link_insert = self._dialect_insert(BackfillRawPageModel)
+                if object_insert is not None:
+                    await session.execute(
+                        object_insert.values(**object_values).on_conflict_do_nothing(
+                            index_elements=["object_hash"]
+                        )
+                    )
+                elif (
+                    await session.get(
+                        RawDataObjectModel,
+                        raw_object.object_hash,
+                    )
+                    is None
+                ):
+                    session.add(RawDataObjectModel(**object_values))
+                    await session.flush()
+
+                if link_insert is not None:
+                    await session.execute(
+                        link_insert.values(**link_values).on_conflict_do_nothing(
+                            index_elements=["page_id"]
+                        )
+                    )
+                elif (
+                    await session.get(BackfillRawPageModel, link.page_id)
+                    is None
+                ):
+                    session.add(BackfillRawPageModel(**link_values))
+        except Exception as exc:
+            raise DatabaseError(f"Failed to persist raw page lineage: {exc}") from exc
+
+    async def list_backfill_raw_pages(
+        self,
+        job_id: str,
+    ) -> list[BackfillRawPageLink]:
+        async with self._db.session() as session:
+            rows = await session.scalars(
+                select(BackfillRawPageModel)
+                .where(BackfillRawPageModel.job_id == job_id)
+                .order_by(
+                    BackfillRawPageModel.attempt_count,
+                    BackfillRawPageModel.page_index,
+                )
+            )
+            return [
+                BackfillRawPageLink(
+                    schema_version=row.schema_version,
+                    page_id=row.page_id,
+                    job_id=row.job_id,
+                    attempt_count=row.attempt_count,
+                    page_index=row.page_index,
+                    object_hash=row.object_hash,
+                    source=row.source,
+                    endpoint=row.endpoint,
+                    request_params=row.request_params,
+                    fetched_at=_as_utc(row.fetched_at),
+                    created_at=_as_utc(row.created_at),
+                )
+                for row in rows
+            ]
+
+    async def load_raw_data_object(
+        self,
+        object_hash: str,
+    ) -> RawDataObject | None:
+        async with self._db.session() as session:
+            row = await session.get(RawDataObjectModel, object_hash)
+            if row is None:
+                return None
+            return RawDataObject(
+                schema_version=row.schema_version,
+                object_hash=row.object_hash,
+                object_uri=row.object_uri,
+                content_type=row.content_type,
+                content_encoding=row.content_encoding,
+                uncompressed_bytes=row.uncompressed_bytes,
+                stored_bytes=row.stored_bytes,
+                created_at=_as_utc(row.created_at),
             )
 
     async def save_agent_output(self, correlation_id: str, output: AgentOutput) -> None:

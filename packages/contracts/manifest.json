@@ -10,6 +10,8 @@
     "schemas/v1/dataset-manifest.schema.json",
     "schemas/v1/clock-observation.schema.json",
     "schemas/v1/market-data-gap.schema.json",
-    "schemas/v1/historical-backfill-job.schema.json"
+    "schemas/v1/historical-backfill-job.schema.json",
+    "schemas/v1/backfill-queue-item.schema.json",
+    "schemas/v1/raw-data-object.schema.json"
   ]
 }

@@ -14,6 +14,7 @@ from app.schemas.agents import AgentOutput
 from app.schemas.backfill import HistoricalBackfillJob, MarketDataGap
 from app.schemas.common import AgentStatus, Signal
 from app.schemas.data_catalog import CandleDatasetManifest
+from app.schemas.data_lake import BackfillQueueItem, RawDataObject
 from app.schemas.decisions import Decision
 from app.schemas.events import BusMessage
 from app.schemas.market import Candle
@@ -200,3 +201,38 @@ def test_historical_backfill_matches_published_v1_contract():
         load_contract("historical-backfill-job.schema.json")
     )
     assert list(validator.iter_errors(job.model_dump(mode="json"))) == []
+
+
+def test_backfill_queue_item_matches_published_v1_contract():
+    from datetime import datetime, timezone
+
+    at = datetime.now(timezone.utc)
+    item = BackfillQueueItem(
+        queue_id="d" * 64,
+        job_id="d" * 64,
+        exchange="BINANCE",
+        symbol="BTCUSDT",
+        timeframe="15m",
+        start_at=at,
+        end_at=at,
+        max_candles=1,
+    )
+    validator = Draft202012Validator(
+        load_contract("backfill-queue-item.schema.json")
+    )
+    assert list(validator.iter_errors(item.model_dump(mode="json"))) == []
+
+
+def test_raw_data_object_matches_published_v1_contract():
+    raw_object = RawDataObject(
+        object_hash="e" * 64,
+        object_uri=f"lake://raw/binance.public-rest/2026/07/20/ee/{'e' * 64}.json.gz",
+        uncompressed_bytes=100,
+        stored_bytes=80,
+    )
+    validator = Draft202012Validator(
+        load_contract("raw-data-object.schema.json")
+    )
+    assert list(
+        validator.iter_errors(raw_object.model_dump(mode="json"))
+    ) == []

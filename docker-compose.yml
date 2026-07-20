@@ -11,12 +11,16 @@ services:
       REDIS_URL: redis://redis:6379/0
       EVENT_BROKER_REQUIRED: "0"
       ENABLE_MARKET_DATA: "1"
+      BACKFILL_WORKER_ENABLED: "1"
+      DATA_LAKE_ROOT: /var/lib/capital-cipher/data-lake
       LOG_LEVEL: INFO
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
+    volumes:
+      - datalake:/var/lib/capital-cipher/data-lake
   db:
     image: postgres:16-alpine
     environment:
@@ -43,3 +47,4 @@ services:
 volumes:
   pgdata:
   redisdata:
+  datalake:

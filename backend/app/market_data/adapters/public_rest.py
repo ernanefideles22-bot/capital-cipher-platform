@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Protocol
+from typing import Awaitable, Callable, Protocol
 
 from app.schemas.common import Exchange
 from app.schemas.data_catalog import ClockObservation
+from app.schemas.data_lake import RawProviderPage
 from app.schemas.market import Candle
+
+RawPageHandler = Callable[[RawProviderPage], Awaitable[None]]
 
 
 class PublicMarketDataClient(Protocol):
@@ -31,6 +34,7 @@ class PublicMarketDataClient(Protocol):
         start_at: datetime,
         end_at: datetime,
         limit: int,
+        on_page: RawPageHandler | None = None,
     ) -> list[Candle]: ...
 
     async def aclose(self) -> None: ...

@@ -177,8 +177,8 @@ paged in batches of at most 1,000 records.
 
 ## Deferred work
 
-This remains an API-triggered, single-service workflow. Durable queued
-backfills, provider rate-budget coordination, distributed job leases, raw REST
-payload archiving, and bulk object-storage imports belong to the later runtime
-and data-lake increments. Native PostgreSQL partitioning remains deferred
-until measured volume justifies it.
+Durable queued backfills, distributed job leases, bounded retries, raw REST
+payload archiving, and lineage are delivered by the next Month 3 increment;
+see `month-3-durable-data-lake.md`. Provider rate-budget coordination, lease
+heartbeats, bulk object-storage imports, and native PostgreSQL partitioning
+remain deferred until measured volume justifies them.

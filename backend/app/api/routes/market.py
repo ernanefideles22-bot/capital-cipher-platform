@@ -150,8 +150,21 @@ async def create_backfill(
             "DATABASE_UNAVAILABLE",
             "Historical backfill service is not configured",
         )
-    job = await context.backfill_service.run(body)
-    return success_response({"job": job.model_dump(mode="json")})
+    job = await context.backfill_service.submit(
+        body,
+        max_attempts=context.settings.backfill_max_attempts,
+    )
+    queue_item = await context.repository.load_backfill_queue_item(job.job_id)
+    return success_response(
+        {
+            "job": job.model_dump(mode="json"),
+            "queue_item": (
+                queue_item.model_dump(mode="json")
+                if queue_item is not None
+                else None
+            ),
+        }
+    )
 
 
 @router.get("/backfills/{job_id}", dependencies=[AdminRequired])
@@ -167,4 +180,70 @@ async def get_backfill(
     job = await context.repository.load_historical_backfill_job(job_id)
     if job is None:
         return error_response("NOT_FOUND", f"Backfill {job_id} not found")
-    return success_response({"job": job.model_dump(mode="json")})
+    queue_item = await context.repository.load_backfill_queue_item(job_id)
+    return success_response(
+        {
+            "job": job.model_dump(mode="json"),
+            "queue_item": (
+                queue_item.model_dump(mode="json")
+                if queue_item is not None
+                else None
+            ),
+        }
+    )
+
+
+@router.get("/backfills/{job_id}/lineage", dependencies=[AdminRequired])
+async def get_backfill_lineage(
+    job_id: str = Path(pattern=r"^[a-f0-9]{64}$"),
+    context: AppContext = Depends(get_context),
+) -> dict:
+    """Trace a request through raw provider pages into its normalized dataset."""
+    if context.repository is None:
+        return error_response(
+            "DATABASE_UNAVAILABLE",
+            "Historical backfill service is not configured",
+        )
+    job = await context.repository.load_historical_backfill_job(job_id)
+    if job is None:
+        return error_response("NOT_FOUND", f"Backfill {job_id} not found")
+
+    queue_item = await context.repository.load_backfill_queue_item(job_id)
+    raw_pages = await context.repository.list_backfill_raw_pages(job_id)
+    raw_objects = {}
+    for page in raw_pages:
+        if page.object_hash not in raw_objects:
+            raw_object = await context.repository.load_raw_data_object(
+                page.object_hash
+            )
+            if raw_object is not None:
+                raw_objects[page.object_hash] = raw_object.model_dump(mode="json")
+    manifest = (
+        await context.repository.load_dataset_manifest(job.dataset_hash)
+        if job.dataset_hash is not None
+        else None
+    )
+    gaps = await context.repository.list_market_data_gaps(
+        backfill_job_id=job_id,
+        limit=10_000,
+    )
+    return success_response(
+        {
+            "job": job.model_dump(mode="json"),
+            "queue_item": (
+                queue_item.model_dump(mode="json")
+                if queue_item is not None
+                else None
+            ),
+            "raw_pages": [
+                page.model_dump(mode="json") for page in raw_pages
+            ],
+            "raw_objects": raw_objects,
+            "dataset_manifest": (
+                manifest.model_dump(mode="json")
+                if manifest is not None
+                else None
+            ),
+            "gaps": [gap.model_dump(mode="json") for gap in gaps],
+        }
+    )

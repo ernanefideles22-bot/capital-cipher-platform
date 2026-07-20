@@ -11,3 +11,4 @@ dist/
 .DS_Store
 tsconfig.tsbuildinfo
 .turbo/
+.capital-cipher-data-lake/

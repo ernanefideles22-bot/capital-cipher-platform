@@ -352,6 +352,171 @@ class HistoricalBackfillJobModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class BackfillQueueItemModel(Base):
+    """Durable PostgreSQL work queue with recoverable worker leases."""
+
+    __tablename__ = "backfill_queue_items"
+    __table_args__ = (
+        CheckConstraint(
+            "start_at <= end_at",
+            name="ck_backfill_queue_items_time_range",
+        ),
+        CheckConstraint(
+            "max_candles > 0 AND max_candles <= 1000000",
+            name="ck_backfill_queue_items_max_candles",
+        ),
+        CheckConstraint(
+            "attempt_count >= 0 AND attempt_count <= max_attempts "
+            "AND max_attempts > 0 AND max_attempts <= 100",
+            name="ck_backfill_queue_items_attempts",
+        ),
+        CheckConstraint(
+            "status IN ('PENDING', 'LEASED', 'RETRY', 'COMPLETED', "
+            "'DEAD_LETTER')",
+            name="ck_backfill_queue_items_status",
+        ),
+        CheckConstraint(
+            "(status = 'LEASED' AND leased_by IS NOT NULL "
+            "AND lease_expires_at IS NOT NULL) OR "
+            "(status <> 'LEASED' AND leased_by IS NULL "
+            "AND lease_expires_at IS NULL)",
+            name="ck_backfill_queue_items_lease",
+        ),
+        CheckConstraint(
+            "(status IN ('COMPLETED', 'DEAD_LETTER') "
+            "AND completed_at IS NOT NULL) OR "
+            "(status NOT IN ('COMPLETED', 'DEAD_LETTER') "
+            "AND completed_at IS NULL)",
+            name="ck_backfill_queue_items_terminal",
+        ),
+        Index(
+            "ix_backfill_queue_ready",
+            "status",
+            "available_at",
+            "created_at",
+            postgresql_where=text(
+                "status IN ('PENDING', 'RETRY')"
+            ),
+        ),
+        Index(
+            "ix_backfill_queue_expired_leases",
+            "lease_expires_at",
+            "created_at",
+            postgresql_where=text(
+                "status = 'LEASED'"
+            ),
+        ),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    queue_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    job_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey(
+            f"{INTERNAL_SCHEMA}.historical_backfill_jobs.job_id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+        unique=True,
+    )
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    exchange: Mapped[str] = mapped_column(Text, nullable=False)
+    symbol: Mapped[str] = mapped_column(Text, nullable=False)
+    timeframe: Mapped[str] = mapped_column(Text, nullable=False)
+    start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    max_candles: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    leased_by: Mapped[str | None] = mapped_column(String(128))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_code: Mapped[str | None] = mapped_column(String(64))
+    last_error_message: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RawDataObjectModel(Base):
+    """Content-addressed raw payload metadata; bytes live in object storage."""
+
+    __tablename__ = "raw_data_objects"
+    __table_args__ = (
+        CheckConstraint(
+            "uncompressed_bytes > 0 AND stored_bytes > 0",
+            name="ck_raw_data_objects_sizes",
+        ),
+        UniqueConstraint("object_uri", name="uq_raw_data_objects_uri"),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    object_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    object_uri: Mapped[str] = mapped_column(Text, nullable=False)
+    content_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_encoding: Mapped[str] = mapped_column(String(32), nullable=False)
+    uncompressed_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    stored_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class BackfillRawPageModel(Base):
+    """Immutable lineage edge from one provider page to a raw object."""
+
+    __tablename__ = "backfill_raw_pages"
+    __table_args__ = (
+        CheckConstraint(
+            "attempt_count > 0 AND page_index >= 0",
+            name="ck_backfill_raw_pages_position",
+        ),
+        UniqueConstraint(
+            "job_id",
+            "attempt_count",
+            "page_index",
+            name="uq_backfill_raw_pages_attempt_page",
+        ),
+        Index(
+            "ix_backfill_raw_pages_job_attempt",
+            "job_id",
+            "attempt_count",
+            "page_index",
+        ),
+        Index(
+            "ix_backfill_raw_pages_object",
+            "object_hash",
+        ),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    page_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    job_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey(
+            f"{INTERNAL_SCHEMA}.historical_backfill_jobs.job_id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    page_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    object_hash: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey(
+            f"{INTERNAL_SCHEMA}.raw_data_objects.object_hash",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    endpoint: Mapped[str] = mapped_column(Text, nullable=False)
+    request_params: Mapped[dict] = mapped_column(JsonType, nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ReplayCheckpointModel(Base):
     __tablename__ = "replay_checkpoints"
     __table_args__ = (

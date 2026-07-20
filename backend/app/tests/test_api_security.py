@@ -30,6 +30,11 @@ async def security_client(settings: Settings):
         ("POST", "/api/v1/market/datasets", {}),
         ("POST", "/api/v1/market/gaps/scan", {}),
         ("POST", "/api/v1/market/backfills", {}),
+        (
+            "GET",
+            f"/api/v1/market/backfills/{'a' * 64}/lineage",
+            {},
+        ),
         ("POST", "/api/v1/risk/kill-switch", {"reason": "security test"}),
     ],
 )

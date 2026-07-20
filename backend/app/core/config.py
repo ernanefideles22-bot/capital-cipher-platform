@@ -24,7 +24,7 @@ class Settings(BaseSettings):
 
     app_env: str = Field(default="local", alias="APP_ENV")
     app_name: str = "capital-cipher-api"
-    app_version: str = "0.9.0"
+    app_version: str = "0.10.0"
 
     system_mode: str = Field(default="PAPER", alias="SYSTEM_MODE")
 
@@ -136,6 +136,46 @@ class Settings(BaseSettings):
         ge=1,
         le=1_000_000,
     )
+    backfill_worker_enabled: bool = Field(
+        default=True,
+        alias="BACKFILL_WORKER_ENABLED",
+    )
+    backfill_worker_poll_interval_seconds: float = Field(
+        default=1.0,
+        alias="BACKFILL_WORKER_POLL_INTERVAL_SECONDS",
+        gt=0,
+        le=60.0,
+    )
+    backfill_lease_seconds: int = Field(
+        default=3_600,
+        alias="BACKFILL_LEASE_SECONDS",
+        ge=1,
+        le=86_400,
+    )
+    backfill_max_attempts: int = Field(
+        default=5,
+        alias="BACKFILL_MAX_ATTEMPTS",
+        ge=1,
+        le=100,
+    )
+    backfill_retry_base_seconds: float = Field(
+        default=5.0,
+        alias="BACKFILL_RETRY_BASE_SECONDS",
+        ge=0,
+        le=3_600,
+    )
+    backfill_retry_max_seconds: float = Field(
+        default=300.0,
+        alias="BACKFILL_RETRY_MAX_SECONDS",
+        ge=0,
+        le=86_400,
+    )
+    data_lake_root: str = Field(
+        default=".capital-cipher-data-lake",
+        alias="DATA_LAKE_ROOT",
+        min_length=1,
+        max_length=1_024,
+    )
     public_market_http_timeout_seconds: float = Field(
         default=10.0,
         alias="PUBLIC_MARKET_HTTP_TIMEOUT_SECONDS",
@@ -214,6 +254,8 @@ class Settings(BaseSettings):
             > self.clock_unsafe_round_trip_ms
         ):
             raise ValueError("Clock round-trip thresholds are inconsistent")
+        if self.backfill_retry_base_seconds > self.backfill_retry_max_seconds:
+            raise ValueError("Backfill retry delay settings are inconsistent")
         return self
 
     @property
