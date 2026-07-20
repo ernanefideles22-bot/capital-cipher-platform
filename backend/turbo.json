@@ -3,6 +3,10 @@
   "tasks": {
     "build": {
       "outputs": []
+    },
+    "test": {
+      "env": ["POSTGRES_TEST_URL", "REDIS_TEST_URL"],
+      "outputs": []
     }
   }
 }
