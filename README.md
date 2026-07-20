@@ -17,7 +17,7 @@ frontend/            React + Vite + TypeScript dashboard
 packages/contracts/  versioned, language-neutral JSON Schema contracts
 Redis Streams        optional durable broker with PostgreSQL outbox
 Data warehouse       time-series, manifests, clock gates, gaps, backfills
-Agent runtime        registry, durable queue, isolated memory, 200 PAPER agents
+Agent runtime        registry, durable queue, isolated memory, 300 PAPER agents
 Agent governance     performance consensus, drift, versioned experiments
 Operations           metrics, SLOs, cost guard, load/chaos/recovery evidence
 Portfolio            bounded targets that can only tighten central risk
@@ -50,6 +50,7 @@ architecture and completion evidence:
 - [Month 8 specialist cohort and evaluation](docs/month-8-specialist-cohort-evaluation.md)
 - [Month 9 portfolio, consensus and drift](docs/month-9-portfolio-consensus-drift.md)
 - [Month 10 resilience and observability](docs/month-10-resilience-observability.md)
+- [Month 11 prolonged shadow validation](docs/month-11-shadow-validation.md)
 
 The specification repository remains the authoritative product and
 architecture specification. This repository is the executable platform.

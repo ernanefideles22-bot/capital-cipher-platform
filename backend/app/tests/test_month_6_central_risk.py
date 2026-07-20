@@ -71,12 +71,12 @@ async def risk_stack(
     return state_machine, audit, manager, engine
 
 
-def test_registry_has_200_paper_agents_with_bounded_authority():
+def test_registry_has_300_paper_agents_with_bounded_authority():
     context = build_context(Settings(), with_database=False)
     registrations = context.agent_registry.registrations()
-    assert len(registrations) == 200
+    assert len(registrations) == 300
     assert sum(item.decision_role == "PRIMARY" for item in registrations) == 3
-    assert sum(item.decision_role == "SHADOW" for item in registrations) == 197
+    assert sum(item.decision_role == "SHADOW" for item in registrations) == 297
     assert {definition.name for definition in DEFINITIONS}.issubset(
         {item.agent_name for item in registrations}
     )

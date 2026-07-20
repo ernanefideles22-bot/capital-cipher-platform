@@ -1455,6 +1455,99 @@ class ResilienceTestRunModel(Base):
     )
 
 
+class ShadowCampaignCheckpointModel(Base):
+    """Append-only checkpoint from a prolonged PAPER shadow campaign."""
+
+    __tablename__ = "shadow_campaign_checkpoints"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('EXECUTED', 'SUSPENDED_SAFE_DEGRADATION', "
+            "'BLOCKED_RECONCILIATION', 'BLOCKED_RISK')",
+            name="ck_shadow_checkpoint_status",
+        ),
+        CheckConstraint(
+            "acceptance_status IN ('PASSED', 'FAILED')",
+            name="ck_shadow_checkpoint_acceptance",
+        ),
+        CheckConstraint(
+            "registered_agents = 300 AND primary_agents = 3 "
+            "AND shadow_agents = 297",
+            name="ck_shadow_checkpoint_cohort",
+        ),
+        CheckConstraint(
+            "executed_agents >= 0 AND executed_agents <= 300",
+            name="ck_shadow_checkpoint_executions",
+        ),
+        UniqueConstraint(
+            "campaign_id",
+            "sequence",
+            name="uq_shadow_checkpoint_sequence",
+        ),
+        Index(
+            "ix_shadow_campaign_checkpoints_campaign_replay",
+            "campaign_id",
+            "replay_at",
+        ),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    checkpoint_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    campaign_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(40), nullable=False)
+    acceptance_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    registered_agents: Mapped[int] = mapped_column(Integer, nullable=False)
+    primary_agents: Mapped[int] = mapped_column(Integer, nullable=False)
+    shadow_agents: Mapped[int] = mapped_column(Integer, nullable=False)
+    executed_agents: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload: Mapped[dict] = mapped_column(JsonType, nullable=False)
+    replay_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+
+class ShadowValidationReportModel(Base):
+    """Immutable final acceptance evidence for one shadow campaign."""
+
+    __tablename__ = "shadow_validation_reports"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('PASSED', 'FAILED')",
+            name="ck_shadow_validation_report_status",
+        ),
+        UniqueConstraint(
+            "campaign_id",
+            name="uq_shadow_validation_report_campaign",
+        ),
+        Index(
+            "ix_shadow_validation_reports_completed",
+            "completed_at",
+            "report_id",
+        ),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    report_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    campaign_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    payload: Mapped[dict] = mapped_column(JsonType, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    completed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+
 class AgentOutputModel(Base):
     __tablename__ = "agent_outputs"
 

@@ -78,6 +78,8 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
             await ctx.portfolio_construction_service.initialize()
         if ctx.operations_service is not None:
             await ctx.operations_service.initialize()
+        if ctx.shadow_validation_service is not None:
+            await ctx.shadow_validation_service.initialize()
         outbox_stop = asyncio.Event()
         outbox_task = None
         backfill_stop = asyncio.Event()
@@ -177,7 +179,7 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
                     else []
                 )
                 shadow_healthy = (
-                    len(registrations) == 200
+                    len(registrations) == 300
                     and all(
                         registration.execution_mode == "PAPER"
                         for registration in registrations
@@ -211,7 +213,7 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
                     "SHADOW_RUNTIME": (
                         shadow_healthy,
                         (
-                            "200-agent PAPER cohort validated"
+                            "300-agent PAPER cohort validated"
                             if shadow_healthy
                             else "agent cohort validation failed"
                         ),

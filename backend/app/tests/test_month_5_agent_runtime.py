@@ -113,7 +113,7 @@ def _request(
     )
 
 
-async def test_default_registry_contains_exactly_200_paper_agents():
+async def test_default_registry_contains_exactly_300_paper_agents():
     context = build_context(Settings(), with_database=False)
     assert context.agent_registry is not None
     assert context.agent_runtime is not None
@@ -122,7 +122,7 @@ async def test_default_registry_contains_exactly_200_paper_agents():
     registrations = context.agent_registry.registrations()
     names = {registration.agent_name for registration in registrations}
 
-    assert len(registrations) == 200
+    assert len(registrations) == 300
     assert sum(
         registration.decision_role == "PRIMARY"
         for registration in registrations
@@ -130,7 +130,7 @@ async def test_default_registry_contains_exactly_200_paper_agents():
     assert sum(
         registration.decision_role == "SHADOW"
         for registration in registrations
-    ) == 197
+    ) == 297
     assert {
         "MarketDataAgent",
         "QuantAgent",
@@ -157,7 +157,7 @@ async def test_default_registry_contains_exactly_200_paper_agents():
     assert "PaperTradingAgent" not in names
 
 
-async def test_all_200_agents_execute_through_versioned_runtime_contracts():
+async def test_all_300_agents_execute_through_versioned_runtime_contracts():
     context = build_context(Settings(), with_database=False)
     assert context.agent_runtime is not None
     assert context.agent_registry is not None
@@ -184,7 +184,7 @@ async def test_all_200_agents_execute_through_versioned_runtime_contracts():
 
     outputs = await context.agent_runtime.execute_many(requests)
 
-    assert len(outputs) == 200
+    assert len(outputs) == 300
     assert {output.agent_name for output in outputs} == {
         registration.agent_name
         for registration in context.agent_registry.registrations()
@@ -193,6 +193,7 @@ async def test_all_200_agents_execute_through_versioned_runtime_contracts():
         output.status in {
             AgentStatus.COMPLETED,
             AgentStatus.BLOCKED,
+            AgentStatus.SKIPPED,
         }
         for output in outputs
     )

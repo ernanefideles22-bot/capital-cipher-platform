@@ -1,4 +1,4 @@
-"""Month 10 completion: observability, resilience and 200 PAPER agents."""
+"""Month 10 invariants retained by the expanded 300-agent cohort."""
 
 from __future__ import annotations
 
@@ -123,15 +123,15 @@ def test_month10_catalog_adds_50_unique_bounded_specialists():
     }
 
 
-def test_runtime_has_exactly_200_paper_agents_with_bounded_authority():
+def test_runtime_has_exactly_300_paper_agents_with_bounded_authority():
     context = _context()
     assert context.agent_registry is not None
     registrations = context.agent_registry.registrations()
     month10_names = {item.name for item in MONTH10_RESILIENCE_DEFINITIONS}
 
-    assert len(registrations) == 200
+    assert len(registrations) == 300
     assert sum(item.decision_role == "PRIMARY" for item in registrations) == 3
-    assert sum(item.decision_role == "SHADOW" for item in registrations) == 197
+    assert sum(item.decision_role == "SHADOW" for item in registrations) == 297
     assert month10_names.issubset(
         {item.agent_name for item in registrations}
     )
@@ -370,7 +370,7 @@ async def test_operational_monitor_probes_and_materializes_one_cycle():
             "RISK": (True, "risk available"),
             "BROKER": (True, "broker optional"),
             "MARKET_DATA": (True, "market data available"),
-            "SHADOW_RUNTIME": (True, "200 PAPER agents"),
+            "SHADOW_RUNTIME": (True, "300 PAPER agents"),
         }
 
     await service.run(
@@ -380,7 +380,7 @@ async def test_operational_monitor_probes_and_materializes_one_cycle():
     )
 
     assert len(service.snapshots()) == 1
-    assert service.snapshots()[0].registered_agents == 200
+    assert service.snapshots()[0].registered_agents == 300
     assert len(service.slo_evaluations()) == 4
     assert service.status()["recovery"]["mode"] == "HEALTHY"
 
@@ -397,7 +397,7 @@ def test_deterministic_chaos_harness_proves_safe_degradation():
     assert runs[1].invariants["shadow_work_is_suspended"] is True
 
 
-async def test_load_harness_executes_all_200_agents_within_paper_slos():
+async def test_load_harness_executes_all_300_agents_within_paper_slos():
     context = _context(max_concurrency=32)
     assert context.agent_runtime is not None
     for candle in make_series(
@@ -415,7 +415,7 @@ async def test_load_harness_executes_all_200_agents_within_paper_slos():
     )
 
     assert run.status == "PASSED"
-    assert run.target_agents == run.executed_agents == 200
+    assert run.target_agents == run.executed_agents == 300
     assert run.throughput_per_second > 0
     assert run.error_rate == 0
     assert run.live_execution_attempted is False
@@ -493,8 +493,8 @@ async def test_operations_apis_are_admin_only_and_never_inject_chaos(tmp_path):
 
     assert denied.status_code == 401
     assert status.status_code == metrics.status_code == slos.status_code == 200
-    assert status.json()["data"]["registered_agents"] == 200
-    assert metrics.json()["data"]["snapshot"]["registered_agents"] == 200
+    assert status.json()["data"]["registered_agents"] == 300
+    assert metrics.json()["data"]["snapshot"]["registered_agents"] == 300
     assert len(slos.json()["data"]["evaluations"]) == 4
     assert chaos.status_code == 404
 
@@ -514,7 +514,7 @@ def test_month10_contracts_and_private_migration_are_complete():
     )
     artifacts = _artifacts()
 
-    assert len(manifest["schemas"]) == 49
+    assert len(manifest["schemas"]) == 52
     for name, artifact in zip(names, artifacts, strict=True):
         assert f"schemas/v1/{name}" in manifest["schemas"]
         schema = json.loads((CONTRACT_ROOT / name).read_text(encoding="utf-8"))

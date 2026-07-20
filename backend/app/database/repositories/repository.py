@@ -66,6 +66,8 @@ from app.database.models import (
     WeightedConsensusModel,
     CostUsageRecordModel,
     ResilienceTestRunModel,
+    ShadowCampaignCheckpointModel,
+    ShadowValidationReportModel,
 )
 from app.database.session import Database
 from app.market_data.identity import candle_event_id
@@ -140,6 +142,10 @@ from app.schemas.operations import (
     OperationalMetricSnapshot,
     ResilienceTestRun,
     SLOEvaluation,
+)
+from app.schemas.shadow_validation import (
+    ShadowCampaignCheckpoint,
+    ShadowValidationReport,
 )
 
 
@@ -4588,6 +4594,109 @@ class Repository:
             )
             return [
                 ResilienceTestRun.model_validate(row.payload)
+                for row in rows
+            ]
+
+    async def save_shadow_campaign_checkpoint(
+        self,
+        checkpoint: ShadowCampaignCheckpoint,
+    ) -> ShadowCampaignCheckpoint:
+        payload = checkpoint.model_dump(mode="json")
+        return await self._save_governance_artifact(
+            model_class=ShadowCampaignCheckpointModel,
+            identity=checkpoint.checkpoint_id,
+            payload=payload,
+            values={
+                "checkpoint_id": checkpoint.checkpoint_id,
+                "schema_version": checkpoint.schema_version,
+                "campaign_id": checkpoint.campaign_id,
+                "sequence": checkpoint.sequence,
+                "status": checkpoint.status,
+                "acceptance_status": checkpoint.acceptance_status,
+                "registered_agents": checkpoint.registered_agents,
+                "primary_agents": checkpoint.primary_agents,
+                "shadow_agents": checkpoint.shadow_agents,
+                "executed_agents": checkpoint.executed_agents,
+                "payload": payload,
+                "replay_at": checkpoint.replay_at,
+                "captured_at": checkpoint.captured_at,
+            },
+            contract_class=ShadowCampaignCheckpoint,
+            label="shadow campaign checkpoint",
+        )
+
+    async def list_shadow_campaign_checkpoints(
+        self,
+        *,
+        campaign_id: str | None = None,
+        limit: int = 100,
+    ) -> list[ShadowCampaignCheckpoint]:
+        if not 1 <= limit <= 100_000:
+            raise ValueError("Shadow checkpoint limit must be 1..100000")
+        conditions = []
+        if campaign_id is not None:
+            conditions.append(
+                ShadowCampaignCheckpointModel.campaign_id == campaign_id
+            )
+        async with self._db.session() as session:
+            rows = list(
+                await session.scalars(
+                    select(ShadowCampaignCheckpointModel)
+                    .where(*conditions)
+                    .order_by(
+                        ShadowCampaignCheckpointModel.captured_at.desc(),
+                        ShadowCampaignCheckpointModel.checkpoint_id,
+                    )
+                    .limit(limit)
+                )
+            )
+            return [
+                ShadowCampaignCheckpoint.model_validate(row.payload)
+                for row in rows
+            ]
+
+    async def save_shadow_validation_report(
+        self,
+        report: ShadowValidationReport,
+    ) -> ShadowValidationReport:
+        payload = report.model_dump(mode="json")
+        return await self._save_governance_artifact(
+            model_class=ShadowValidationReportModel,
+            identity=report.report_id,
+            payload=payload,
+            values={
+                "report_id": report.report_id,
+                "schema_version": report.schema_version,
+                "campaign_id": report.campaign.campaign_id,
+                "status": report.status,
+                "payload": payload,
+                "started_at": report.started_at,
+                "completed_at": report.completed_at,
+            },
+            contract_class=ShadowValidationReport,
+            label="shadow validation report",
+        )
+
+    async def list_shadow_validation_reports(
+        self,
+        *,
+        limit: int = 100,
+    ) -> list[ShadowValidationReport]:
+        if not 1 <= limit <= 100_000:
+            raise ValueError("Shadow validation report limit must be 1..100000")
+        async with self._db.session() as session:
+            rows = list(
+                await session.scalars(
+                    select(ShadowValidationReportModel)
+                    .order_by(
+                        ShadowValidationReportModel.completed_at.desc(),
+                        ShadowValidationReportModel.report_id,
+                    )
+                    .limit(limit)
+                )
+            )
+            return [
+                ShadowValidationReport.model_validate(row.payload)
                 for row in rows
             ]
 

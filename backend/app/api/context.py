@@ -20,6 +20,7 @@ from app.agents.specialists import build_shadow_specialists
 from app.agents.month8_specialists import build_month8_shadow_specialists
 from app.agents.month9_specialists import build_month9_shadow_specialists
 from app.agents.month10_specialists import build_month10_shadow_specialists
+from app.agents.month11_specialists import build_month11_shadow_specialists
 from app.agents.trend import TrendAgent
 from app.audit.service import AuditService
 from app.backtesting.engine import BacktestingEngine
@@ -67,6 +68,7 @@ from app.oms.service import OMSService
 from app.operations.service import OperationsService
 from app.paper_trading.engine import PaperTradingEngine
 from app.risk.manager import RiskManager
+from app.shadow_validation.service import ShadowValidationService
 from app.schemas.common import Exchange
 from app.schemas.oms import ExecutionEnvironment
 from app.schemas.risk import RiskLimits
@@ -113,6 +115,7 @@ class AppContext:
     weighted_consensus_service: WeightedConsensusService | None = None
     portfolio_construction_service: PortfolioConstructionService | None = None
     operations_service: OperationsService | None = None
+    shadow_validation_service: ShadowValidationService | None = None
     market_connected: bool = False
 
 
@@ -342,12 +345,13 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         ),
         *build_month9_shadow_specialists(candle_store),
         *build_month10_shadow_specialists(candle_store),
+        *build_month11_shadow_specialists(candle_store),
     ]
     for agent in runtime_agents:
         agent.timeout_ms = settings.agent_timeout_ms
         agent.max_attempts = settings.agent_max_attempts
     agent_registry = AgentRegistry(runtime_agents)
-    agent_registry.validate_cohort(expected_count=200)
+    agent_registry.validate_cohort(expected_count=300)
     operations_service = OperationsService(
         agent_registry,
         repository=repository,
@@ -385,6 +389,15 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         agent_runtime,
         poll_interval_seconds=settings.agent_worker_poll_interval_seconds,
         lease_seconds=settings.agent_lease_seconds,
+    )
+    shadow_validation_service = ShadowValidationService(
+        runtime=agent_runtime,
+        candle_store=candle_store,
+        reconciliation=reconciliation_service,
+        risk_manager=risk_manager,
+        oms_service=oms_service,
+        paper_engine=paper_engine,
+        repository=repository,
     )
     decision_engine = DecisionEngine(
         minimum_candidate_confidence=settings.minimum_candidate_confidence
@@ -483,6 +496,7 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         weighted_consensus_service=weighted_consensus_service,
         portfolio_construction_service=portfolio_construction_service,
         operations_service=operations_service,
+        shadow_validation_service=shadow_validation_service,
     )
     context_holder["ctx"] = ctx
     return ctx

@@ -106,8 +106,8 @@ migration—is documented in `../docs/month-4-completion.md`.
 
 ## Governed agent runtime
 
-The governed runtime now hosts exactly 200 analytical PAPER agents:
-three existing primary decision agents and 197 evidence-only shadow
+The governed runtime now hosts exactly 300 analytical PAPER agents:
+three existing primary decision agents and 297 evidence-only shadow
 specialists. Every execution has a versioned contract, deterministic
 idempotency identity, bounded retries, a recoverable lease, isolated
 append-only memory, and a complete trace.
@@ -120,7 +120,7 @@ GET  /api/v1/agents/executions
 GET  /api/v1/agents/executions/{execution_id}
 ```
 
-The 197 shadow agents have no direct decision, risk or order authority. Month 9
+The 297 shadow agents have no direct decision, risk or order authority. Month 9
 may consume eligible out-of-sample outputs through a bounded confirmation
 service that can only preserve a primary candidate or tighten it to `WAIT`. See
 `../docs/month-5-agent-runtime.md` for the cohort, contracts, recovery
@@ -205,12 +205,33 @@ python scripts/run_month10_resilience.py
 
 See `../docs/month-10-resilience-observability.md`.
 
+Month 11 adds 100 read-only OHLCV validators and a deterministic seven-day
+replay campaign for the exact 300-agent PAPER cohort. Each checkpoint validates
+agent errors and latency, OMS reconciliation, unchanged central-risk state,
+unchanged order/trade counts, and isolated `DEGRADED`/`SAFE_HALT` recovery.
+Evidence is immutable in the private PostgreSQL schema.
+
+Authenticated Month 11 read-only APIs:
+
+```text
+GET /api/v1/operations/shadow-validation/reports
+GET /api/v1/operations/shadow-validation/checkpoints
+```
+
+Run the credential-free local acceptance harness with:
+
+```bash
+python scripts/run_month11_shadow_validation.py
+```
+
+See `../docs/month-11-shadow-validation.md`.
+
 ## Architecture
 
 ```text
 Market Data Adapter (Binance/Bybit/CSV/Replay)
   → Data Quality → CandleStore
-  → Orchestrator → Agent Runtime (3 PRIMARY + 197 SHADOW)
+  → Orchestrator → Agent Runtime (3 PRIMARY + 297 SHADOW)
   → Operational Gate (SLOs + cost + dependency recovery)
   → Observational Evaluation (forecast + outcome + scorecard)
   → Decision Engine (weighted consolidation, no simple voting)

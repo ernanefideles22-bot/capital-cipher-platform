@@ -86,16 +86,16 @@ def test_month_8_catalog_is_exactly_60_new_specialists():
     assert len(names) == len(set(names)) == 60
 
 
-def test_month8_agents_remain_shadow_only_in_200_agent_runtime():
+def test_month8_agents_remain_shadow_only_in_300_agent_runtime():
     context = build_context(Settings(), with_database=False)
     registrations = context.agent_registry.registrations()
     month8_names = {
         item.name
         for item in (*TECHNICAL_DEFINITIONS, *EXTERNAL_DEFINITIONS)
     }
-    assert len(registrations) == 200
+    assert len(registrations) == 300
     assert sum(item.decision_role == "PRIMARY" for item in registrations) == 3
-    assert sum(item.decision_role == "SHADOW" for item in registrations) == 197
+    assert sum(item.decision_role == "SHADOW" for item in registrations) == 297
     assert month8_names.issubset(
         {item.agent_name for item in registrations}
     )

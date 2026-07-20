@@ -84,6 +84,8 @@ class Database:
                     "operational_alert_events",
                     "cost_usage_records",
                     "resilience_test_runs",
+                    "shadow_campaign_checkpoints",
+                    "shadow_validation_reports",
                 ):
                     await conn.execute(
                         text(
@@ -105,7 +107,7 @@ class Database:
                 )
 
     async def _install_operational_evidence_guards(self, conn) -> None:
-        """Keep Month 10 metrics, alerts, costs and test runs append-only."""
+        """Keep operational and shadow-validation evidence append-only."""
 
         tables = (
             "operational_metric_snapshots",
@@ -113,6 +115,8 @@ class Database:
             "operational_alert_events",
             "cost_usage_records",
             "resilience_test_runs",
+            "shadow_campaign_checkpoints",
+            "shadow_validation_reports",
         )
         if self.engine.dialect.name == "postgresql":
             await conn.execute(

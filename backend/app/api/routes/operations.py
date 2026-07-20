@@ -162,3 +162,46 @@ async def list_resilience_runs(
             "chaos_injection_api_available": False,
         }
     )
+
+
+@router.get("/shadow-validation/reports")
+async def list_shadow_validation_reports(
+    limit: int = Query(default=100, ge=1, le=1_000),
+    context: AppContext = Depends(get_context),
+) -> dict:
+    service = context.shadow_validation_service
+    if service is None:
+        return error_response("SHADOW_VALIDATION_UNAVAILABLE", "Unavailable")
+    return success_response(
+        {
+            "reports": [
+                item.model_dump(mode="json")
+                for item in service.reports(limit=limit)
+            ],
+            "campaign_start_api_available": False,
+            "live_execution_available": False,
+        }
+    )
+
+
+@router.get("/shadow-validation/checkpoints")
+async def list_shadow_validation_checkpoints(
+    campaign_id: str | None = Query(default=None, max_length=36),
+    limit: int = Query(default=100, ge=1, le=1_000),
+    context: AppContext = Depends(get_context),
+) -> dict:
+    service = context.shadow_validation_service
+    if service is None:
+        return error_response("SHADOW_VALIDATION_UNAVAILABLE", "Unavailable")
+    return success_response(
+        {
+            "checkpoints": [
+                item.model_dump(mode="json")
+                for item in service.checkpoints(
+                    campaign_id=campaign_id,
+                    limit=limit,
+                )
+            ],
+            "mutation_api_available": False,
+        }
+    )
