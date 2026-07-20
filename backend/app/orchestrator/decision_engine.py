@@ -77,7 +77,12 @@ class DecisionEngine:
             if name not in outputs_by_name
             or outputs_by_name[name].status != AgentStatus.COMPLETED
         ]
+        # Shadow agents are evidence-only in Month 5. Their status, signal,
+        # confidence, and warnings remain visible in agent_summary but cannot
+        # affect operational confidence or decision authority.
         for output in agent_outputs:
+            if output.agent_name not in CRITICAL_AGENTS:
+                continue
             if output.status == AgentStatus.TIMEOUT:
                 warnings.append("AGENT_TIMEOUT")
             warnings.extend(output.warnings)

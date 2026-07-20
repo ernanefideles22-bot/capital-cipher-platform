@@ -627,6 +627,218 @@ class MarketCandleModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class AgentExecutionJobModel(Base):
+    """Durable PAPER-only queue with idempotency and recoverable leases."""
+
+    __tablename__ = "agent_execution_jobs"
+    __table_args__ = (
+        UniqueConstraint(
+            "agent_name",
+            "agent_version",
+            "idempotency_key",
+            name="uq_agent_execution_jobs_idempotency",
+        ),
+        CheckConstraint(
+            "execution_mode = 'PAPER'",
+            name="ck_agent_execution_jobs_paper_only",
+        ),
+        CheckConstraint(
+            "decision_role IN ('PRIMARY', 'SHADOW')",
+            name="ck_agent_execution_jobs_decision_role",
+        ),
+        CheckConstraint(
+            "status IN ('PENDING', 'LEASED', 'RETRY', 'COMPLETED', "
+            "'DEAD_LETTER')",
+            name="ck_agent_execution_jobs_status",
+        ),
+        CheckConstraint(
+            "attempt_count >= 0 AND attempt_count <= max_attempts "
+            "AND max_attempts > 0 AND max_attempts <= 10",
+            name="ck_agent_execution_jobs_attempts",
+        ),
+        CheckConstraint(
+            "(status = 'LEASED' AND leased_by IS NOT NULL "
+            "AND lease_expires_at IS NOT NULL) OR "
+            "(status <> 'LEASED' AND leased_by IS NULL "
+            "AND lease_expires_at IS NULL)",
+            name="ck_agent_execution_jobs_lease",
+        ),
+        CheckConstraint(
+            "(status IN ('COMPLETED', 'DEAD_LETTER') "
+            "AND completed_at IS NOT NULL) OR "
+            "(status NOT IN ('COMPLETED', 'DEAD_LETTER') "
+            "AND completed_at IS NULL)",
+            name="ck_agent_execution_jobs_terminal",
+        ),
+        Index(
+            "ix_agent_execution_jobs_ready",
+            "status",
+            "available_at",
+            "created_at",
+            postgresql_where=text("status IN ('PENDING', 'RETRY')"),
+        ),
+        Index(
+            "ix_agent_execution_jobs_expired_leases",
+            "lease_expires_at",
+            "created_at",
+            postgresql_where=text("status = 'LEASED'"),
+        ),
+        Index(
+            "ix_agent_execution_jobs_correlation",
+            "correlation_id",
+            "created_at",
+        ),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    execution_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    request_fingerprint: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        unique=True,
+    )
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    runtime_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    correlation_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    agent_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    agent_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    agent_definition_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    execution_mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    decision_role: Mapped[str] = mapped_column(String(16), nullable=False)
+    critical: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    input_payload: Mapped[dict] = mapped_column(JsonType, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False)
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    leased_by: Mapped[str | None] = mapped_column(String(128))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    last_error_code: Mapped[str | None] = mapped_column(String(64))
+    output_payload: Mapped[dict | None] = mapped_column(JsonType)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+
+
+class AgentExecutionAttemptModel(Base):
+    """Append-only attempt evidence for an agent execution."""
+
+    __tablename__ = "agent_execution_attempts"
+    __table_args__ = (
+        UniqueConstraint(
+            "execution_id",
+            "attempt_number",
+            name="uq_agent_execution_attempts_number",
+        ),
+        CheckConstraint(
+            "attempt_number > 0 AND attempt_number <= 10",
+            name="ck_agent_execution_attempts_number",
+        ),
+        CheckConstraint(
+            "completed_at >= started_at",
+            name="ck_agent_execution_attempts_time",
+        ),
+        Index(
+            "ix_agent_execution_attempts_execution",
+            "execution_id",
+            "attempt_number",
+        ),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    row_id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        Identity(always=True),
+        primary_key=True,
+    )
+    execution_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey(
+            f"{INTERNAL_SCHEMA}.agent_execution_jobs.execution_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    worker_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    output_payload: Mapped[dict] = mapped_column(JsonType, nullable=False)
+    retryable: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    completed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+
+class AgentMemoryEntryModel(Base):
+    """Append-only execution-scoped memory; agents never query it directly."""
+
+    __tablename__ = "agent_memory_entries"
+    __table_args__ = (
+        UniqueConstraint(
+            "execution_id",
+            "sequence",
+            name="uq_agent_memory_entries_sequence",
+        ),
+        CheckConstraint(
+            "sequence > 0",
+            name="ck_agent_memory_entries_sequence",
+        ),
+        CheckConstraint(
+            "entry_type IN ('INPUT', 'ATTEMPT', 'OUTPUT', 'DEAD_LETTER')",
+            name="ck_agent_memory_entries_type",
+        ),
+        Index(
+            "ix_agent_memory_entries_execution",
+            "execution_id",
+            "sequence",
+        ),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    row_id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        Identity(always=True),
+        primary_key=True,
+    )
+    execution_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey(
+            f"{INTERNAL_SCHEMA}.agent_execution_jobs.execution_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    entry_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    payload: Mapped[dict] = mapped_column(JsonType, nullable=False)
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+
 class AgentOutputModel(Base):
     __tablename__ = "agent_outputs"
 

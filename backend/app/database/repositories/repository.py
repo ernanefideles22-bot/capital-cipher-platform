@@ -12,9 +12,12 @@ from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from app.core.errors import DatabaseError
+from app.core.errors import DatabaseError, ValidationError
 from app.backtesting.artifacts import walk_forward_artifact_hash
 from app.database.models import (
+    AgentExecutionAttemptModel,
+    AgentExecutionJobModel,
+    AgentMemoryEntryModel,
     AgentOutputModel,
     AuditLogModel,
     BackfillQueueItemModel,
@@ -37,12 +40,20 @@ from app.database.models import (
 )
 from app.database.session import Database
 from app.market_data.identity import candle_event_id
-from app.schemas.agents import AgentOutput
+from app.schemas.agents import (
+    AgentExecutionAttempt,
+    AgentExecutionJob,
+    AgentExecutionTrace,
+    AgentInput,
+    AgentMemoryEntry,
+    AgentOutput,
+)
 from app.schemas.backfill import HistoricalBackfillJob, MarketDataGap
 from app.schemas.backtest import (
     WalkForwardArtifactMetadata,
     WalkForwardReport,
 )
+from app.schemas.common import AgentStatus
 from app.schemas.data_lake import (
     BackfillQueueItem,
     BackfillRawPageLink,
@@ -116,6 +127,79 @@ class Repository:
                 "Stored walk-forward artifact failed integrity validation"
             )
         return report
+
+    @staticmethod
+    def _agent_execution_job_from_row(
+        row: AgentExecutionJobModel,
+    ) -> AgentExecutionJob:
+        return AgentExecutionJob(
+            schema_version=row.schema_version,
+            runtime_version=row.runtime_version,
+            execution_id=row.execution_id,
+            request_fingerprint=row.request_fingerprint,
+            idempotency_key=row.idempotency_key,
+            correlation_id=row.correlation_id,
+            agent_name=row.agent_name,
+            agent_version=row.agent_version,
+            agent_definition_hash=row.agent_definition_hash,
+            execution_mode=row.execution_mode,
+            decision_role=row.decision_role,
+            critical=row.critical,
+            input=AgentInput.model_validate(row.input_payload),
+            status=row.status,
+            attempt_count=row.attempt_count,
+            max_attempts=row.max_attempts,
+            available_at=_as_utc(row.available_at),
+            leased_by=row.leased_by,
+            lease_expires_at=(
+                _as_utc(row.lease_expires_at)
+                if row.lease_expires_at
+                else None
+            ),
+            last_error_code=row.last_error_code,
+            output=(
+                AgentOutput.model_validate(row.output_payload)
+                if row.output_payload
+                else None
+            ),
+            created_at=_as_utc(row.created_at),
+            updated_at=_as_utc(row.updated_at),
+            completed_at=(
+                _as_utc(row.completed_at)
+                if row.completed_at
+                else None
+            ),
+        )
+
+    @staticmethod
+    def _agent_attempt_from_row(
+        row: AgentExecutionAttemptModel,
+    ) -> AgentExecutionAttempt:
+        return AgentExecutionAttempt(
+            schema_version=row.schema_version,
+            execution_id=row.execution_id,
+            attempt_number=row.attempt_number,
+            worker_id=row.worker_id,
+            status=row.status,
+            output=AgentOutput.model_validate(row.output_payload),
+            retryable=row.retryable,
+            started_at=_as_utc(row.started_at),
+            completed_at=_as_utc(row.completed_at),
+        )
+
+    @staticmethod
+    def _agent_memory_from_row(
+        row: AgentMemoryEntryModel,
+    ) -> AgentMemoryEntry:
+        return AgentMemoryEntry(
+            schema_version=row.schema_version,
+            execution_id=row.execution_id,
+            sequence=row.sequence,
+            entry_type=row.entry_type,
+            payload=row.payload,
+            payload_hash=row.payload_hash,
+            created_at=_as_utc(row.created_at),
+        )
 
     async def save_bus_message(self, message: BusMessage):
         """Append a versioned event before any consumer handles it."""
@@ -1199,6 +1283,441 @@ class Repository:
                 stored_bytes=row.stored_bytes,
                 created_at=_as_utc(row.created_at),
             )
+
+    async def create_agent_execution(
+        self,
+        job: AgentExecutionJob,
+        input_memory: AgentMemoryEntry,
+    ) -> AgentExecutionJob:
+        """Create one idempotent PAPER job and its first memory entry."""
+
+        if (
+            input_memory.execution_id != job.execution_id
+            or input_memory.sequence != 1
+            or input_memory.entry_type != "INPUT"
+        ):
+            raise ValueError("Initial agent memory does not match the job")
+        values = {
+            "execution_id": job.execution_id,
+            "request_fingerprint": job.request_fingerprint,
+            "schema_version": job.schema_version,
+            "runtime_version": job.runtime_version,
+            "idempotency_key": job.idempotency_key,
+            "correlation_id": job.correlation_id,
+            "agent_name": job.agent_name,
+            "agent_version": job.agent_version,
+            "agent_definition_hash": job.agent_definition_hash,
+            "execution_mode": job.execution_mode,
+            "decision_role": job.decision_role,
+            "critical": job.critical,
+            "input_payload": job.input.model_dump(mode="json"),
+            "status": job.status,
+            "attempt_count": job.attempt_count,
+            "max_attempts": job.max_attempts,
+            "available_at": job.available_at,
+            "leased_by": job.leased_by,
+            "lease_expires_at": job.lease_expires_at,
+            "last_error_code": job.last_error_code,
+            "output_payload": (
+                job.output.model_dump(mode="json")
+                if job.output is not None
+                else None
+            ),
+            "created_at": job.created_at,
+            "updated_at": job.updated_at,
+            "completed_at": job.completed_at,
+        }
+        try:
+            async with self._db.session() as session, session.begin():
+                insert_statement = self._dialect_insert(
+                    AgentExecutionJobModel
+                )
+                inserted = False
+                if insert_statement is not None:
+                    inserted_id = await session.scalar(
+                        insert_statement.values(**values)
+                        .on_conflict_do_nothing()
+                        .returning(AgentExecutionJobModel.execution_id)
+                    )
+                    inserted = inserted_id is not None
+                else:
+                    existing = await session.get(
+                        AgentExecutionJobModel,
+                        job.execution_id,
+                    )
+                    if existing is None:
+                        session.add(AgentExecutionJobModel(**values))
+                        await session.flush()
+                        inserted = True
+
+                if inserted:
+                    session.add(
+                        AgentMemoryEntryModel(
+                            execution_id=input_memory.execution_id,
+                            schema_version=input_memory.schema_version,
+                            sequence=input_memory.sequence,
+                            entry_type=input_memory.entry_type,
+                            payload=input_memory.payload,
+                            payload_hash=input_memory.payload_hash,
+                            created_at=input_memory.created_at,
+                        )
+                    )
+                    return job
+
+                row = await session.scalar(
+                    select(AgentExecutionJobModel).where(
+                        AgentExecutionJobModel.agent_name == job.agent_name,
+                        AgentExecutionJobModel.agent_version
+                        == job.agent_version,
+                        AgentExecutionJobModel.idempotency_key
+                        == job.idempotency_key,
+                    )
+                )
+                if row is None:
+                    row = await session.get(
+                        AgentExecutionJobModel,
+                        job.execution_id,
+                    )
+                if row is None:
+                    raise RuntimeError(
+                        "Agent execution conflict has no stored job"
+                    )
+                if row.request_fingerprint != job.request_fingerprint:
+                    raise ValidationError(
+                        "Agent execution idempotency key conflicts with "
+                        "different input"
+                    )
+                return self._agent_execution_job_from_row(row)
+        except Exception as exc:
+            if isinstance(exc, (DatabaseError, ValidationError)):
+                raise
+            raise DatabaseError(
+                f"Failed to create agent execution: {exc}"
+            ) from exc
+
+    async def _claim_agent_execution(
+        self,
+        *,
+        worker_id: str,
+        lease_seconds: int,
+        execution_id: str | None,
+    ) -> AgentExecutionJob | None:
+        if lease_seconds < 1:
+            raise ValueError("Agent lease_seconds must be positive")
+        now = _now()
+        ready = and_(
+            AgentExecutionJobModel.status.in_(("PENDING", "RETRY")),
+            AgentExecutionJobModel.available_at <= now,
+            AgentExecutionJobModel.attempt_count
+            < AgentExecutionJobModel.max_attempts,
+        )
+        expired = and_(
+            AgentExecutionJobModel.status == "LEASED",
+            AgentExecutionJobModel.lease_expires_at <= now,
+        )
+        statement = (
+            select(AgentExecutionJobModel)
+            .where(or_(ready, expired))
+            .order_by(
+                AgentExecutionJobModel.available_at,
+                AgentExecutionJobModel.created_at,
+            )
+            .limit(1)
+        )
+        if execution_id is not None:
+            statement = statement.where(
+                AgentExecutionJobModel.execution_id == execution_id
+            )
+        if self._db.engine.dialect.name == "postgresql":
+            statement = statement.with_for_update(skip_locked=True)
+        else:
+            statement = statement.with_for_update()
+        try:
+            async with self._db.session() as session, session.begin():
+                row = await session.scalar(statement)
+                if row is None:
+                    return None
+                reclaimed = row.status == "LEASED"
+                row.status = "LEASED"
+                if not reclaimed:
+                    row.attempt_count += 1
+                row.leased_by = worker_id
+                row.lease_expires_at = now + timedelta(
+                    seconds=lease_seconds
+                )
+                row.updated_at = now
+                row.completed_at = None
+                await session.flush()
+                return self._agent_execution_job_from_row(row)
+        except Exception as exc:
+            raise DatabaseError(
+                f"Failed to claim agent execution: {exc}"
+            ) from exc
+
+    async def claim_agent_execution(
+        self,
+        execution_id: str,
+        *,
+        worker_id: str,
+        lease_seconds: int,
+    ) -> AgentExecutionJob | None:
+        return await self._claim_agent_execution(
+            worker_id=worker_id,
+            lease_seconds=lease_seconds,
+            execution_id=execution_id,
+        )
+
+    async def claim_next_agent_execution(
+        self,
+        *,
+        worker_id: str,
+        lease_seconds: int,
+    ) -> AgentExecutionJob | None:
+        return await self._claim_agent_execution(
+            worker_id=worker_id,
+            lease_seconds=lease_seconds,
+            execution_id=None,
+        )
+
+    async def finish_agent_execution(
+        self,
+        *,
+        attempt: AgentExecutionAttempt,
+        attempt_memory: AgentMemoryEntry,
+        worker_id: str,
+        output: AgentOutput,
+        retryable: bool,
+        retry_delay_seconds: float,
+        terminal_memory: AgentMemoryEntry | None,
+    ) -> AgentExecutionJob:
+        """Atomically append evidence and acknowledge/retry/dead-letter."""
+
+        if retry_delay_seconds < 0:
+            raise ValueError("Agent retry delay must not be negative")
+        if (
+            attempt.execution_id != attempt_memory.execution_id
+            or attempt.output != output
+            or attempt.worker_id != worker_id
+            or attempt_memory.sequence != attempt.attempt_number * 2
+            or attempt_memory.entry_type != "ATTEMPT"
+        ):
+            raise ValueError("Agent attempt evidence is inconsistent")
+        now = _now()
+        try:
+            async with self._db.session() as session, session.begin():
+                row = await session.get(
+                    AgentExecutionJobModel,
+                    attempt.execution_id,
+                    with_for_update=True,
+                )
+                if row is None:
+                    raise RuntimeError("Agent execution does not exist")
+                if row.status != "LEASED" or row.leased_by != worker_id:
+                    raise RuntimeError("Agent execution lease ownership lost")
+                if row.attempt_count != attempt.attempt_number:
+                    raise RuntimeError(
+                        "Agent attempt does not match leased attempt"
+                    )
+                prior_attempts = await session.scalar(
+                    select(func.count())
+                    .select_from(AgentExecutionAttemptModel)
+                    .where(
+                        AgentExecutionAttemptModel.execution_id
+                        == attempt.execution_id
+                    )
+                )
+                if prior_attempts != attempt.attempt_number - 1:
+                    raise RuntimeError(
+                        "Agent attempts are not append-only"
+                    )
+
+                session.add(
+                    AgentExecutionAttemptModel(
+                        execution_id=attempt.execution_id,
+                        schema_version=attempt.schema_version,
+                        attempt_number=attempt.attempt_number,
+                        worker_id=attempt.worker_id,
+                        status=attempt.status.value,
+                        output_payload=output.model_dump(mode="json"),
+                        retryable=attempt.retryable,
+                        started_at=attempt.started_at,
+                        completed_at=attempt.completed_at,
+                    )
+                )
+                session.add(
+                    AgentMemoryEntryModel(
+                        execution_id=attempt_memory.execution_id,
+                        schema_version=attempt_memory.schema_version,
+                        sequence=attempt_memory.sequence,
+                        entry_type=attempt_memory.entry_type,
+                        payload=attempt_memory.payload,
+                        payload_hash=attempt_memory.payload_hash,
+                        created_at=attempt_memory.created_at,
+                    )
+                )
+
+                successful = output.status not in {
+                    AgentStatus.FAILED,
+                    AgentStatus.TIMEOUT,
+                }
+                should_retry = (
+                    not successful
+                    and retryable
+                    and row.attempt_count < row.max_attempts
+                )
+                if successful:
+                    row.status = "COMPLETED"
+                    row.completed_at = now
+                elif should_retry:
+                    row.status = "RETRY"
+                    row.available_at = now + timedelta(
+                        seconds=retry_delay_seconds
+                    )
+                    row.completed_at = None
+                else:
+                    row.status = "DEAD_LETTER"
+                    row.completed_at = now
+
+                row.leased_by = None
+                row.lease_expires_at = None
+                row.last_error_code = (
+                    None
+                    if successful
+                    else "AGENT_TIMEOUT"
+                    if output.status == AgentStatus.TIMEOUT
+                    else "AGENT_FAILED"
+                )
+                row.output_payload = output.model_dump(mode="json")
+                row.updated_at = now
+
+                if row.status in {"COMPLETED", "DEAD_LETTER"}:
+                    expected_type = (
+                        "OUTPUT"
+                        if row.status == "COMPLETED"
+                        else "DEAD_LETTER"
+                    )
+                    if (
+                        terminal_memory is None
+                        or terminal_memory.execution_id != row.execution_id
+                        or terminal_memory.entry_type != expected_type
+                        or terminal_memory.sequence
+                        != attempt.attempt_number * 2 + 1
+                    ):
+                        raise RuntimeError(
+                            "Terminal agent memory is inconsistent"
+                        )
+                    session.add(
+                        AgentMemoryEntryModel(
+                            execution_id=terminal_memory.execution_id,
+                            schema_version=terminal_memory.schema_version,
+                            sequence=terminal_memory.sequence,
+                            entry_type=terminal_memory.entry_type,
+                            payload=terminal_memory.payload,
+                            payload_hash=terminal_memory.payload_hash,
+                            created_at=terminal_memory.created_at,
+                        )
+                    )
+                    session.add(
+                        AgentOutputModel(
+                            correlation_id=row.correlation_id,
+                            agent_name=row.agent_name,
+                            status=output.status.value,
+                            signal=output.signal.value,
+                            confidence=output.confidence,
+                            reason=output.reason,
+                            evidence=output.evidence,
+                            warnings=output.warnings,
+                            latency_ms=output.latency_ms,
+                            created_at=output.created_at,
+                        )
+                    )
+                elif terminal_memory is not None:
+                    raise RuntimeError(
+                        "Retrying execution cannot append terminal memory"
+                    )
+                await session.flush()
+                return self._agent_execution_job_from_row(row)
+        except Exception as exc:
+            raise DatabaseError(
+                f"Failed to finish agent execution: {exc}"
+            ) from exc
+
+    async def load_agent_execution_trace(
+        self,
+        execution_id: str,
+    ) -> AgentExecutionTrace | None:
+        try:
+            async with self._db.session() as session:
+                row = await session.get(
+                    AgentExecutionJobModel,
+                    execution_id,
+                )
+                if row is None:
+                    return None
+                attempts = list(
+                    await session.scalars(
+                        select(AgentExecutionAttemptModel)
+                        .where(
+                            AgentExecutionAttemptModel.execution_id
+                            == execution_id
+                        )
+                        .order_by(
+                            AgentExecutionAttemptModel.attempt_number
+                        )
+                    )
+                )
+                memory = list(
+                    await session.scalars(
+                        select(AgentMemoryEntryModel)
+                        .where(
+                            AgentMemoryEntryModel.execution_id
+                            == execution_id
+                        )
+                        .order_by(AgentMemoryEntryModel.sequence)
+                    )
+                )
+                return AgentExecutionTrace(
+                    job=self._agent_execution_job_from_row(row),
+                    attempts=[
+                        self._agent_attempt_from_row(item)
+                        for item in attempts
+                    ],
+                    memory=[
+                        self._agent_memory_from_row(item)
+                        for item in memory
+                    ],
+                )
+        except Exception as exc:
+            raise DatabaseError(
+                f"Failed to load agent execution trace: {exc}"
+            ) from exc
+
+    async def list_agent_execution_jobs(
+        self,
+        *,
+        limit: int = 100,
+    ) -> list[AgentExecutionJob]:
+        if not 1 <= limit <= 1_000:
+            raise ValueError("Agent execution limit must be 1..1000")
+        try:
+            async with self._db.session() as session:
+                rows = list(
+                    await session.scalars(
+                        select(AgentExecutionJobModel)
+                        .order_by(
+                            AgentExecutionJobModel.created_at.desc()
+                        )
+                        .limit(limit)
+                    )
+                )
+                return [
+                    self._agent_execution_job_from_row(row)
+                    for row in rows
+                ]
+        except Exception as exc:
+            raise DatabaseError(
+                f"Failed to list agent executions: {exc}"
+            ) from exc
 
     async def save_agent_output(self, correlation_id: str, output: AgentOutput) -> None:
         try:

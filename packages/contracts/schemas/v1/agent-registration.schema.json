@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/agent-registration.schema.json",
+  "title": "Capital Cipher Agent Registration v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "registry_version",
+    "agent_name",
+    "version",
+    "description",
+    "required_inputs",
+    "capabilities",
+    "input_contract",
+    "output_contract",
+    "execution_mode",
+    "decision_role",
+    "critical",
+    "timeout_ms",
+    "max_attempts",
+    "enabled",
+    "definition_hash"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "registry_version": {"const": "agent-registry-v1"},
+    "agent_name": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9._-]+$",
+      "minLength": 3,
+      "maxLength": 128
+    },
+    "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "description": {"type": "string"},
+    "required_inputs": {"type": "array", "items": {"type": "string"}},
+    "capabilities": {"type": "array", "items": {"type": "string"}},
+    "input_contract": {"const": "AgentInputV1"},
+    "output_contract": {"const": "AgentOutputV1"},
+    "execution_mode": {"const": "PAPER"},
+    "decision_role": {"enum": ["PRIMARY", "SHADOW"]},
+    "critical": {"type": "boolean"},
+    "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 300000},
+    "max_attempts": {"type": "integer", "minimum": 1, "maximum": 10},
+    "enabled": {"type": "boolean"},
+    "definition_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  },
+  "additionalProperties": false
+}

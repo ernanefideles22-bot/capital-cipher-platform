@@ -10,9 +10,13 @@ import pytest
 from sqlalchemy import text, update
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.agents.registry import AgentRegistry
+from app.agents.runtime import AgentRuntime
+from app.agents.specialists import MomentumAgent
 from app.backtesting.engine import BacktestingEngine
 from app.backtesting.walk_forward import WalkForwardEngine
 from app.database.models import (
+    AgentExecutionAttemptModel,
     INTERNAL_SCHEMA,
     WalkForwardExperimentModel,
 )
@@ -20,6 +24,8 @@ from app.database.repositories.repository import Repository
 from app.database.session import Database
 from app.market_data.catalog import DataCatalog
 from app.market_data.gaps import GapService
+from app.market_data.store import CandleStore
+from app.schemas.agents import AgentExecutionRequest, AgentInput
 from app.schemas.backfill import HistoricalBackfillJob
 from app.schemas.backtest import WalkForwardProtocol, WalkForwardRequest
 from app.schemas.data_lake import (
@@ -37,11 +43,10 @@ from app.tests.conftest import make_series
 async def test_real_postgres_internal_warehouse_round_trip():
     import asyncpg
 
-    migration_path = (
+    migration_root = (
         Path(__file__).resolve().parents[3]
         / "supabase"
         / "migrations"
-        / "20260720065032_create_walk_forward_experiments.sql"
     )
     migration_connection = await asyncpg.connect(
         os.environ["POSTGRES_TEST_URL"].replace(
@@ -50,9 +55,10 @@ async def test_real_postgres_internal_warehouse_round_trip():
         )
     )
     try:
-        await migration_connection.execute(
-            migration_path.read_text(encoding="utf-8")
-        )
+        for migration_path in sorted(migration_root.glob("*.sql")):
+            await migration_connection.execute(
+                migration_path.read_text(encoding="utf-8")
+            )
     finally:
         await migration_connection.close()
 
@@ -155,6 +161,25 @@ async def test_real_postgres_internal_warehouse_round_trip():
     loaded_artifact = await repository.load_walk_forward_report(
         artifact.experiment_id
     )
+    momentum_agent = MomentumAgent(CandleStore())
+    runtime = AgentRuntime(
+        AgentRegistry([momentum_agent]),
+        repository=repository,
+        retry_base_seconds=0,
+        retry_max_seconds=0,
+    )
+    runtime_trace = await runtime.execute(
+        AgentExecutionRequest(
+            idempotency_key="postgres-agent-runtime",
+            input=AgentInput(
+                request_id="postgres-agent-runtime",
+                correlation_id="postgres-agent-correlation",
+                agent_name=momentum_agent.name,
+                symbol="BTCUSDT",
+                timeframe="15m",
+            ),
+        )
+    )
     with pytest.raises(SQLAlchemyError, match="append-only"):
         async with database.session() as session, session.begin():
             await session.execute(
@@ -164,6 +189,16 @@ async def test_real_postgres_internal_warehouse_round_trip():
                     == artifact.experiment_id
                 )
                 .values(symbol="ETHUSDT")
+            )
+    with pytest.raises(SQLAlchemyError, match="append-only"):
+        async with database.session() as session, session.begin():
+            await session.execute(
+                update(AgentExecutionAttemptModel)
+                .where(
+                    AgentExecutionAttemptModel.execution_id
+                    == runtime_trace.job.execution_id
+                )
+                .values(worker_id="tampered-worker")
             )
 
     async with database.engine.connect() as connection:
@@ -209,12 +244,50 @@ async def test_real_postgres_internal_warehouse_round_trip():
             ),
             {"schema_name": INTERNAL_SCHEMA},
         )
+        agent_immutable_triggers = set(
+            await connection.scalars(
+                text(
+                    "SELECT trigger_name "
+                    "FROM information_schema.triggers "
+                    "WHERE trigger_schema = :schema_name "
+                    "AND event_object_table IN "
+                    "('agent_execution_attempts', 'agent_memory_entries')"
+                ),
+                {"schema_name": INTERNAL_SCHEMA},
+            )
+        )
+        agent_rls_count = await connection.scalar(
+            text(
+                "SELECT count(*) "
+                "FROM pg_class c "
+                "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                "WHERE n.nspname = :schema_name "
+                "AND c.relname IN "
+                "('agent_execution_jobs', 'agent_execution_attempts', "
+                "'agent_memory_entries') "
+                "AND c.relrowsecurity"
+            ),
+            {"schema_name": INTERNAL_SCHEMA},
+        )
+        agent_function_is_security_definer = await connection.scalar(
+            text(
+                "SELECT p.prosecdef "
+                "FROM pg_proc p "
+                "JOIN pg_namespace n ON n.oid = p.pronamespace "
+                "WHERE n.nspname = :schema_name "
+                "AND p.proname = 'reject_agent_evidence_mutation'"
+            ),
+            {"schema_name": INTERNAL_SCHEMA},
+        )
     await database.dispose()
 
     assert loaded == manifest
     assert gaps == []
     assert loaded_job == jobs[0]
     assert loaded_artifact == artifact
+    assert runtime_trace.job.status == "COMPLETED"
+    assert len(runtime_trace.attempts) == 1
+    assert len(runtime_trace.memory) == 3
     assert {claim.queue_id for claim in claims if claim is not None} == {
         jobs[0].job_id,
         jobs[1].job_id,
@@ -230,7 +303,16 @@ async def test_real_postgres_internal_warehouse_round_trip():
         "raw_data_objects",
         "backfill_raw_pages",
         "walk_forward_experiments",
+        "agent_execution_jobs",
+        "agent_execution_attempts",
+        "agent_memory_entries",
     } <= tables
     assert "trg_walk_forward_experiments_immutable" in immutable_triggers
     assert row_security_enabled is True
     assert function_is_security_definer is False
+    assert agent_immutable_triggers == {
+        "trg_agent_execution_attempts_immutable",
+        "trg_agent_memory_entries_immutable",
+    }
+    assert agent_rls_count == 3
+    assert agent_function_is_security_definer is False

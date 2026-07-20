@@ -54,10 +54,14 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
         app.state.context = ctx
         if ctx.database is not None:
             await ctx.database.create_all()
+        if ctx.agent_runtime is not None:
+            await ctx.agent_runtime.initialize()
         outbox_stop = asyncio.Event()
         outbox_task = None
         backfill_stop = asyncio.Event()
         backfill_task = None
+        agent_worker_stop = asyncio.Event()
+        agent_worker_task = None
         if ctx.event_transport is not None:
             try:
                 broker_healthy = await ctx.event_transport.healthcheck()
@@ -85,6 +89,13 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
             SystemState.PAPER, reason="Initialization complete — Phase 1 PAPER mode", actor="main"
         )
         logger.info("System started in PAPER mode", event_type="SYSTEM_STARTED")
+        if (
+            settings.agent_worker_enabled
+            and ctx.agent_runtime_worker is not None
+        ):
+            agent_worker_task = asyncio.create_task(
+                ctx.agent_runtime_worker.run(agent_worker_stop)
+            )
         if settings.backfill_worker_enabled and ctx.backfill_worker is not None:
             backfill_task = asyncio.create_task(
                 ctx.backfill_worker.run(backfill_stop)
@@ -143,6 +154,9 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
         if backfill_task is not None:
             backfill_stop.set()
             await backfill_task
+        if agent_worker_task is not None:
+            agent_worker_stop.set()
+            await agent_worker_task
         if ctx.public_market_clients is not None:
             await asyncio.gather(
                 *(client.aclose() for client in ctx.public_market_clients.values())

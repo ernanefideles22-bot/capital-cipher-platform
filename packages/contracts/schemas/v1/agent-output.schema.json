@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/agent-output.schema.json",
+  "title": "Capital Cipher Agent Output v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "agent_name",
+    "status",
+    "signal",
+    "confidence",
+    "reason",
+    "evidence",
+    "warnings",
+    "latency_ms",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "agent_name": {"type": "string", "minLength": 1},
+    "status": {
+      "enum": ["COMPLETED", "FAILED", "TIMEOUT", "SKIPPED", "BLOCKED"]
+    },
+    "signal": {"enum": ["BUY", "SELL", "HOLD", "WAIT", "BLOCK", "NEUTRAL"]},
+    "confidence": {"type": "integer", "minimum": 0, "maximum": 100},
+    "reason": {"type": "string", "minLength": 1, "maxLength": 1000},
+    "evidence": {"type": "object"},
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "latency_ms": {"type": "integer", "minimum": 0},
+    "created_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": false
+}

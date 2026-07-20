@@ -24,7 +24,7 @@ class Settings(BaseSettings):
 
     app_env: str = Field(default="local", alias="APP_ENV")
     app_name: str = "capital-cipher-api"
-    app_version: str = "0.14.0"
+    app_version: str = "0.15.0"
 
     system_mode: str = Field(default="PAPER", alias="SYSTEM_MODE")
 
@@ -230,7 +230,52 @@ class Settings(BaseSettings):
     )
 
     # Agent execution (docs/28-agent-lifecycle.md).
-    agent_timeout_ms: int = Field(default=5000, alias="AGENT_TIMEOUT_MS")
+    agent_timeout_ms: int = Field(
+        default=5000,
+        alias="AGENT_TIMEOUT_MS",
+        ge=1,
+        le=300_000,
+    )
+    agent_max_attempts: int = Field(
+        default=3,
+        alias="AGENT_MAX_ATTEMPTS",
+        ge=1,
+        le=10,
+    )
+    agent_max_concurrency: int = Field(
+        default=8,
+        alias="AGENT_MAX_CONCURRENCY",
+        ge=1,
+        le=100,
+    )
+    agent_worker_enabled: bool = Field(
+        default=True,
+        alias="AGENT_WORKER_ENABLED",
+    )
+    agent_worker_poll_interval_seconds: float = Field(
+        default=0.25,
+        alias="AGENT_WORKER_POLL_INTERVAL_SECONDS",
+        gt=0,
+        le=60,
+    )
+    agent_lease_seconds: int = Field(
+        default=30,
+        alias="AGENT_LEASE_SECONDS",
+        ge=1,
+        le=3_600,
+    )
+    agent_retry_base_seconds: float = Field(
+        default=0.05,
+        alias="AGENT_RETRY_BASE_SECONDS",
+        ge=0,
+        le=3_600,
+    )
+    agent_retry_max_seconds: float = Field(
+        default=0.2,
+        alias="AGENT_RETRY_MAX_SECONDS",
+        ge=0,
+        le=86_400,
+    )
 
     @field_validator("system_mode")
     @classmethod
@@ -294,6 +339,8 @@ class Settings(BaseSettings):
             raise ValueError("Clock round-trip thresholds are inconsistent")
         if self.backfill_retry_base_seconds > self.backfill_retry_max_seconds:
             raise ValueError("Backfill retry delay settings are inconsistent")
+        if self.agent_retry_base_seconds > self.agent_retry_max_seconds:
+            raise ValueError("Agent retry delay settings are inconsistent")
         if self.default_leverage > self.max_leverage_simulated:
             raise ValueError(
                 "DEFAULT_LEVERAGE cannot exceed MAX_LEVERAGE_SIMULATED"

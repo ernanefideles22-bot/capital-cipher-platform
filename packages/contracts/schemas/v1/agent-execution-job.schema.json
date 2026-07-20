@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/agent-execution-job.schema.json",
+  "title": "Capital Cipher Agent Execution Job v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "runtime_version",
+    "execution_id",
+    "request_fingerprint",
+    "idempotency_key",
+    "correlation_id",
+    "agent_name",
+    "agent_version",
+    "agent_definition_hash",
+    "execution_mode",
+    "decision_role",
+    "critical",
+    "input",
+    "status",
+    "attempt_count",
+    "max_attempts",
+    "available_at",
+    "leased_by",
+    "lease_expires_at",
+    "last_error_code",
+    "output",
+    "created_at",
+    "updated_at",
+    "completed_at"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "runtime_version": {"const": "agent-runtime-v1"},
+    "execution_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "request_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 256},
+    "correlation_id": {"type": "string", "minLength": 1, "maxLength": 36},
+    "agent_name": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9._-]+$",
+      "minLength": 3,
+      "maxLength": 128
+    },
+    "agent_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "agent_definition_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "execution_mode": {"const": "PAPER"},
+    "decision_role": {"enum": ["PRIMARY", "SHADOW"]},
+    "critical": {"type": "boolean"},
+    "input": {"$ref": "agent-input.schema.json"},
+    "status": {
+      "enum": ["PENDING", "LEASED", "RETRY", "COMPLETED", "DEAD_LETTER"]
+    },
+    "attempt_count": {"type": "integer", "minimum": 0, "maximum": 10},
+    "max_attempts": {"type": "integer", "minimum": 1, "maximum": 10},
+    "available_at": {"type": "string", "format": "date-time"},
+    "leased_by": {"type": ["string", "null"], "maxLength": 128},
+    "lease_expires_at": {"type": ["string", "null"], "format": "date-time"},
+    "last_error_code": {
+      "type": ["string", "null"],
+      "pattern": "^[A-Z][A-Z0-9_]+$"
+    },
+    "output": {
+      "oneOf": [
+        {"$ref": "agent-output.schema.json"},
+        {"type": "null"}
+      ]
+    },
+    "created_at": {"type": "string", "format": "date-time"},
+    "updated_at": {"type": "string", "format": "date-time"},
+    "completed_at": {"type": ["string", "null"], "format": "date-time"}
+  },
+  "additionalProperties": false
+}

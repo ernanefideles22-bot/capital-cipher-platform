@@ -14,6 +14,9 @@ MIN_CANDLES = 60
 class TrendAgent(BaseAgent):
     name = "TrendAgent"
     description = "Classifies the current market regime"
+    required_inputs = ("candles.ohlcv",)
+    capabilities = ("market-regime", "trend-structure", "volatility-state")
+    decision_role = "PRIMARY"
     critical = True
 
     def __init__(self, store: CandleStore) -> None:

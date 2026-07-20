@@ -20,6 +20,8 @@ from uuid import uuid4
 from app.agents.base import BaseAgent
 from app.agents.market_data import MarketDataAgent
 from app.agents.quant import QuantAgent
+from app.agents.registry import AgentRegistry
+from app.agents.runtime import AgentRuntime
 from app.agents.trend import TrendAgent
 from app.audit.service import AuditService
 from app.core.errors import AuditError, CapitalCipherError, DataQualityError
@@ -34,7 +36,7 @@ from app.orchestrator.decision_engine import DecisionEngine
 from app.paper_trading.engine import PaperTradingEngine
 from app.risk.manager import RiskManager
 from app.strategy.engine import StrategyEngine
-from app.schemas.agents import AgentInput
+from app.schemas.agents import AgentExecutionRequest, AgentInput
 from app.schemas.common import CandidateAction, MarketRegime, RiskStatus
 from app.schemas.decisions import Decision
 from app.schemas.events import EventTypes
@@ -57,6 +59,7 @@ class Orchestrator:
         market_data_agent: MarketDataAgent,
         quant_agent: QuantAgent,
         trend_agent: TrendAgent,
+        agent_runtime: AgentRuntime | None = None,
         repository=None,
         max_data_delay_ms: int = 5000,
         strategy_engine: StrategyEngine | None = None,
@@ -78,11 +81,13 @@ class Orchestrator:
         self._gap_service = gap_service
         self.strategy_engine = strategy_engine or StrategyEngine()
         self._current_day = None
-        self.agents: dict[str, BaseAgent] = {
-            market_data_agent.name: market_data_agent,
-            quant_agent.name: quant_agent,
-            trend_agent.name: trend_agent,
-        }
+        self._agent_runtime = agent_runtime or AgentRuntime(
+            AgentRegistry(
+                [market_data_agent, quant_agent, trend_agent]
+            ),
+            repository=repository,
+            event_bus=event_bus,
+        )
         self.recent_decisions: deque[Decision] = deque(maxlen=200)
         self.last_decision: Decision | None = None
         self.cycle_latencies_ms: deque[int] = deque(maxlen=100)
@@ -90,6 +95,12 @@ class Orchestrator:
         self.pending_events: int = 0
 
     # -- status ------------------------------------------------------------------
+    @property
+    def agents(self) -> dict[str, BaseAgent]:
+        """Expose the active registry view without caching stale definitions."""
+
+        return self._agent_runtime.registry.agents
+
     def status(self) -> dict[str, Any]:
         avg_latency = (
             sum(self.cycle_latencies_ms) / len(self.cycle_latencies_ms)
@@ -297,28 +308,26 @@ class Orchestrator:
         symbol, timeframe = candle.symbol, candle.timeframe
 
         # Run analytical agents through their contracts.
-        agent_outputs = []
+        requests = []
         for agent in self.agents.values():
+            registration = agent.registration()
             agent_input = AgentInput(
+                request_id=f"{correlation_id}:{agent.name}",
                 correlation_id=correlation_id,
                 agent_name=agent.name,
+                timestamp=candle.closed_at,
                 symbol=symbol,
                 timeframe=timeframe,
                 market_context={"exchange": exchange},
             )
-            output = await agent.run(agent_input)
-            agent_outputs.append(output)
-            await self._bus.publish(
-                Topics.AGENT_OUTPUTS,
-                EventTypes.AGENT_COMPLETED
-                if output.status.value == "COMPLETED"
-                else EventTypes.AGENT_FAILED,
-                output.model_dump(mode="json"),
-                source=agent.name,
-                correlation_id=correlation_id,
+            requests.append(
+                AgentExecutionRequest(
+                    agent_version=registration.version,
+                    idempotency_key=f"{correlation_id}:{agent.name}",
+                    input=agent_input,
+                )
             )
-            if self._repository is not None:
-                await self._repository.save_agent_output(correlation_id, output)
+        agent_outputs = await self._agent_runtime.execute_many(requests)
 
         # Strategy selection and regime rules (docs/26).
         trend_output = next((o for o in agent_outputs if o.agent_name == "TrendAgent"), None)

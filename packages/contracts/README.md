@@ -25,3 +25,6 @@ verify storage identity, checksums, lineage, and research-only status.
 Historical spread/funding observations, isolated-margin assumptions,
 pre-registered research budgets, and acceptance gates complete the Month 4
 research boundary without authorizing operational execution.
+Agent inputs, outputs, registrations, execution requests, durable jobs, and
+complete traces form the Month 5 PAPER-only runtime boundary. These contracts
+do not expose risk mutation or order execution authority.

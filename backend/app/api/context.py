@@ -7,6 +7,9 @@ from dataclasses import dataclass
 
 from app.agents.market_data import MarketDataAgent
 from app.agents.quant import QuantAgent
+from app.agents.registry import AgentRegistry
+from app.agents.runtime import AgentRuntime, AgentRuntimeWorker
+from app.agents.specialists import build_shadow_specialists
 from app.agents.trend import TrendAgent
 from app.audit.service import AuditService
 from app.backtesting.engine import BacktestingEngine
@@ -65,6 +68,9 @@ class AppContext:
     public_market_clients: dict[Exchange, PublicMarketDataClient] | None = None
     event_transport: EventTransport | None = None
     outbox_dispatcher: OutboxDispatcher | None = None
+    agent_registry: AgentRegistry | None = None
+    agent_runtime: AgentRuntime | None = None
+    agent_runtime_worker: AgentRuntimeWorker | None = None
     market_connected: bool = False
 
 
@@ -191,6 +197,31 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
     )
     quant_agent = QuantAgent(candle_store)
     trend_agent = TrendAgent(candle_store)
+    runtime_agents = [
+        market_data_agent,
+        quant_agent,
+        trend_agent,
+        *build_shadow_specialists(candle_store),
+    ]
+    for agent in runtime_agents:
+        agent.timeout_ms = settings.agent_timeout_ms
+        agent.max_attempts = settings.agent_max_attempts
+    agent_registry = AgentRegistry(runtime_agents)
+    agent_registry.validate_cohort(expected_count=15)
+    agent_runtime = AgentRuntime(
+        agent_registry,
+        repository=repository,
+        event_bus=event_bus,
+        lease_seconds=settings.agent_lease_seconds,
+        retry_base_seconds=settings.agent_retry_base_seconds,
+        retry_max_seconds=settings.agent_retry_max_seconds,
+        max_concurrency=settings.agent_max_concurrency,
+    )
+    agent_runtime_worker = AgentRuntimeWorker(
+        agent_runtime,
+        poll_interval_seconds=settings.agent_worker_poll_interval_seconds,
+        lease_seconds=settings.agent_lease_seconds,
+    )
     decision_engine = DecisionEngine(
         minimum_candidate_confidence=settings.minimum_candidate_confidence
     )
@@ -205,6 +236,7 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         market_data_agent=market_data_agent,
         quant_agent=quant_agent,
         trend_agent=trend_agent,
+        agent_runtime=agent_runtime,
         repository=repository,
         max_data_delay_ms=settings.max_market_data_delay_ms,
         clock_registry=clock_registry,
@@ -250,6 +282,9 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         public_market_clients=public_market_clients,
         event_transport=event_transport,
         outbox_dispatcher=outbox_dispatcher,
+        agent_registry=agent_registry,
+        agent_runtime=agent_runtime,
+        agent_runtime_worker=agent_runtime_worker,
     )
     context_holder["ctx"] = ctx
     return ctx

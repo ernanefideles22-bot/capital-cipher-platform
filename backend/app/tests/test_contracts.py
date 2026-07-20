@@ -9,8 +9,17 @@ from uuid import uuid4
 import pytest
 from jsonschema import Draft202012Validator
 from pydantic import ValidationError
+from referencing import Registry, Resource
 
-from app.schemas.agents import AgentOutput
+from app.agents.registry import AgentRegistry
+from app.agents.runtime import AgentRuntime
+from app.agents.specialists import MomentumAgent
+from app.market_data.store import CandleStore
+from app.schemas.agents import (
+    AgentExecutionRequest,
+    AgentInput,
+    AgentOutput,
+)
 from app.schemas.backfill import HistoricalBackfillJob, MarketDataGap
 from app.schemas.backtest import (
     BacktestExecutionAssumptions,
@@ -39,6 +48,17 @@ def load_contract(name: str) -> dict:
     schema = json.loads((CONTRACT_ROOT / name).read_text(encoding="utf-8"))
     Draft202012Validator.check_schema(schema)
     return schema
+
+
+def contract_registry() -> Registry:
+    registry = Registry()
+    for path in CONTRACT_ROOT.glob("*.json"):
+        schema = json.loads(path.read_text(encoding="utf-8"))
+        registry = registry.with_resource(
+            schema["$id"],
+            Resource.from_contents(schema),
+        )
+    return registry
 
 
 def test_agent_output_valid_contract():
@@ -72,6 +92,51 @@ def test_agent_output_rejects_invalid_signal():
             signal="MOON",
             confidence=50,
             reason="test",
+        )
+
+
+async def test_agent_runtime_matches_all_published_v1_contracts():
+    agent = MomentumAgent(CandleStore())
+    runtime = AgentRuntime(AgentRegistry([agent]))
+    request = AgentExecutionRequest(
+        idempotency_key="published-agent-contract",
+        input=AgentInput(
+            request_id="published-agent-contract",
+            correlation_id="published-agent-correlation",
+            agent_name=agent.name,
+            symbol="BTCUSDT",
+            timeframe="15m",
+        ),
+    )
+    trace = await runtime.execute(request)
+    assert trace.job.output is not None
+    documents = {
+        "agent-input.schema.json": request.input.model_dump(mode="json"),
+        "agent-output.schema.json": trace.job.output.model_dump(mode="json"),
+        "agent-registration.schema.json": (
+            agent.registration().model_dump(mode="json")
+        ),
+        "agent-execution-request.schema.json": request.model_dump(mode="json"),
+        "agent-execution-job.schema.json": trace.job.model_dump(mode="json"),
+        "agent-execution-trace.schema.json": trace.model_dump(mode="json"),
+    }
+    for contract_name, document in documents.items():
+        validator = Draft202012Validator(
+            load_contract(contract_name),
+            registry=contract_registry(),
+        )
+        assert list(validator.iter_errors(document)) == []
+
+
+def test_python_agent_contracts_reject_unknown_fields():
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        AgentInput(
+            request_id="strict-agent-input",
+            correlation_id="strict-correlation",
+            agent_name="MomentumAgent",
+            symbol="BTCUSDT",
+            timeframe="15m",
+            unexpected_authority="execute-orders",
         )
 
 

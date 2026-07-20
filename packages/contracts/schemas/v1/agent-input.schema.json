@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/agent-input.schema.json",
+  "title": "Capital Cipher Agent Input v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "request_id",
+    "correlation_id",
+    "agent_name",
+    "timestamp",
+    "symbol",
+    "timeframe",
+    "market_context",
+    "config"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "request_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "correlation_id": {"type": "string", "minLength": 1, "maxLength": 36},
+    "agent_name": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9._-]+$",
+      "minLength": 3,
+      "maxLength": 128
+    },
+    "timestamp": {"type": "string", "format": "date-time"},
+    "symbol": {"type": "string", "pattern": "^[A-Z0-9._-]{2,32}$"},
+    "timeframe": {"type": "string", "pattern": "^[1-9][0-9]*[mhdw]$"},
+    "market_context": {"type": "object"},
+    "config": {"type": "object"}
+  },
+  "additionalProperties": false
+}

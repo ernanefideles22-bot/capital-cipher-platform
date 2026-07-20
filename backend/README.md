@@ -103,12 +103,33 @@ The completed Month 4 boundary—historical spread/funding data, margin and
 liquidation, train-only fitting, statistical gates, and versioned Supabase
 migration—is documented in `../docs/month-4-completion.md`.
 
+## Governed agent runtime
+
+Month 5 runs exactly 15 analytical agents through one PAPER-only runtime:
+three existing primary decision agents and 12 evidence-only shadow
+specialists. Every execution has a versioned contract, deterministic
+idempotency identity, bounded retries, a recoverable lease, isolated
+append-only memory, and a complete trace.
+
+Durable execution APIs require `X-API-Key`:
+
+```text
+POST /api/v1/agents/executions
+GET  /api/v1/agents/executions
+GET  /api/v1/agents/executions/{execution_id}
+```
+
+The 12 shadow outputs are visible in decision evidence but cannot alter
+operational action, confidence, warnings, risk, or paper orders. See
+`../docs/month-5-agent-runtime.md` for the cohort, contracts, recovery
+semantics, storage migration, and exit evidence.
+
 ## Architecture
 
 ```text
 Market Data Adapter (Binance/Bybit/CSV/Replay)
   → Data Quality → CandleStore
-  → Orchestrator → [MarketDataAgent, QuantAgent, TrendAgent]
+  → Orchestrator → Agent Runtime (3 PRIMARY + 12 SHADOW)
   → Decision Engine (weighted consolidation, no simple voting)
   → Risk Manager (absolute veto, audited before anything advances)
   → Paper Trading Engine (fees + slippage simulated)

@@ -31,6 +31,7 @@ async def security_client(settings: Settings):
         ("POST", "/api/v1/market/datasets", {}),
         ("POST", "/api/v1/market/gaps/scan", {}),
         ("POST", "/api/v1/market/backfills", {}),
+        ("POST", "/api/v1/agents/executions", {}),
         (
             "GET",
             f"/api/v1/market/backfills/{'a' * 64}/lineage",

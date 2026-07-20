@@ -15,6 +15,9 @@ from app.schemas.common import AgentStatus, Signal
 class MarketDataAgent(BaseAgent):
     name = "MarketDataAgent"
     description = "Collects and serves normalized public market data"
+    required_inputs = ("exchange", "symbol", "timeframe")
+    capabilities = ("market-data-availability", "connection-health")
+    decision_role = "PRIMARY"
     critical = True
 
     def __init__(self, store: CandleStore, connection_status_fn=None) -> None:
