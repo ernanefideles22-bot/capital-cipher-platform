@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/consensus-experiment.schema.json",
+  "title": "ConsensusExperimentV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "experiment_id", "name", "version", "mode",
+    "minimum_samples", "minimum_directional_samples", "minimum_accuracy",
+    "maximum_brier_loss", "minimum_marginal_contribution",
+    "minimum_eligible_agents", "maximum_agent_weight",
+    "buy_probability_threshold", "sell_probability_threshold",
+    "drift_reference_samples", "drift_current_samples",
+    "critical_accuracy_drop", "critical_brier_increase",
+    "critical_marginal_drop", "created_by", "created_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "experiment_id": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "name": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{2,63}$" },
+    "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "mode": { "enum": ["SHADOW", "CONFIRMATION"] },
+    "minimum_samples": { "type": "integer", "minimum": 100, "maximum": 100000 },
+    "minimum_directional_samples": { "type": "integer", "minimum": 20, "maximum": 100000 },
+    "minimum_accuracy": { "type": "number", "minimum": 0.5, "maximum": 1 },
+    "maximum_brier_loss": { "type": "number", "minimum": 0, "maximum": 0.25 },
+    "minimum_marginal_contribution": { "type": "number", "minimum": 0, "maximum": 1 },
+    "minimum_eligible_agents": { "type": "integer", "minimum": 3, "maximum": 150 },
+    "maximum_agent_weight": { "type": "number", "exclusiveMinimum": 0, "maximum": 0.34 },
+    "buy_probability_threshold": { "type": "number", "exclusiveMinimum": 0.5, "exclusiveMaximum": 1 },
+    "sell_probability_threshold": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 0.5 },
+    "drift_reference_samples": { "type": "integer", "minimum": 30, "maximum": 10000 },
+    "drift_current_samples": { "type": "integer", "minimum": 10, "maximum": 5000 },
+    "critical_accuracy_drop": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+    "critical_brier_increase": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+    "critical_marginal_drop": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+    "created_by": { "type": "string", "minLength": 2, "maxLength": 128 },
+    "created_at": { "type": "string", "format": "date-time" }
+  }
+}

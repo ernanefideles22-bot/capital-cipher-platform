@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime, timedelta, timezone
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import and_, func, or_, select, update
@@ -31,6 +32,7 @@ from app.database.models import (
     ClockObservationModel,
     DecisionModel,
     DatasetManifestModel,
+    DriftObservationModel,
     ExecutionCommandModel,
     ExecutionFillModel,
     EventJournalModel,
@@ -40,6 +42,7 @@ from app.database.models import (
     OMSOrderEventModel,
     OMSOrderModel,
     PaperOrderModel,
+    PortfolioProposalModel,
     RawMarketEventModel,
     RawDataObjectModel,
     ReconciliationMismatchModel,
@@ -52,9 +55,12 @@ from app.database.models import (
     OrderApprovalModel,
     SystemEventModel,
     SpecialistEvidenceModel,
+    ConsensusExperimentEventModel,
+    ConsensusExperimentModel,
     VenueBalanceSnapshotModel,
     VenuePositionSnapshotModel,
     WalkForwardExperimentModel,
+    WeightedConsensusModel,
 )
 from app.database.session import Database
 from app.market_data.identity import candle_event_id
@@ -115,6 +121,13 @@ from app.schemas.specialist_evaluation import (
     AgentForecast,
     AgentForecastOutcome,
     SpecialistEvidence,
+)
+from app.schemas.portfolio_consensus import (
+    ConsensusExperiment,
+    ConsensusExperimentEvent,
+    DriftObservation,
+    PortfolioProposal,
+    WeightedConsensus,
 )
 
 
@@ -3924,6 +3937,396 @@ class Repository:
             )
             return [
                 self._agent_forecast_outcome_from_row(row)
+                for row in rows
+            ]
+
+    async def _save_governance_artifact(
+        self,
+        *,
+        model_class,
+        identity: str,
+        payload: dict,
+        values: dict,
+        contract_class,
+        label: str,
+    ) -> Any:
+        """Idempotently append one strict Month 9 governance artifact."""
+
+        try:
+            async with self._db.session() as session:
+                existing = await session.get(model_class, identity)
+                if existing is not None:
+                    stored = contract_class.model_validate(existing.payload)
+                    current = contract_class.model_validate(payload)
+                    if stored != current:
+                        raise ValidationError(
+                            f"Immutable {label} identity conflict"
+                        )
+                    return stored
+                session.add(model_class(**values))
+                await session.commit()
+                return contract_class.model_validate(payload)
+        except (DatabaseError, ValidationError):
+            raise
+        except Exception as exc:
+            raise DatabaseError(f"Failed to persist {label}: {exc}") from exc
+
+    async def save_consensus_experiment(
+        self,
+        experiment: ConsensusExperiment,
+    ) -> ConsensusExperiment:
+        payload = experiment.model_dump(mode="json")
+        return await self._save_governance_artifact(
+            model_class=ConsensusExperimentModel,
+            identity=experiment.experiment_id,
+            payload=payload,
+            values={
+                "experiment_id": experiment.experiment_id,
+                "schema_version": experiment.schema_version,
+                "name": experiment.name,
+                "version": experiment.version,
+                "mode": experiment.mode,
+                "payload": payload,
+                "created_at": experiment.created_at,
+            },
+            contract_class=ConsensusExperiment,
+            label="consensus experiment",
+        )
+
+    async def save_consensus_experiment_definition(
+        self,
+        experiment: ConsensusExperiment,
+        created_event: ConsensusExperimentEvent,
+    ) -> tuple[ConsensusExperiment, ConsensusExperimentEvent]:
+        """Atomically append an experiment and its CREATED lifecycle event."""
+
+        if (
+            created_event.experiment_id != experiment.experiment_id
+            or created_event.event_type != "CREATED"
+        ):
+            raise ValidationError(
+                "Experiment definition requires its matching CREATED event"
+            )
+        experiment_payload = experiment.model_dump(mode="json")
+        event_payload = created_event.model_dump(mode="json")
+        try:
+            async with self._db.session() as session, session.begin():
+                experiment_row = await session.get(
+                    ConsensusExperimentModel,
+                    experiment.experiment_id,
+                )
+                if experiment_row is None:
+                    session.add(
+                        ConsensusExperimentModel(
+                            experiment_id=experiment.experiment_id,
+                            schema_version=experiment.schema_version,
+                            name=experiment.name,
+                            version=experiment.version,
+                            mode=experiment.mode,
+                            payload=experiment_payload,
+                            created_at=experiment.created_at,
+                        )
+                    )
+                elif (
+                    ConsensusExperiment.model_validate(
+                        experiment_row.payload
+                    )
+                    != experiment
+                ):
+                    raise ValidationError(
+                        "Immutable consensus experiment identity conflict"
+                    )
+                event_row = await session.get(
+                    ConsensusExperimentEventModel,
+                    created_event.event_id,
+                )
+                if event_row is None:
+                    session.add(
+                        ConsensusExperimentEventModel(
+                            event_id=created_event.event_id,
+                            schema_version=created_event.schema_version,
+                            experiment_id=created_event.experiment_id,
+                            event_type=created_event.event_type,
+                            actor=created_event.actor,
+                            payload=event_payload,
+                            created_at=created_event.created_at,
+                        )
+                    )
+                elif (
+                    ConsensusExperimentEvent.model_validate(
+                        event_row.payload
+                    )
+                    != created_event
+                ):
+                    raise ValidationError(
+                        "Immutable consensus experiment event conflict"
+                    )
+            return experiment, created_event
+        except (DatabaseError, ValidationError):
+            raise
+        except Exception as exc:
+            raise DatabaseError(
+                f"Failed to persist experiment definition: {exc}"
+            ) from exc
+
+    async def list_consensus_experiments(
+        self,
+        *,
+        limit: int = 100,
+    ) -> list[ConsensusExperiment]:
+        if not 1 <= limit <= 100_000:
+            raise ValueError("Consensus experiment limit must be 1..100000")
+        async with self._db.session() as session:
+            rows = list(
+                await session.scalars(
+                    select(ConsensusExperimentModel)
+                    .order_by(
+                        ConsensusExperimentModel.created_at.desc(),
+                        ConsensusExperimentModel.experiment_id,
+                    )
+                    .limit(limit)
+                )
+            )
+            return [
+                ConsensusExperiment.model_validate(row.payload)
+                for row in rows
+            ]
+
+    async def save_consensus_experiment_event(
+        self,
+        event: ConsensusExperimentEvent,
+    ) -> ConsensusExperimentEvent:
+        payload = event.model_dump(mode="json")
+        return await self._save_governance_artifact(
+            model_class=ConsensusExperimentEventModel,
+            identity=event.event_id,
+            payload=payload,
+            values={
+                "event_id": event.event_id,
+                "schema_version": event.schema_version,
+                "experiment_id": event.experiment_id,
+                "event_type": event.event_type,
+                "actor": event.actor,
+                "payload": payload,
+                "created_at": event.created_at,
+            },
+            contract_class=ConsensusExperimentEvent,
+            label="consensus experiment event",
+        )
+
+    async def list_consensus_experiment_events(
+        self,
+        *,
+        limit: int = 100,
+    ) -> list[ConsensusExperimentEvent]:
+        if not 1 <= limit <= 100_000:
+            raise ValueError("Consensus event limit must be 1..100000")
+        async with self._db.session() as session:
+            rows = list(
+                await session.scalars(
+                    select(ConsensusExperimentEventModel)
+                    .order_by(
+                        ConsensusExperimentEventModel.created_at.desc(),
+                        ConsensusExperimentEventModel.event_id,
+                    )
+                    .limit(limit)
+                )
+            )
+            return [
+                ConsensusExperimentEvent.model_validate(row.payload)
+                for row in rows
+            ]
+
+    async def save_weighted_consensus(
+        self,
+        consensus: WeightedConsensus,
+    ) -> WeightedConsensus:
+        payload = consensus.model_dump(mode="json")
+        return await self._save_governance_artifact(
+            model_class=WeightedConsensusModel,
+            identity=consensus.consensus_id,
+            payload=payload,
+            values={
+                "consensus_id": consensus.consensus_id,
+                "schema_version": consensus.schema_version,
+                "correlation_id": consensus.correlation_id,
+                "experiment_id": consensus.experiment_id,
+                "symbol": consensus.symbol,
+                "timeframe": consensus.timeframe,
+                "status": consensus.status,
+                "eligible_agent_count": consensus.eligible_agent_count,
+                "payload": payload,
+                "created_at": consensus.created_at,
+            },
+            contract_class=WeightedConsensus,
+            label="weighted consensus",
+        )
+
+    async def list_weighted_consensus(
+        self,
+        *,
+        limit: int = 100,
+    ) -> list[WeightedConsensus]:
+        if not 1 <= limit <= 100_000:
+            raise ValueError("Weighted consensus limit must be 1..100000")
+        async with self._db.session() as session:
+            rows = list(
+                await session.scalars(
+                    select(WeightedConsensusModel)
+                    .order_by(
+                        WeightedConsensusModel.created_at.desc(),
+                        WeightedConsensusModel.consensus_id,
+                    )
+                    .limit(limit)
+                )
+            )
+            return [
+                WeightedConsensus.model_validate(row.payload)
+                for row in rows
+            ]
+
+    async def save_drift_observation(
+        self,
+        observation: DriftObservation,
+    ) -> DriftObservation:
+        payload = observation.model_dump(mode="json")
+        return await self._save_governance_artifact(
+            model_class=DriftObservationModel,
+            identity=observation.observation_id,
+            payload=payload,
+            values={
+                "observation_id": observation.observation_id,
+                "schema_version": observation.schema_version,
+                "experiment_id": observation.experiment_id,
+                "agent_name": observation.agent_name,
+                "agent_version": observation.agent_version,
+                "severity": observation.severity,
+                "payload": payload,
+                "observed_at": observation.observed_at,
+                "created_at": observation.created_at,
+            },
+            contract_class=DriftObservation,
+            label="drift observation",
+        )
+
+    async def save_drift_observations(
+        self,
+        observations: list[DriftObservation],
+    ) -> list[DriftObservation]:
+        """Append one drift cohort atomically to avoid per-agent commits."""
+
+        if not observations:
+            return []
+        try:
+            stored: list[DriftObservation] = []
+            async with self._db.session() as session, session.begin():
+                for observation in observations:
+                    existing = await session.get(
+                        DriftObservationModel,
+                        observation.observation_id,
+                    )
+                    if existing is not None:
+                        current = DriftObservation.model_validate(
+                            existing.payload
+                        )
+                        if current != observation:
+                            raise ValidationError(
+                                "Immutable drift observation identity conflict"
+                            )
+                        stored.append(current)
+                        continue
+                    payload = observation.model_dump(mode="json")
+                    session.add(
+                        DriftObservationModel(
+                            observation_id=observation.observation_id,
+                            schema_version=observation.schema_version,
+                            experiment_id=observation.experiment_id,
+                            agent_name=observation.agent_name,
+                            agent_version=observation.agent_version,
+                            severity=observation.severity,
+                            payload=payload,
+                            observed_at=observation.observed_at,
+                            created_at=observation.created_at,
+                        )
+                    )
+                    stored.append(observation)
+            return stored
+        except (DatabaseError, ValidationError):
+            raise
+        except Exception as exc:
+            raise DatabaseError(
+                f"Failed to persist drift observation cohort: {exc}"
+            ) from exc
+
+    async def list_drift_observations(
+        self,
+        *,
+        limit: int = 100,
+    ) -> list[DriftObservation]:
+        if not 1 <= limit <= 100_000:
+            raise ValueError("Drift observation limit must be 1..100000")
+        async with self._db.session() as session:
+            rows = list(
+                await session.scalars(
+                    select(DriftObservationModel)
+                    .order_by(
+                        DriftObservationModel.observed_at.desc(),
+                        DriftObservationModel.observation_id,
+                    )
+                    .limit(limit)
+                )
+            )
+            return [
+                DriftObservation.model_validate(row.payload)
+                for row in rows
+            ]
+
+    async def save_portfolio_proposal(
+        self,
+        proposal: PortfolioProposal,
+    ) -> PortfolioProposal:
+        payload = proposal.model_dump(mode="json")
+        return await self._save_governance_artifact(
+            model_class=PortfolioProposalModel,
+            identity=proposal.proposal_id,
+            payload=payload,
+            values={
+                "proposal_id": proposal.proposal_id,
+                "schema_version": proposal.schema_version,
+                "correlation_id": proposal.correlation_id,
+                "consensus_id": proposal.consensus_id,
+                "experiment_id": proposal.experiment_id,
+                "symbol": proposal.symbol,
+                "timeframe": proposal.timeframe,
+                "status": proposal.status,
+                "max_notional": proposal.max_notional,
+                "payload": payload,
+                "created_at": proposal.created_at,
+            },
+            contract_class=PortfolioProposal,
+            label="portfolio proposal",
+        )
+
+    async def list_portfolio_proposals(
+        self,
+        *,
+        limit: int = 100,
+    ) -> list[PortfolioProposal]:
+        if not 1 <= limit <= 100_000:
+            raise ValueError("Portfolio proposal limit must be 1..100000")
+        async with self._db.session() as session:
+            rows = list(
+                await session.scalars(
+                    select(PortfolioProposalModel)
+                    .order_by(
+                        PortfolioProposalModel.created_at.desc(),
+                        PortfolioProposalModel.proposal_id,
+                    )
+                    .limit(limit)
+                )
+            )
+            return [
+                PortfolioProposal.model_validate(row.payload)
                 for row in rows
             ]
 

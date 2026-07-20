@@ -41,6 +41,11 @@
     "schemas/v1/specialist-evidence.schema.json",
     "schemas/v1/agent-forecast.schema.json",
     "schemas/v1/agent-forecast-outcome.schema.json",
-    "schemas/v1/agent-scorecard.schema.json"
+    "schemas/v1/agent-scorecard.schema.json",
+    "schemas/v1/consensus-experiment.schema.json",
+    "schemas/v1/consensus-experiment-event.schema.json",
+    "schemas/v1/weighted-consensus.schema.json",
+    "schemas/v1/drift-observation.schema.json",
+    "schemas/v1/portfolio-proposal.schema.json"
   ]
 }

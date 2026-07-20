@@ -120,8 +120,9 @@ GET  /api/v1/agents/executions
 GET  /api/v1/agents/executions/{execution_id}
 ```
 
-The 97 shadow outputs are visible in decision evidence but cannot alter
-operational action, confidence, warnings, risk, or paper orders. See
+The 147 shadow agents have no direct decision, risk or order authority. Month 9
+may consume eligible out-of-sample outputs through a bounded confirmation
+service that can only preserve a primary candidate or tighten it to `WAIT`. See
 `../docs/month-5-agent-runtime.md` for the cohort, contracts, recovery
 semantics, storage migration, and exit evidence.
 
@@ -156,14 +157,35 @@ GET  /api/v1/agents/evaluation/forecasts
 GET  /api/v1/agents/evaluation/scorecards
 ```
 
+Month 9 adds 50 deterministic OHLCV diagnostic agents for an exact cohort of
+150 PAPER agents (3 primary, 147 shadow), versioned consensus experiments,
+100-sample performance eligibility, concentration-capped weights, rolling
+agent-version drift and bounded portfolio targets. Consensus can only confirm
+or veto a primary direction, while portfolio construction can only tighten
+central-risk notional. See
+`../docs/month-9-portfolio-consensus-drift.md`.
+
+Authenticated Month 9 APIs:
+
+```text
+POST /api/v1/governance/experiments
+POST /api/v1/governance/experiments/{experiment_id}/events
+GET  /api/v1/governance/experiments
+GET  /api/v1/governance/consensus
+GET  /api/v1/governance/drift
+GET  /api/v1/governance/portfolio-proposals
+```
+
 ## Architecture
 
 ```text
 Market Data Adapter (Binance/Bybit/CSV/Replay)
   → Data Quality → CandleStore
-  → Orchestrator → Agent Runtime (3 PRIMARY + 97 SHADOW)
+  → Orchestrator → Agent Runtime (3 PRIMARY + 147 SHADOW)
   → Observational Evaluation (forecast + outcome + scorecard)
   → Decision Engine (weighted consolidation, no simple voting)
+  → Performance Consensus (shadow/default; confirmation only tightens)
+  → Portfolio Construction (advisory notional ceiling)
   → Central Risk (portfolio VaR + single-use approval + absolute veto)
   → OMS (atomic PAPER mirror or durable TESTNET command)
   → Exchange reconciliation (fills + positions + balances)

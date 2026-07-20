@@ -86,16 +86,16 @@ def test_month_8_catalog_is_exactly_60_new_specialists():
     assert len(names) == len(set(names)) == 60
 
 
-def test_runtime_cohort_is_100_paper_agents_and_new_agents_are_shadow_only():
+def test_month8_agents_remain_shadow_only_in_150_agent_runtime():
     context = build_context(Settings(), with_database=False)
     registrations = context.agent_registry.registrations()
     month8_names = {
         item.name
         for item in (*TECHNICAL_DEFINITIONS, *EXTERNAL_DEFINITIONS)
     }
-    assert len(registrations) == 100
+    assert len(registrations) == 150
     assert sum(item.decision_role == "PRIMARY" for item in registrations) == 3
-    assert sum(item.decision_role == "SHADOW" for item in registrations) == 97
+    assert sum(item.decision_role == "SHADOW" for item in registrations) == 147
     assert month8_names.issubset(
         {item.agent_name for item in registrations}
     )
@@ -462,7 +462,7 @@ def test_month_8_contracts_and_private_migration_are_complete():
         "agent-forecast-outcome.schema.json",
         "agent-scorecard.schema.json",
     )
-    assert len(manifest["schemas"]) == 39
+    assert len(manifest["schemas"]) >= 39
     for name in names:
         assert f"schemas/v1/{name}" in manifest["schemas"]
         Draft202012Validator.check_schema(

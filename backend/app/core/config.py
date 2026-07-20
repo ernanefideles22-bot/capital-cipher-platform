@@ -25,7 +25,7 @@ class Settings(BaseSettings):
 
     app_env: str = Field(default="local", alias="APP_ENV")
     app_name: str = "capital-cipher-api"
-    app_version: str = "0.18.0"
+    app_version: str = "0.19.0"
 
     system_mode: str = Field(default="PAPER", alias="SYSTEM_MODE")
     oms_execution_environment: str = Field(
@@ -250,6 +250,12 @@ class Settings(BaseSettings):
 
     # Decision engine (docs/25-decision-engine.md).
     minimum_candidate_confidence: int = Field(default=70, alias="MINIMUM_CANDIDATE_CONFIDENCE")
+    portfolio_max_target_weight_percent: float = Field(
+        default=25.0,
+        alias="PORTFOLIO_MAX_TARGET_WEIGHT_PERCENT",
+        gt=0,
+        le=100,
+    )
 
     # Data quality (docs/32-data-quality.md).
     max_market_data_delay_ms: int = Field(default=5000, alias="MAX_MARKET_DATA_DELAY_MS")

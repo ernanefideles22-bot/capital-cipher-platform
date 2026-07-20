@@ -506,7 +506,10 @@ async def test_real_postgres_internal_warehouse_round_trip():
                 "WHERE n.nspname = :schema_name "
                 "AND c.relname IN "
                 "('specialist_evidence', 'agent_forecasts', "
-                "'agent_forecast_outcomes') "
+                "'agent_forecast_outcomes', 'consensus_experiments', "
+                "'consensus_experiment_events', "
+                "'weighted_consensus_snapshots', 'drift_observations', "
+                "'portfolio_proposals') "
                 "AND c.relrowsecurity"
             ),
             {"schema_name": INTERNAL_SCHEMA},
@@ -519,7 +522,10 @@ async def test_real_postgres_internal_warehouse_round_trip():
                     "WHERE trigger_schema = :schema_name "
                     "AND event_object_table IN "
                     "('specialist_evidence', 'agent_forecasts', "
-                    "'agent_forecast_outcomes')"
+                    "'agent_forecast_outcomes', 'consensus_experiments', "
+                    "'consensus_experiment_events', "
+                    "'weighted_consensus_snapshots', "
+                    "'drift_observations', 'portfolio_proposals')"
                 ),
                 {"schema_name": INTERNAL_SCHEMA},
             )
@@ -578,6 +584,11 @@ async def test_real_postgres_internal_warehouse_round_trip():
         "specialist_evidence",
         "agent_forecasts",
         "agent_forecast_outcomes",
+        "consensus_experiments",
+        "consensus_experiment_events",
+        "weighted_consensus_snapshots",
+        "drift_observations",
+        "portfolio_proposals",
     } <= tables
     assert "trg_walk_forward_experiments_immutable" in immutable_triggers
     assert row_security_enabled is True
@@ -596,12 +607,17 @@ async def test_real_postgres_internal_warehouse_round_trip():
     assert central_risk_security_definers == 0
     assert oms_rls_count == 8
     assert oms_security_definers == 0
-    assert specialist_evaluation_rls_count == 3
+    assert specialist_evaluation_rls_count == 8
     assert specialist_evaluation_security_definers == 0
     assert specialist_evaluation_triggers == {
         "trg_specialist_evidence_immutable",
         "trg_agent_forecasts_immutable",
         "trg_agent_forecast_outcomes_immutable",
+        "trg_consensus_experiments_immutable",
+        "trg_consensus_experiment_events_immutable",
+        "trg_weighted_consensus_snapshots_immutable",
+        "trg_drift_observations_immutable",
+        "trg_portfolio_proposals_immutable",
     }
     assert {
         "trg_oms_orders_transition",

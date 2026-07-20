@@ -32,3 +32,8 @@ Specialist evidence, agent forecasts, realized outcomes and observational
 scorecards form the Month 8 evaluation boundary. They preserve source
 provenance, make forecast identities reproducible and explicitly carry no
 decision or order authority.
+Month 9 adds immutable consensus experiments and lifecycle events,
+performance-weighted consensus snapshots, rolling drift observations and
+advisory portfolio proposals. These contracts prohibit unknown fields and
+encode the rule that consensus and portfolio construction may only tighten
+the existing decision/risk path.

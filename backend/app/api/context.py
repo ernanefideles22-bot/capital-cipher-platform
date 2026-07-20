@@ -18,6 +18,7 @@ from app.agents.registry import AgentRegistry
 from app.agents.runtime import AgentRuntime, AgentRuntimeWorker
 from app.agents.specialists import build_shadow_specialists
 from app.agents.month8_specialists import build_month8_shadow_specialists
+from app.agents.month9_specialists import build_month9_shadow_specialists
 from app.agents.trend import TrendAgent
 from app.audit.service import AuditService
 from app.backtesting.engine import BacktestingEngine
@@ -53,6 +54,12 @@ from app.market_data.data_lake import (
 from app.market_data.gaps import GapService
 from app.market_data.store import CandleStore
 from app.orchestrator.decision_engine import DecisionEngine
+from app.orchestrator.portfolio_consensus import (
+    ConsensusExperimentService,
+    DriftMonitor,
+    PortfolioConstructionService,
+    WeightedConsensusService,
+)
 from app.orchestrator.service import Orchestrator
 from app.oms.reconciliation import ReconciliationService
 from app.oms.service import OMSService
@@ -99,6 +106,10 @@ class AppContext:
     agent_runtime_worker: AgentRuntimeWorker | None = None
     specialist_evidence_service: SpecialistEvidenceService | None = None
     agent_evaluation_service: AgentEvaluationService | None = None
+    consensus_experiment_service: ConsensusExperimentService | None = None
+    drift_monitor: DriftMonitor | None = None
+    weighted_consensus_service: WeightedConsensusService | None = None
+    portfolio_construction_service: PortfolioConstructionService | None = None
     market_connected: bool = False
 
 
@@ -326,12 +337,13 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
             candle_store,
             specialist_evidence_service,
         ),
+        *build_month9_shadow_specialists(candle_store),
     ]
     for agent in runtime_agents:
         agent.timeout_ms = settings.agent_timeout_ms
         agent.max_attempts = settings.agent_max_attempts
     agent_registry = AgentRegistry(runtime_agents)
-    agent_registry.validate_cohort(expected_count=100)
+    agent_registry.validate_cohort(expected_count=150)
     agent_runtime = AgentRuntime(
         agent_registry,
         repository=repository,
@@ -348,6 +360,25 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
     )
     decision_engine = DecisionEngine(
         minimum_candidate_confidence=settings.minimum_candidate_confidence
+    )
+    consensus_experiment_service = ConsensusExperimentService(repository)
+    drift_monitor = DriftMonitor(
+        agent_evaluation_service,
+        repository,
+    )
+    weighted_consensus_service = WeightedConsensusService(
+        agent_evaluation_service,
+        consensus_experiment_service,
+        drift_monitor,
+        repository,
+    )
+    portfolio_construction_service = PortfolioConstructionService(
+        limits,
+        risk_manager,
+        repository,
+        max_target_weight_percent=(
+            settings.portfolio_max_target_weight_percent
+        ),
     )
     orchestrator = Orchestrator(
         state_machine=state_machine,
@@ -368,6 +399,8 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         require_trusted_clock=settings.require_trusted_market_clock,
         gap_service=gap_service,
         agent_evaluation_service=agent_evaluation_service,
+        weighted_consensus_service=weighted_consensus_service,
+        portfolio_construction_service=portfolio_construction_service,
     )
     backtesting_engine = BacktestingEngine(
         limits=limits,
@@ -416,6 +449,10 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         agent_runtime_worker=agent_runtime_worker,
         specialist_evidence_service=specialist_evidence_service,
         agent_evaluation_service=agent_evaluation_service,
+        consensus_experiment_service=consensus_experiment_service,
+        drift_monitor=drift_monitor,
+        weighted_consensus_service=weighted_consensus_service,
+        portfolio_construction_service=portfolio_construction_service,
     )
     context_holder["ctx"] = ctx
     return ctx

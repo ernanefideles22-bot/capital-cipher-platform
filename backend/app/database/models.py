@@ -1060,6 +1060,225 @@ class AgentForecastOutcomeModel(Base):
     )
 
 
+class ConsensusExperimentModel(Base):
+    """Immutable versioned performance-weighting policy."""
+
+    __tablename__ = "consensus_experiments"
+    __table_args__ = (
+        UniqueConstraint(
+            "name",
+            "version",
+            name="uq_consensus_experiment_name_version",
+        ),
+        CheckConstraint(
+            "mode IN ('SHADOW', 'CONFIRMATION')",
+            name="ck_consensus_experiment_mode",
+        ),
+        Index(
+            "ix_consensus_experiments_created",
+            "created_at",
+            "experiment_id",
+        ),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    experiment_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    version: Mapped[str] = mapped_column(String(32), nullable=False)
+    mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    payload: Mapped[dict] = mapped_column(JsonType, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+
+class ConsensusExperimentEventModel(Base):
+    """Append-only activation/retirement evidence."""
+
+    __tablename__ = "consensus_experiment_events"
+    __table_args__ = (
+        CheckConstraint(
+            "event_type IN ('CREATED', 'ACTIVATED', 'RETIRED')",
+            name="ck_consensus_experiment_event_type",
+        ),
+        Index(
+            "ix_consensus_experiment_events_experiment_created",
+            "experiment_id",
+            "created_at",
+        ),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    event_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    experiment_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey(
+            f"{INTERNAL_SCHEMA}.consensus_experiments.experiment_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
+    event_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    payload: Mapped[dict] = mapped_column(JsonType, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+
+class WeightedConsensusModel(Base):
+    """Append-only consensus snapshot."""
+
+    __tablename__ = "weighted_consensus_snapshots"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('INSUFFICIENT_DATA', 'READY')",
+            name="ck_weighted_consensus_status",
+        ),
+        Index(
+            "ix_weighted_consensus_symbol_created",
+            "symbol",
+            "timeframe",
+            "created_at",
+        ),
+        Index(
+            "ix_weighted_consensus_experiment_created",
+            "experiment_id",
+            "created_at",
+        ),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    consensus_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    correlation_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    experiment_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey(
+            f"{INTERNAL_SCHEMA}.consensus_experiments.experiment_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    timeframe: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    eligible_agent_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+    )
+    payload: Mapped[dict] = mapped_column(JsonType, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+
+class DriftObservationModel(Base):
+    """Append-only rolling drift evidence for one agent version."""
+
+    __tablename__ = "drift_observations"
+    __table_args__ = (
+        CheckConstraint(
+            "severity IN ('NONE', 'WARNING', 'CRITICAL')",
+            name="ck_drift_observation_severity",
+        ),
+        Index(
+            "ix_drift_observations_agent_observed",
+            "agent_name",
+            "agent_version",
+            "observed_at",
+        ),
+        Index(
+            "ix_drift_observations_experiment_severity",
+            "experiment_id",
+            "severity",
+        ),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    observation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    experiment_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey(
+            f"{INTERNAL_SCHEMA}.consensus_experiments.experiment_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
+    agent_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    agent_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    payload: Mapped[dict] = mapped_column(JsonType, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+
+class PortfolioProposalModel(Base):
+    """Append-only advisory construction artifact."""
+
+    __tablename__ = "portfolio_proposals"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('NO_ACTION', 'PROPOSED', 'BLOCKED')",
+            name="ck_portfolio_proposal_status",
+        ),
+        Index(
+            "ix_portfolio_proposals_symbol_created",
+            "symbol",
+            "timeframe",
+            "created_at",
+        ),
+        Index(
+            "ix_portfolio_proposals_consensus",
+            "consensus_id",
+        ),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    proposal_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    correlation_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    consensus_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey(
+            f"{INTERNAL_SCHEMA}.weighted_consensus_snapshots.consensus_id",
+            ondelete="RESTRICT",
+        ),
+    )
+    experiment_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey(
+            f"{INTERNAL_SCHEMA}.consensus_experiments.experiment_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    timeframe: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    max_notional: Mapped[float] = mapped_column(
+        Numeric(38, 18),
+        nullable=False,
+    )
+    payload: Mapped[dict] = mapped_column(JsonType, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+
 class AgentOutputModel(Base):
     __tablename__ = "agent_outputs"
 

@@ -66,6 +66,11 @@ class Database:
                     "specialist_evidence",
                     "agent_forecasts",
                     "agent_forecast_outcomes",
+                    "consensus_experiments",
+                    "consensus_experiment_events",
+                    "weighted_consensus_snapshots",
+                    "drift_observations",
+                    "portfolio_proposals",
                 ):
                     await conn.execute(
                         text(
@@ -93,6 +98,11 @@ class Database:
             "specialist_evidence",
             "agent_forecasts",
             "agent_forecast_outcomes",
+            "consensus_experiments",
+            "consensus_experiment_events",
+            "weighted_consensus_snapshots",
+            "drift_observations",
+            "portfolio_proposals",
         )
         if self.engine.dialect.name == "postgresql":
             await conn.execute(

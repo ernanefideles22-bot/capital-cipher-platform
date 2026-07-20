@@ -68,6 +68,8 @@ class Orchestrator:
         require_trusted_clock: bool = False,
         gap_service: GapService | None = None,
         agent_evaluation_service=None,
+        weighted_consensus_service=None,
+        portfolio_construction_service=None,
     ) -> None:
         self._sm = state_machine
         self._bus = event_bus
@@ -83,6 +85,8 @@ class Orchestrator:
         self._require_trusted_clock = require_trusted_clock
         self._gap_service = gap_service
         self._agent_evaluation = agent_evaluation_service
+        self._weighted_consensus = weighted_consensus_service
+        self._portfolio_construction = portfolio_construction_service
         self.strategy_engine = strategy_engine or StrategyEngine()
         self._current_day = None
         self._agent_runtime = agent_runtime or AgentRuntime(
@@ -111,6 +115,16 @@ class Orchestrator:
             if self.cycle_latencies_ms
             else 0
         )
+        consensus_items = (
+            self._weighted_consensus.list(limit=1)
+            if self._weighted_consensus is not None
+            else []
+        )
+        portfolio_items = (
+            self._portfolio_construction.list(limit=1)
+            if self._portfolio_construction is not None
+            else []
+        )
         return {
             "mode": self._sm.state.value,
             "kill_switch_active": self._sm.kill_switch_active,
@@ -119,6 +133,17 @@ class Orchestrator:
             "avg_cycle_latency_ms": round(avg_latency, 2),
             "recent_failures": len(self.failures),
             "pending_events": self.pending_events,
+            "governance": {
+                "latest_consensus_status": (
+                    consensus_items[0].status if consensus_items else None
+                ),
+                "latest_consensus_mode": (
+                    consensus_items[0].mode if consensus_items else None
+                ),
+                "latest_portfolio_status": (
+                    portfolio_items[0].status if portfolio_items else None
+                ),
+            },
         }
 
     # -- main entrypoint -----------------------------------------------------------
@@ -396,6 +421,101 @@ class Orchestrator:
                     else decision.warnings,
                 }
             )
+
+        consensus = None
+        if self._weighted_consensus is not None:
+            try:
+                consensus = await self._weighted_consensus.evaluate(
+                    baseline=decision,
+                    outputs=agent_outputs,
+                    registrations={
+                        item.agent_name: item
+                        for item in self._agent_runtime.registry.registrations()
+                    },
+                )
+                if (
+                    consensus.final_action != decision.candidate_action
+                    or consensus.final_confidence != decision.confidence
+                ):
+                    decision = decision.model_copy(
+                        update={
+                            "candidate_action": consensus.final_action,
+                            "confidence": consensus.final_confidence,
+                            "reason": (
+                                f"{decision.reason} | "
+                                f"Consensus: {consensus.reason}"
+                            ),
+                            "warnings": sorted(
+                                set(
+                                    [
+                                        *decision.warnings,
+                                        "PERFORMANCE_CONSENSUS_VETO",
+                                    ]
+                                )
+                            ),
+                        }
+                    )
+                await self._audit.record(
+                    correlation_id=correlation_id,
+                    audit_type="WEIGHTED_CONSENSUS",
+                    entity_type="weighted_consensus",
+                    entity_id=consensus.consensus_id,
+                    payload=consensus.model_dump(mode="json"),
+                )
+                await self._bus.publish(
+                    Topics.DECISION_EVENTS,
+                    "WEIGHTED_CONSENSUS_CREATED",
+                    consensus.model_dump(mode="json"),
+                    source="WeightedConsensusService",
+                    correlation_id=correlation_id,
+                )
+            except Exception as exc:
+                # Fail-safe fallback preserves the static Month 8 engine.
+                consensus = None
+                logger.error(
+                    "Weighted consensus unavailable; static decision preserved",
+                    event_type="WEIGHTED_CONSENSUS_FAILED",
+                    correlation_id=correlation_id,
+                    metadata={"error_type": type(exc).__name__},
+                )
+
+        portfolio_proposal = None
+        if (
+            consensus is not None
+            and self._portfolio_construction is not None
+        ):
+            try:
+                portfolio_proposal = (
+                    await self._portfolio_construction.propose(
+                        decision=decision,
+                        consensus=consensus,
+                        balance=self._paper.balance,
+                    )
+                )
+                await self._audit.record(
+                    correlation_id=correlation_id,
+                    audit_type="PORTFOLIO_PROPOSAL",
+                    entity_type="portfolio_proposal",
+                    entity_id=portfolio_proposal.proposal_id,
+                    payload=portfolio_proposal.model_dump(mode="json"),
+                )
+                await self._bus.publish(
+                    Topics.DECISION_EVENTS,
+                    "PORTFOLIO_PROPOSAL_CREATED",
+                    portfolio_proposal.model_dump(mode="json"),
+                    source="PortfolioConstructionService",
+                    correlation_id=correlation_id,
+                )
+            except Exception as exc:
+                # The central Risk Manager still evaluates the unchanged
+                # Month 8 candidate if advisory construction is unavailable.
+                portfolio_proposal = None
+                logger.error(
+                    "Portfolio construction unavailable; central risk retained",
+                    event_type="PORTFOLIO_CONSTRUCTION_FAILED",
+                    correlation_id=correlation_id,
+                    metadata={"error_type": type(exc).__name__},
+                )
         self.last_decision = decision
         self.recent_decisions.append(decision)
 
@@ -446,6 +566,11 @@ class Orchestrator:
             max_portfolio_var_percent_override=(
                 risk_profile.max_portfolio_var_percent
                 if risk_profile
+                else None
+            ),
+            max_notional_override=(
+                portfolio_proposal.max_notional
+                if portfolio_proposal is not None
                 else None
             ),
         )

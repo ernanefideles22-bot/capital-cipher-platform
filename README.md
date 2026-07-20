@@ -17,8 +17,9 @@ frontend/            React + Vite + TypeScript dashboard
 packages/contracts/  versioned, language-neutral JSON Schema contracts
 Redis Streams        optional durable broker with PostgreSQL outbox
 Data warehouse       time-series, manifests, clock gates, gaps, backfills
-Agent runtime        registry, durable queue, isolated memory, 100 PAPER agents
-Agent evaluation     immutable forecasts, accuracy and marginal contribution
+Agent runtime        registry, durable queue, isolated memory, 150 PAPER agents
+Agent governance     performance consensus, drift, versioned experiments
+Portfolio            bounded targets that can only tighten central risk
 Central risk         portfolio limits, VaR, single-use approvals, kill switch
 OMS                  PAPER mirror, Binance Spot/Bybit linear TESTNET outbox
 turbo.json           monorepo task graph
@@ -46,6 +47,7 @@ architecture and completion evidence:
 - [Month 6 central risk engine](docs/month-6-central-risk-engine.md)
 - [Month 7 OMS, TESTNET and reconciliation](docs/month-7-oms-testnet-reconciliation.md)
 - [Month 8 specialist cohort and evaluation](docs/month-8-specialist-cohort-evaluation.md)
+- [Month 9 portfolio, consensus and drift](docs/month-9-portfolio-consensus-drift.md)
 
 The specification repository remains the authoritative product and
 architecture specification. This repository is the executable platform.

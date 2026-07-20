@@ -139,6 +139,14 @@ class RiskManager:
         }
         self.set_open_positions(len(self._positions))
 
+    def position_exposures(self) -> list[PositionExposure]:
+        """Return a detached snapshot for advisory portfolio construction."""
+
+        return [
+            position.model_copy(deep=True)
+            for position in self._positions.values()
+        ]
+
     async def refresh_positions(self) -> None:
         """Restore PAPER and reconciled TESTNET exposure from durable evidence."""
 
@@ -244,12 +252,17 @@ class RiskManager:
         max_open_positions_override: int | None = None,
         max_strategy_exposure_percent_override: float | None = None,
         max_portfolio_var_percent_override: float | None = None,
+        max_notional_override: float | None = None,
     ) -> RiskCheck:
         """Evaluate one immutable risk request and mint an execution approval."""
 
         balance = balance if balance is not None else self.initial_balance
         if entry_price <= 0 or balance <= 0:
             raise ValidationError("Risk evaluation requires positive price and balance")
+        if max_notional_override is not None and max_notional_override < 0:
+            raise ValidationError(
+                "Portfolio notional override cannot be negative"
+            )
         leverage = leverage if leverage is not None else self.limits.default_leverage
         effective_risk = min(
             self.limits.risk_per_trade_percent,
@@ -289,6 +302,10 @@ class RiskManager:
             "max_portfolio_var_percent": effective_var,
             "max_leverage": self.limits.max_leverage,
         }
+        if max_notional_override is not None:
+            effective_limits["portfolio_max_notional"] = (
+                max_notional_override
+            )
         key = (idempotency_key or decision.decision_id).strip()
         request = {
             "decision": decision.model_dump(mode="json"),
@@ -380,6 +397,8 @@ class RiskManager:
             blocked.append(
                 f"Leverage {leverage} outside allowed range 1..{self.limits.max_leverage}"
             )
+        if max_notional_override == 0:
+            blocked.append("Portfolio construction capacity exhausted")
         if blocked:
             self.state.blocked_operations += 1
             return await self._finalize(
@@ -409,6 +428,17 @@ class RiskManager:
             balance * self.limits.max_single_position_percent / 100,
         )
         requested_notional = unrestricted_notional
+        portfolio_capped = (
+            max_notional_override is not None
+            and max_notional_override + 1e-8 < requested_notional
+        )
+        if max_notional_override is not None:
+            requested_notional = min(
+                requested_notional,
+                max_notional_override,
+            )
+        if portfolio_capped:
+            warnings.append("PORTFOLIO_CONSTRUCTION_CAP")
         if near_position_limit:
             requested_notional *= 0.5
         proposed = PositionExposure(
@@ -427,7 +457,11 @@ class RiskManager:
             limits=self.limits,
             strategy_exposure_limit_percent=effective_strategy_exposure,
         )
-        reduced = near_position_limit or capacity + 1e-8 < requested_notional
+        reduced = (
+            portfolio_capped
+            or near_position_limit
+            or capacity + 1e-8 < requested_notional
+        )
         if reduced:
             warnings.extend(binding)
             proposed = proposed.model_copy(update={"notional": capacity})

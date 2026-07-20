@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/consensus-experiment-event.schema.json",
+  "title": "ConsensusExperimentEventV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "event_id", "experiment_id", "event_type",
+    "actor", "reason", "created_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "event_id": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "experiment_id": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "event_type": { "enum": ["CREATED", "ACTIVATED", "RETIRED"] },
+    "actor": { "type": "string", "minLength": 2, "maxLength": 128 },
+    "reason": { "type": "string", "minLength": 3, "maxLength": 1000 },
+    "created_at": { "type": "string", "format": "date-time" }
+  }
+}

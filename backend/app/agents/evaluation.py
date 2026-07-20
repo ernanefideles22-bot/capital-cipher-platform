@@ -113,6 +113,10 @@ class AgentEvaluationService:
         self._minimum_samples = minimum_samples
         self._forecasts: dict[str, AgentForecast] = {}
         self._outcomes: dict[str, AgentForecastOutcome] = {}
+        self._settled_by_agent: dict[
+            tuple[str, str],
+            list[str],
+        ] = defaultdict(list)
 
     async def initialize(self) -> None:
         if self._repository is not None:
@@ -122,6 +126,23 @@ class AgentEvaluationService:
             )
             self._forecasts = {item.forecast_id: item for item in forecasts}
             self._outcomes = {item.forecast_id: item for item in outcomes}
+            self._rebuild_settled_index()
+
+    def _rebuild_settled_index(self) -> None:
+        grouped: dict[tuple[str, str], list[str]] = defaultdict(list)
+        for forecast_id, outcome in sorted(
+            self._outcomes.items(),
+            key=lambda item: (
+                item[1].realized_at,
+                item[1].outcome_id,
+            ),
+        ):
+            forecast = self._forecasts.get(forecast_id)
+            if forecast is not None:
+                grouped[
+                    (forecast.agent_name, forecast.agent_version)
+                ].append(forecast_id)
+        self._settled_by_agent = grouped
 
     @staticmethod
     def probability(output: AgentOutput) -> float:
@@ -227,6 +248,15 @@ class AgentEvaluationService:
         if self._repository is not None:
             outcomes = await self._repository.save_agent_forecast_outcomes(outcomes)
         self._outcomes.update({item.forecast_id: item for item in outcomes})
+        for outcome in outcomes:
+            forecast = self._forecasts.get(outcome.forecast_id)
+            if forecast is None:
+                continue
+            bucket = self._settled_by_agent[
+                (forecast.agent_name, forecast.agent_version)
+            ]
+            if outcome.forecast_id not in bucket:
+                bucket.append(outcome.forecast_id)
         return outcomes
 
     async def scorecards(self) -> list[AgentScorecard]:
@@ -271,3 +301,23 @@ class AgentEvaluationService:
             key=lambda item: (item.forecast_at, item.forecast_id),
             reverse=True,
         )[:limit]
+
+    async def settled_history(
+        self,
+        *,
+        agent_name: str,
+        agent_version: str,
+        limit: int = 10_000,
+    ) -> list[tuple[AgentForecast, AgentForecastOutcome]]:
+        """Return ordered immutable pairs for drift and weighting governance."""
+
+        if not 1 <= limit <= 100_000:
+            raise ValueError("Settled-history limit must be 1..100000")
+        forecast_ids = self._settled_by_agent.get(
+            (agent_name, agent_version),
+            [],
+        )
+        return [
+            (self._forecasts[forecast_id], self._outcomes[forecast_id])
+            for forecast_id in forecast_ids[-limit:]
+        ]

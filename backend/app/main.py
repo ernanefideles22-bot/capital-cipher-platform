@@ -21,6 +21,7 @@ from app.api.routes import (
     audit,
     backtest,
     decisions,
+    governance,
     health,
     market,
     oms,
@@ -66,6 +67,14 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
             await ctx.specialist_evidence_service.initialize()
         if ctx.agent_evaluation_service is not None:
             await ctx.agent_evaluation_service.initialize()
+        if ctx.consensus_experiment_service is not None:
+            await ctx.consensus_experiment_service.initialize()
+        if ctx.drift_monitor is not None:
+            await ctx.drift_monitor.initialize()
+        if ctx.weighted_consensus_service is not None:
+            await ctx.weighted_consensus_service.initialize()
+        if ctx.portfolio_construction_service is not None:
+            await ctx.portfolio_construction_service.initialize()
         outbox_stop = asyncio.Event()
         outbox_task = None
         backfill_stop = asyncio.Event()
@@ -275,6 +284,7 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
     app.include_router(agents.router, prefix=api_prefix)
     app.include_router(orchestrator.router, prefix=api_prefix)
     app.include_router(decisions.router, prefix=api_prefix)
+    app.include_router(governance.router, prefix=api_prefix)
     app.include_router(risk.router, prefix=api_prefix)
     app.include_router(paper.router, prefix=api_prefix)
     app.include_router(oms.router, prefix=api_prefix)
