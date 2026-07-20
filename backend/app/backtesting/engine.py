@@ -23,6 +23,7 @@ from app.core.event_bus import EventBus
 from app.core.logging import ServiceLogger
 from app.core.state_machine import SystemState, SystemStateMachine
 from app.market_data.store import CandleStore
+from app.market_data.catalog import build_candle_dataset_manifest
 from app.orchestrator.decision_engine import DecisionEngine
 from app.orchestrator.service import Orchestrator
 from app.paper_trading.engine import PaperTradingEngine
@@ -68,6 +69,7 @@ class BacktestingEngine:
 
         # Candles must be processed in temporal order (docs/17, docs/32).
         ordered = sorted(candles, key=lambda c: c.closed_at)
+        dataset_manifest = build_candle_dataset_manifest(ordered)
 
         sm = await _paper_state_machine()
         audit = AuditService()
@@ -113,7 +115,16 @@ class BacktestingEngine:
         for order_id in list(paper.open_orders.keys()):
             await paper.close_order(order_id, last_close, "BACKTEST_END")
 
-        report = self._build_report(request, ordered, paper, decisions, actionable, blocked_by_risk)
+        report = self._build_report(
+            request,
+            ordered,
+            paper,
+            decisions,
+            actionable,
+            blocked_by_risk,
+            dataset_id=dataset_manifest.dataset_id,
+            dataset_hash=dataset_manifest.dataset_hash,
+        )
         report = report.model_copy(
             update={"duration_ms": int((time.monotonic() - started) * 1000)}
         )
@@ -134,6 +145,9 @@ class BacktestingEngine:
         decisions: int,
         actionable: int,
         blocked_by_risk: int,
+        *,
+        dataset_id: str,
+        dataset_hash: str,
     ) -> BacktestReport:
         closed = paper.closed_orders
         wins = [o for o in closed if (o.pnl or 0) > 0]
@@ -162,6 +176,8 @@ class BacktestingEngine:
 
         return BacktestReport(
             backtest_id=str(uuid4()),
+            dataset_id=dataset_id,
+            dataset_hash=dataset_hash,
             symbol=request.symbol,
             timeframe=request.timeframe,
             start_date=candles[0].closed_at.date().isoformat(),

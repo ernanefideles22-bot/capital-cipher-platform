@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -14,6 +15,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    UniqueConstraint,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -22,6 +24,7 @@ from sqlalchemy.types import JSON
 
 # JSONB on PostgreSQL, JSON elsewhere (SQLite in local dev).
 JsonType = JSON().with_variant(JSONB(), "postgresql")
+INTERNAL_SCHEMA = "capital_cipher"
 
 
 class Base(DeclarativeBase):
@@ -93,6 +96,145 @@ class RawMarketEventModel(Base):
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     payload: Mapped[dict] = mapped_column(JsonType, nullable=False)
     payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+
+
+class CandleObservationModel(Base):
+    """Append-only, idempotent time-series candle storage."""
+
+    __tablename__ = "candle_observations"
+    __table_args__ = (
+        UniqueConstraint(
+            "exchange",
+            "symbol",
+            "timeframe",
+            "closed_at",
+            name="uq_candle_observations_series_time",
+        ),
+        CheckConstraint(
+            "open > 0 AND high > 0 AND low > 0 AND close > 0",
+            name="ck_candle_observations_prices_positive",
+        ),
+        CheckConstraint(
+            "high >= open AND high >= close AND high >= low",
+            name="ck_candle_observations_high",
+        ),
+        CheckConstraint(
+            "low <= open AND low <= close AND low <= high",
+            name="ck_candle_observations_low",
+        ),
+        CheckConstraint(
+            "volume >= 0",
+            name="ck_candle_observations_volume",
+        ),
+        CheckConstraint(
+            "quality_score IS NULL OR (quality_score >= 0 AND quality_score <= 100)",
+            name="ck_candle_observations_quality_score",
+        ),
+        Index(
+            "ix_candle_observations_series_time",
+            "exchange",
+            "symbol",
+            "timeframe",
+            "closed_at",
+        ),
+        Index(
+            "ix_candle_observations_quality_received",
+            "quality_status",
+            "received_at",
+        ),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    candle_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    exchange: Mapped[str] = mapped_column(Text, nullable=False)
+    symbol: Mapped[str] = mapped_column(Text, nullable=False)
+    timeframe: Mapped[str] = mapped_column(Text, nullable=False)
+    open: Mapped[float] = mapped_column(Numeric(38, 18), nullable=False)
+    high: Mapped[float] = mapped_column(Numeric(38, 18), nullable=False)
+    low: Mapped[float] = mapped_column(Numeric(38, 18), nullable=False)
+    close: Mapped[float] = mapped_column(Numeric(38, 18), nullable=False)
+    volume: Mapped[float] = mapped_column(Numeric(38, 18), nullable=False)
+    closed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ingest_lag_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    quality_score: Mapped[int | None] = mapped_column(Integer)
+    quality_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    quality_warnings: Mapped[list] = mapped_column(JsonType, nullable=False)
+    quality_errors: Mapped[list] = mapped_column(JsonType, nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class DatasetManifestModel(Base):
+    """Immutable catalog entry for a deterministic candle selection."""
+
+    __tablename__ = "dataset_manifests"
+    __table_args__ = (
+        CheckConstraint("row_count > 0", name="ck_dataset_manifests_row_count"),
+        CheckConstraint("start_at <= end_at", name="ck_dataset_manifests_time_range"),
+        Index(
+            "ix_dataset_manifests_series_range",
+            "exchange",
+            "symbol",
+            "timeframe",
+            "start_at",
+            "end_at",
+        ),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    dataset_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    dataset_id: Mapped[str] = mapped_column(String(80), nullable=False, unique=True)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    candle_contract_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    dataset_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    exchange: Mapped[str] = mapped_column(Text, nullable=False)
+    symbol: Mapped[str] = mapped_column(Text, nullable=False)
+    timeframe: Mapped[str] = mapped_column(Text, nullable=False)
+    start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    selection: Mapped[dict] = mapped_column(JsonType, nullable=False)
+    quality_summary: Mapped[dict] = mapped_column(JsonType, nullable=False)
+    clock_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ClockObservationModel(Base):
+    """NTP-style source clock comparison recorded for audit and gating."""
+
+    __tablename__ = "clock_observations"
+    __table_args__ = (
+        CheckConstraint(
+            "round_trip_ms >= 0",
+            name="ck_clock_observations_round_trip",
+        ),
+        CheckConstraint(
+            "status IN ('SYNCED', 'WARNING', 'UNSAFE')",
+            name="ck_clock_observations_status",
+        ),
+        Index(
+            "ix_clock_observations_source_time",
+            "source",
+            "response_received_at",
+        ),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    observation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    request_started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    source_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    response_received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    offset_ms: Mapped[float] = mapped_column(Numeric(20, 6), nullable=False)
+    round_trip_ms: Mapped[float] = mapped_column(Numeric(20, 6), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class ReplayCheckpointModel(Base):

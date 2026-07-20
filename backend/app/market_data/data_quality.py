@@ -42,6 +42,7 @@ def evaluate_candles(
     timeframe: str,
     max_delay_ms: int = 5000,
     now: datetime | None = None,
+    check_staleness: bool = True,
 ) -> DataQualityReport:
     """Score a candle series: gaps, ordering, staleness, outliers (docs/32)."""
     warnings: list[str] = []
@@ -78,12 +79,13 @@ def evaluate_candles(
                 break
 
     # Staleness of the most recent candle.
-    now = now or datetime.now(timezone.utc)
-    last = candles[-1]
-    lag_ms = (now - last.closed_at).total_seconds() * 1000
-    if step and lag_ms > (step * 1000) + max_delay_ms:
-        warnings.append("STALE_DATA")
-        score -= 20
+    if check_staleness:
+        now = now or datetime.now(timezone.utc)
+        last = candles[-1]
+        lag_ms = (now - last.closed_at).total_seconds() * 1000
+        if step and lag_ms > (step * 1000) + max_delay_ms:
+            warnings.append("STALE_DATA")
+            score -= 20
 
     # Outlier detection: candle range far beyond recent average.
     if len(candles) >= 10:

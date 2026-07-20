@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Path, Query
 
 from app.api.context import AppContext
-from app.api.deps import get_context
+from app.api.deps import AdminRequired, get_context
 from app.schemas.api import error_response, success_response
+from app.schemas.data_catalog import CandleDatasetRequest
 
 router = APIRouter(prefix="/market")
 
@@ -44,3 +45,41 @@ async def latency(context: AppContext = Depends(get_context)) -> dict:
     return success_response(
         {"connected": context.market_connected, "last_candle_latency": latest}
     )
+
+
+@router.post("/datasets", dependencies=[AdminRequired])
+async def create_dataset(
+    body: CandleDatasetRequest,
+    context: AppContext = Depends(get_context),
+) -> dict:
+    if context.data_catalog is None:
+        return error_response(
+            "DATABASE_UNAVAILABLE",
+            "Persistent data catalog is not configured",
+        )
+    manifest = await context.data_catalog.materialize_candle_dataset(
+        exchange=body.exchange.value,
+        symbol=body.symbol,
+        timeframe=body.timeframe,
+        start_at=body.start_at,
+        end_at=body.end_at,
+        limit=body.limit,
+        clock_status=body.clock_status,
+    )
+    return success_response({"manifest": manifest.model_dump(mode="json")})
+
+
+@router.get("/datasets/{dataset_hash}", dependencies=[AdminRequired])
+async def get_dataset(
+    dataset_hash: str = Path(pattern=r"^[a-f0-9]{64}$"),
+    context: AppContext = Depends(get_context),
+) -> dict:
+    if context.repository is None:
+        return error_response(
+            "DATABASE_UNAVAILABLE",
+            "Persistent data catalog is not configured",
+        )
+    manifest = await context.repository.load_dataset_manifest(dataset_hash)
+    if manifest is None:
+        return error_response("NOT_FOUND", f"Dataset {dataset_hash} not found")
+    return success_response({"manifest": manifest.model_dump(mode="json")})

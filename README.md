@@ -12,6 +12,7 @@ backend/             FastAPI + Pydantic + SQLAlchemy
 frontend/            React + Vite + TypeScript dashboard
 packages/contracts/  versioned, language-neutral JSON Schema contracts
 Redis Streams        optional durable broker with PostgreSQL outbox
+Data warehouse       internal time-series, manifests, and clock quality
 turbo.json           monorepo task graph
 docker-compose.yml   backend + PostgreSQL (development)
 ```
@@ -30,3 +31,5 @@ current contracts and data-ingestion foundation.
 
 The Redis transport and replay guarantees are documented in
 [`docs/month-2-redis-replay.md`](docs/month-2-redis-replay.md).
+The first Month 3 data foundation is documented in
+[`docs/month-3-data-foundation.md`](docs/month-3-data-foundation.md).

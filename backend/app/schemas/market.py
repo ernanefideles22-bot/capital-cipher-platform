@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import NAMESPACE_URL, uuid5
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, Field, model_validator
 
 from app.schemas.common import Exchange, utcnow
 from app.schemas.events import CONTRACT_VERSION
@@ -26,8 +26,8 @@ class Candle(BaseModel):
     low: float = Field(gt=0)
     close: float = Field(gt=0)
     volume: float = Field(ge=0)
-    closed_at: datetime
-    received_at: datetime = Field(default_factory=utcnow)
+    closed_at: AwareDatetime
+    received_at: AwareDatetime = Field(default_factory=utcnow)
 
     @model_validator(mode="after")
     def validate_invariants(self) -> "Candle":

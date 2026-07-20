@@ -36,7 +36,7 @@ from app.schemas.agents import AgentInput
 from app.schemas.common import CandidateAction, MarketRegime, RiskStatus
 from app.schemas.decisions import Decision
 from app.schemas.events import EventTypes
-from app.schemas.market import Candle
+from app.schemas.market import Candle, DataQualityReport
 
 logger = ServiceLogger("orchestrator")
 
@@ -103,37 +103,85 @@ class Orchestrator:
         """Full decision cycle for a closed candle (docs/04 flow)."""
         started = time.monotonic()
         correlation_id = str(uuid4())
-        self._store.add(candle)
-
-        # Daily risk reset on UTC day change (docs/06 daily drawdown window).
-        candle_day = candle.closed_at.date()
-        if self._current_day is None:
-            self._current_day = candle_day
-        elif candle_day != self._current_day:
-            self._current_day = candle_day
-            self._risk.reset_daily()
-
-        # Monitor open paper positions on every candle regardless of new decisions.
-        closed_orders = await self._paper.on_candle(candle)
-        for order in closed_orders:
-            await self._bus.publish(
-                Topics.PAPER_ORDERS,
-                EventTypes.PAPER_ORDER_CLOSED,
-                order.model_dump(mode="json"),
-                source="PaperTradingEngine",
-                correlation_id=order.correlation_id,
-            )
-
-        if not self._sm.can_operate():
-            logger.warning(
-                "Skipping evaluation: system cannot operate",
-                event_type="SYSTEM_NOT_READY",
-                correlation_id=correlation_id,
-                metadata={"state": self._sm.state.value},
-            )
-            return None
-
         try:
+            existing = self._store.get(
+                candle.exchange.value,
+                candle.symbol,
+                candle.timeframe,
+                limit=200,
+            )
+            quality = evaluate_candles(
+                [*existing, candle],
+                timeframe=candle.timeframe,
+                max_delay_ms=self._max_data_delay_ms,
+            )
+
+            # Normalized data is persisted before it can reach agents, risk, or
+            # paper trading. A duplicate database identity stops redelivery.
+            if self._repository is not None:
+                inserted = await self._repository.save_candle(candle, quality)
+                if not inserted:
+                    logger.warning(
+                        "Duplicate candle ignored",
+                        event_type="DUPLICATE_CANDLE",
+                        correlation_id=correlation_id,
+                        metadata={
+                            "exchange": candle.exchange.value,
+                            "symbol": candle.symbol,
+                            "timeframe": candle.timeframe,
+                            "closed_at": candle.closed_at.isoformat(),
+                        },
+                    )
+                    return None
+
+            if quality.errors:
+                self.failures.append(
+                    {
+                        "correlation_id": correlation_id,
+                        "error": "DATA_QUALITY_ERROR",
+                    }
+                )
+                logger.error(
+                    "Candle rejected by data quality",
+                    event_type="DATA_QUALITY_ERROR",
+                    correlation_id=correlation_id,
+                    metadata={
+                        "errors": quality.errors,
+                        "warnings": quality.warnings,
+                    },
+                )
+                return None
+            if not self._store.add(candle):
+                return None
+
+            # Daily risk reset on UTC day change (docs/06 daily drawdown window).
+            candle_day = candle.closed_at.date()
+            if self._current_day is None:
+                self._current_day = candle_day
+            elif candle_day != self._current_day:
+                self._current_day = candle_day
+                self._risk.reset_daily()
+
+            # Monitor paper positions only after persistence and temporal checks.
+            closed_orders = await self._paper.on_candle(candle)
+            for order in closed_orders:
+                await self._bus.publish(
+                    Topics.PAPER_ORDERS,
+                    EventTypes.PAPER_ORDER_CLOSED,
+                    order.model_dump(mode="json"),
+                    source="PaperTradingEngine",
+                    correlation_id=order.correlation_id,
+                )
+
+            if not self._sm.can_operate():
+                logger.warning(
+                    "Skipping evaluation: system cannot operate",
+                    event_type="SYSTEM_NOT_READY",
+                    correlation_id=correlation_id,
+                    metadata={"state": self._sm.state.value},
+                )
+                return None
+
             await self._bus.publish(
                 Topics.MARKET_EVENTS,
                 EventTypes.CANDLE_CLOSED,
@@ -141,7 +189,7 @@ class Orchestrator:
                 source="MarketDataAdapter",
                 correlation_id=correlation_id,
             )
-            decision = await self._evaluate(candle, correlation_id)
+            decision = await self._evaluate(candle, correlation_id, quality)
             self.cycle_latencies_ms.append(int((time.monotonic() - started) * 1000))
             return decision
         except AuditError:
@@ -162,13 +210,14 @@ class Orchestrator:
             )
             return None
 
-    async def _evaluate(self, candle: Candle, correlation_id: str) -> Decision:
+    async def _evaluate(
+        self,
+        candle: Candle,
+        correlation_id: str,
+        quality: DataQualityReport,
+    ) -> Decision:
         exchange = candle.exchange.value
         symbol, timeframe = candle.symbol, candle.timeframe
-
-        # Data quality assessment (docs/32).
-        candles = self._store.get(exchange, symbol, timeframe, limit=200)
-        quality = evaluate_candles(candles, timeframe=timeframe, max_delay_ms=self._max_data_delay_ms)
 
         # Run analytical agents through their contracts.
         agent_outputs = []

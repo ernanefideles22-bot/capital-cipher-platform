@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
-
 from app.market_data.adapters.base import MarketDataAdapter
+from app.market_data.identity import candle_dataset_hash, candle_event_id
 from app.replay.checkpoints import CheckpointStore
 from app.schemas.common import utcnow
 from app.schemas.market import Candle
@@ -20,25 +18,6 @@ class ReplayDatasetChangedError(ValueError):
 
 class ReplayCheckpointCorruptError(ValueError):
     pass
-
-
-def candle_event_id(candle: Candle) -> str:
-    payload = json.dumps(
-        candle.model_dump(mode="json"),
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False,
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
-
-
-def candle_dataset_hash(candles: list[Candle]) -> str:
-    digest = hashlib.sha256()
-    for candle in candles:
-        digest.update(candle_event_id(candle).encode("ascii"))
-        digest.update(b"\n")
-    return digest.hexdigest()
 
 
 class ReplayMarketDataAdapter(MarketDataAdapter):

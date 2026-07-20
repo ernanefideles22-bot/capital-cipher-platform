@@ -16,10 +16,12 @@ from app.core.errors import DatabaseError
 from app.database.models import (
     AgentOutputModel,
     AuditLogModel,
+    CandleObservationModel,
+    ClockObservationModel,
     DecisionModel,
+    DatasetManifestModel,
     EventJournalModel,
     EventOutboxModel,
-    MarketCandleModel,
     PaperOrderModel,
     RawMarketEventModel,
     ReplayCheckpointModel,
@@ -27,17 +29,25 @@ from app.database.models import (
     SystemEventModel,
 )
 from app.database.session import Database
+from app.market_data.identity import candle_event_id
 from app.schemas.agents import AgentOutput
+from app.schemas.data_catalog import CandleDatasetManifest, ClockObservation
 from app.schemas.decisions import Decision
 from app.schemas.events import BusMessage
 from app.schemas.replay import ReplayCheckpoint
-from app.schemas.market import Candle, RawMarketEvent
+from app.schemas.market import Candle, DataQualityReport, RawMarketEvent
 from app.schemas.paper import PaperOrder
 from app.schemas.risk import RiskCheck
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 class Repository:
@@ -304,25 +314,225 @@ class Repository:
         except Exception as exc:
             raise DatabaseError(f"Failed to persist raw market event: {exc}") from exc
 
-    async def save_candle(self, candle: Candle) -> None:
+    @staticmethod
+    def _candle_values(
+        candle: Candle,
+        quality: DataQualityReport | None,
+    ) -> dict:
+        return {
+            "candle_id": candle_event_id(candle),
+            "schema_version": candle.schema_version,
+            "exchange": candle.exchange.value,
+            "symbol": candle.symbol,
+            "timeframe": candle.timeframe,
+            "open": candle.open,
+            "high": candle.high,
+            "low": candle.low,
+            "close": candle.close,
+            "volume": candle.volume,
+            "closed_at": candle.closed_at,
+            "received_at": candle.received_at,
+            "ingest_lag_ms": int(
+                round(
+                    (candle.received_at - candle.closed_at).total_seconds()
+                    * 1_000
+                )
+            ),
+            "quality_score": (
+                quality.data_quality_score if quality is not None else None
+            ),
+            "quality_status": quality.status if quality is not None else "UNASSESSED",
+            "quality_warnings": quality.warnings if quality is not None else [],
+            "quality_errors": quality.errors if quality is not None else [],
+            "recorded_at": _now(),
+        }
+
+    async def save_candle(
+        self,
+        candle: Candle,
+        quality: DataQualityReport | None = None,
+    ) -> bool:
+        return await self.save_candles([candle], quality_reports=[quality]) == 1
+
+    async def save_candles(
+        self,
+        candles: list[Candle],
+        *,
+        quality_reports: list[DataQualityReport | None] | None = None,
+    ) -> int:
+        """Batch append candles; exact duplicates are ignored idempotently."""
+        if not candles:
+            return 0
+        if quality_reports is None:
+            quality_reports = [None] * len(candles)
+        if len(quality_reports) != len(candles):
+            raise ValueError("quality_reports must match candles")
+        values = [
+            self._candle_values(candle, quality)
+            for candle, quality in zip(candles, quality_reports)
+        ]
         try:
             async with self._db.session() as session, session.begin():
-                session.add(
-                    MarketCandleModel(
-                        exchange=candle.exchange.value,
-                        symbol=candle.symbol,
-                        timeframe=candle.timeframe,
-                        open=candle.open,
-                        high=candle.high,
-                        low=candle.low,
-                        close=candle.close,
-                        volume=candle.volume,
-                        closed_at=candle.closed_at,
-                        created_at=_now(),
+                insert_statement = self._dialect_insert(CandleObservationModel)
+                if insert_statement is not None:
+                    result = await session.scalars(
+                        insert_statement.values(values)
+                        .on_conflict_do_nothing(index_elements=["candle_id"])
+                        .returning(CandleObservationModel.candle_id)
                     )
-                )
+                    return len(list(result))
+
+                inserted = 0
+                for item in values:
+                    existing = await session.get(
+                        CandleObservationModel,
+                        item["candle_id"],
+                    )
+                    if existing is None:
+                        session.add(CandleObservationModel(**item))
+                        inserted += 1
+                return inserted
         except Exception as exc:
-            raise DatabaseError(f"Failed to persist candle: {exc}") from exc
+            raise DatabaseError(f"Failed to persist candle batch: {exc}") from exc
+
+    async def list_candles(
+        self,
+        *,
+        exchange: str,
+        symbol: str,
+        timeframe: str,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+        limit: int = 100_000,
+    ) -> list[Candle]:
+        if limit < 1 or limit > 1_000_000:
+            raise ValueError("limit must be between 1 and 1000000")
+        conditions = [
+            CandleObservationModel.exchange == exchange.upper(),
+            CandleObservationModel.symbol == symbol.upper(),
+            CandleObservationModel.timeframe == timeframe,
+        ]
+        if start_at is not None:
+            conditions.append(CandleObservationModel.closed_at >= start_at)
+        if end_at is not None:
+            conditions.append(CandleObservationModel.closed_at <= end_at)
+        async with self._db.session() as session:
+            rows = await session.scalars(
+                select(CandleObservationModel)
+                .where(*conditions)
+                .order_by(CandleObservationModel.closed_at)
+                .limit(limit)
+            )
+            return [
+                Candle(
+                    schema_version=row.schema_version,
+                    exchange=row.exchange,
+                    symbol=row.symbol,
+                    timeframe=row.timeframe,
+                    open=float(row.open),
+                    high=float(row.high),
+                    low=float(row.low),
+                    close=float(row.close),
+                    volume=float(row.volume),
+                    closed_at=_as_utc(row.closed_at),
+                    received_at=_as_utc(row.received_at),
+                )
+                for row in rows
+            ]
+
+    async def save_dataset_manifest(
+        self,
+        manifest: CandleDatasetManifest,
+    ) -> bool:
+        values = {
+            "dataset_hash": manifest.dataset_hash,
+            "dataset_id": manifest.dataset_id,
+            "schema_version": manifest.schema_version,
+            "candle_contract_version": manifest.candle_contract_version,
+            "dataset_type": manifest.dataset_type,
+            "exchange": manifest.exchange.value,
+            "symbol": manifest.symbol,
+            "timeframe": manifest.timeframe,
+            "start_at": manifest.start_at,
+            "end_at": manifest.end_at,
+            "row_count": manifest.row_count,
+            "selection": manifest.selection,
+            "quality_summary": manifest.quality_summary,
+            "clock_status": manifest.clock_status,
+            "created_at": manifest.created_at,
+        }
+        try:
+            async with self._db.session() as session, session.begin():
+                insert_statement = self._dialect_insert(DatasetManifestModel)
+                if insert_statement is not None:
+                    inserted_hash = await session.scalar(
+                        insert_statement.values(**values)
+                        .on_conflict_do_nothing(index_elements=["dataset_hash"])
+                        .returning(DatasetManifestModel.dataset_hash)
+                    )
+                    return inserted_hash is not None
+                existing = await session.get(
+                    DatasetManifestModel,
+                    manifest.dataset_hash,
+                )
+                if existing is not None:
+                    return False
+                session.add(DatasetManifestModel(**values))
+                return True
+        except Exception as exc:
+            raise DatabaseError(f"Failed to persist dataset manifest: {exc}") from exc
+
+    async def load_dataset_manifest(
+        self,
+        dataset_hash: str,
+    ) -> CandleDatasetManifest | None:
+        async with self._db.session() as session:
+            row = await session.get(DatasetManifestModel, dataset_hash)
+            if row is None:
+                return None
+            return CandleDatasetManifest(
+                dataset_hash=row.dataset_hash,
+                dataset_id=row.dataset_id,
+                schema_version=row.schema_version,
+                candle_contract_version=row.candle_contract_version,
+                dataset_type=row.dataset_type,
+                exchange=row.exchange,
+                symbol=row.symbol,
+                timeframe=row.timeframe,
+                start_at=_as_utc(row.start_at),
+                end_at=_as_utc(row.end_at),
+                row_count=row.row_count,
+                selection=row.selection,
+                quality_summary=row.quality_summary,
+                clock_status=row.clock_status,
+                created_at=_as_utc(row.created_at),
+            )
+
+    async def save_clock_observation(
+        self,
+        observation: ClockObservation,
+    ) -> bool:
+        values = observation.model_dump()
+        try:
+            async with self._db.session() as session, session.begin():
+                insert_statement = self._dialect_insert(ClockObservationModel)
+                if insert_statement is not None:
+                    inserted_id = await session.scalar(
+                        insert_statement.values(**values)
+                        .on_conflict_do_nothing(index_elements=["observation_id"])
+                        .returning(ClockObservationModel.observation_id)
+                    )
+                    return inserted_id is not None
+                existing = await session.get(
+                    ClockObservationModel,
+                    observation.observation_id,
+                )
+                if existing is not None:
+                    return False
+                session.add(ClockObservationModel(**values))
+                return True
+        except Exception as exc:
+            raise DatabaseError(f"Failed to persist clock observation: {exc}") from exc
 
     async def save_agent_output(self, correlation_id: str, output: AgentOutput) -> None:
         try:

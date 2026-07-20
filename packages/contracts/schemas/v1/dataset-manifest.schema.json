@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/dataset-manifest.schema.json",
+  "title": "Capital Cipher Candle Dataset Manifest v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "dataset_id",
+    "dataset_hash",
+    "candle_contract_version",
+    "dataset_type",
+    "exchange",
+    "symbol",
+    "timeframe",
+    "start_at",
+    "end_at",
+    "row_count",
+    "selection",
+    "quality_summary",
+    "clock_status",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "dataset_id": {
+      "type": "string",
+      "pattern": "^candles:v1:[a-f0-9]{64}$"
+    },
+    "dataset_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "candle_contract_version": {
+      "const": "1.0.0"
+    },
+    "dataset_type": {
+      "const": "CANDLES"
+    },
+    "exchange": {
+      "enum": ["BINANCE", "BYBIT"]
+    },
+    "symbol": {
+      "type": "string",
+      "pattern": "^[A-Z0-9._-]{2,32}$"
+    },
+    "timeframe": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*[mhdw]$"
+    },
+    "start_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "end_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "row_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "selection": {
+      "type": "object"
+    },
+    "quality_summary": {
+      "type": "object"
+    },
+    "clock_status": {
+      "enum": ["SYNCED", "WARNING", "UNSAFE", "UNKNOWN"]
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "additionalProperties": false
+}

@@ -23,7 +23,7 @@ class Settings(BaseSettings):
 
     app_env: str = Field(default="local", alias="APP_ENV")
     app_name: str = "capital-cipher-api"
-    app_version: str = "0.7.0"
+    app_version: str = "0.8.0"
 
     system_mode: str = Field(default="PAPER", alias="SYSTEM_MODE")
 

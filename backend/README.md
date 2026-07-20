@@ -40,6 +40,12 @@ deterministic replay checkpoints, indicators, risk scenarios, the decision
 engine, paper trading, data quality, state transitions, and Phase 1 security
 guarantees (LIVE mode impossible, no private exchange keys, no real orders).
 
+Normalized candles are stored idempotently in the internal
+`capital_cipher.candle_observations` time-series table before agents, risk, or
+paper trading can consume them. Dataset manifests make every backtest input
+content-addressable and reproducible. Internal catalog endpoints are protected
+by `X-API-Key`; see `../docs/month-3-data-foundation.md`.
+
 ## Event transport and replay
 
 Without `REDIS_URL`, the backend uses only the in-process bus. With a Redis

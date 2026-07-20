@@ -18,6 +18,7 @@ from app.core.transports.base import EventTransport
 from app.core.transports.redis_streams import RedisStreamTransport
 from app.database.repositories.repository import Repository
 from app.database.session import Database
+from app.market_data.catalog import DataCatalog
 from app.market_data.store import CandleStore
 from app.orchestrator.decision_engine import DecisionEngine
 from app.orchestrator.service import Orchestrator
@@ -39,6 +40,7 @@ class AppContext:
     backtesting_engine: BacktestingEngine = None  # type: ignore[assignment]
     database: Database | None = None
     repository: Repository | None = None
+    data_catalog: DataCatalog | None = None
     event_transport: EventTransport | None = None
     outbox_dispatcher: OutboxDispatcher | None = None
     market_connected: bool = False
@@ -53,6 +55,7 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
     if with_database:
         database = Database(settings.database_url)
         repository = Repository(database)
+    data_catalog = DataCatalog(repository) if repository is not None else None
     event_transport: EventTransport | None = None
     outbox_dispatcher: OutboxDispatcher | None = None
     publication_lock = asyncio.Lock()
@@ -148,6 +151,7 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         backtesting_engine=backtesting_engine,
         database=database,
         repository=repository,
+        data_catalog=data_catalog,
         event_transport=event_transport,
         outbox_dispatcher=outbox_dispatcher,
     )

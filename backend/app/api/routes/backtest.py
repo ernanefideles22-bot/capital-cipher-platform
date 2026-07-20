@@ -40,9 +40,19 @@ async def run_backtest(body: BacktestRequest, context: AppContext = Depends(get_
         except Exception as exc:
             return error_response("VALIDATION_ERROR", f"Failed to load CSV: {exc}")
     else:
-        candles = context.candle_store.get(
-            body.exchange, body.symbol, body.timeframe, limit=500
-        )
+        if context.repository is not None:
+            candles = await context.repository.list_candles(
+                exchange=body.exchange,
+                symbol=body.symbol,
+                timeframe=body.timeframe,
+                limit=100_000,
+            )
+            if candles and context.data_catalog is not None:
+                await context.data_catalog.catalog_candles(candles)
+        else:
+            candles = context.candle_store.get(
+                body.exchange, body.symbol, body.timeframe, limit=500
+            )
     if not candles:
         return error_response(
             "MARKET_DATA_UNAVAILABLE", "No candles available for the requested backtest"

@@ -27,6 +27,7 @@ async def security_client(settings: Settings):
     [
         ("POST", "/api/v1/orchestrator/evaluate", {}),
         ("POST", "/api/v1/backtest/run", {}),
+        ("POST", "/api/v1/market/datasets", {}),
         ("POST", "/api/v1/risk/kill-switch", {"reason": "security test"}),
     ],
 )

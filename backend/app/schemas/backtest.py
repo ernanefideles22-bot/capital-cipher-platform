@@ -18,6 +18,8 @@ class BacktestReport(BaseModel):
     """Mandatory metrics from docs/17."""
 
     backtest_id: str
+    dataset_id: str
+    dataset_hash: str
     symbol: str
     timeframe: str
     start_date: str

@@ -12,10 +12,12 @@ from pydantic import ValidationError
 
 from app.schemas.agents import AgentOutput
 from app.schemas.common import AgentStatus, Signal
+from app.schemas.data_catalog import CandleDatasetManifest
 from app.schemas.decisions import Decision
 from app.schemas.events import BusMessage
 from app.schemas.market import Candle
 from app.schemas.replay import ReplayCheckpoint
+from app.market_data.clock import evaluate_clock_probe
 from app.tests.conftest import make_candle
 
 CONTRACT_ROOT = Path(__file__).resolve().parents[3] / "packages" / "contracts" / "schemas" / "v1"
@@ -128,3 +130,35 @@ def test_replay_checkpoint_matches_published_v1_contract():
     )
     validator = Draft202012Validator(load_contract("replay-checkpoint.schema.json"))
     assert list(validator.iter_errors(checkpoint.model_dump(mode="json"))) == []
+
+
+def test_dataset_manifest_matches_published_v1_contract():
+    candle = make_candle()
+    manifest = CandleDatasetManifest(
+        dataset_id=f"candles:v1:{'a' * 64}",
+        dataset_hash="a" * 64,
+        exchange=candle.exchange,
+        symbol=candle.symbol,
+        timeframe=candle.timeframe,
+        start_at=candle.closed_at,
+        end_at=candle.closed_at,
+        row_count=1,
+        selection={"order": ["closed_at"]},
+        quality_summary={"status": "VALID"},
+    )
+    validator = Draft202012Validator(load_contract("dataset-manifest.schema.json"))
+    assert list(validator.iter_errors(manifest.model_dump(mode="json"))) == []
+
+
+def test_clock_observation_matches_published_v1_contract():
+    from datetime import datetime, timedelta, timezone
+
+    started = datetime.now(timezone.utc)
+    observation = evaluate_clock_probe(
+        source="binance.server-time",
+        request_started_at=started,
+        source_at=started + timedelta(milliseconds=50),
+        response_received_at=started + timedelta(milliseconds=100),
+    )
+    validator = Draft202012Validator(load_contract("clock-observation.schema.json"))
+    assert list(validator.iter_errors(observation.model_dump(mode="json"))) == []

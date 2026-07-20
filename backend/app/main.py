@@ -92,8 +92,6 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
             async def on_candle(candle):
                 ctx.market_connected = True
                 await ctx.orchestrator.on_candle_closed(candle)
-                if ctx.repository is not None:
-                    await ctx.repository.save_candle(candle)
 
             async def on_raw_event(event):
                 # Store public source data before normalization or analysis.
