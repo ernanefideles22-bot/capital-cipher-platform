@@ -116,13 +116,12 @@ promotion_status = RESEARCH_ONLY
 Neither positive validation nor positive test metrics can change runtime mode,
 risk limits, strategy enablement, or execution permissions.
 
-## Deferred work
+## Completed controls
 
-- a versioned fitting interface that consumes train data without test access;
-- pre-registered acceptance rules and minimum sample sizes;
-- multiple-testing correction and parameter-search budgets;
-- historical spread/funding series;
-- margin and liquidation mechanics.
+The versioned train-only fitting boundary, pre-registered acceptance rules,
+minimum sample sizes, multiple-testing correction, candidate budgets,
+historical spread/funding series, and margin/liquidation mechanics are
+implemented in [`month-4-completion.md`](month-4-completion.md).
 
-Until those controls exist, walk-forward output is research evidence only and
-is not proof of profitability, tradeability, or readiness for real capital.
+Walk-forward output remains research evidence only and is not proof of
+profitability, tradeability, or readiness for real capital.

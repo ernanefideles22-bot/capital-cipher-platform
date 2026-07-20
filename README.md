@@ -46,3 +46,7 @@ Leakage-resistant, pre-registered walk-forward folds are documented in
 [`docs/month-4-walk-forward-protocol.md`](docs/month-4-walk-forward-protocol.md).
 Durable, append-only walk-forward artifacts are documented in
 [`docs/month-4-durable-experiments.md`](docs/month-4-durable-experiments.md).
+Historical spread/funding observations, isolated margin and liquidation,
+train-only fitting, multiplicity-adjusted acceptance gates, and the versioned
+Supabase migration complete Month 4 in
+[`docs/month-4-completion.md`](docs/month-4-completion.md).

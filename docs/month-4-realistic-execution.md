@@ -90,11 +90,10 @@ total_execution_cost
 `total_execution_cost` is fees + spread + slippage + signed funding. Volume
 impact is disclosed separately but is already included in slippage.
 
-## Deferred Month 4 work
+## Completed Month 4 extensions
 
-The next increments must add historical spread/funding datasets, margin and
-liquidation mechanics, and out-of-sample acceptance criteria. The first
-walk-forward protocol is documented in
-[`month-4-walk-forward-protocol.md`](month-4-walk-forward-protocol.md).
-Until then, this model is a conservative simulation assumption—not proof that
-a strategy is tradeable or profitable.
+Historical spread/funding datasets, isolated margin and liquidation mechanics,
+and out-of-sample acceptance criteria are implemented and documented in
+[`month-4-completion.md`](month-4-completion.md). These controls improve
+simulation fidelity but remain research evidence—not proof that a strategy is
+tradeable or profitable.

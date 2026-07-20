@@ -12,3 +12,5 @@ dist/
 tsconfig.tsbuildinfo
 .turbo/
 .capital-cipher-data-lake/
+supabase/.temp/
+supabase/.branches/

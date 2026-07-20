@@ -68,13 +68,14 @@ async def run_backtest(body: BacktestRequest, context: AppContext = Depends(get_
     """
     try:
         candles = await _load_candles(body, context, memory_limit=500)
-    except ValueError as exc:
+        if not candles:
+            return error_response(
+                "MARKET_DATA_UNAVAILABLE",
+                "No candles available for the requested backtest",
+            )
+        report = await context.backtesting_engine.run(body, candles)
+    except (ValueError, DataQualityError) as exc:
         return error_response("VALIDATION_ERROR", str(exc))
-    if not candles:
-        return error_response(
-            "MARKET_DATA_UNAVAILABLE", "No candles available for the requested backtest"
-        )
-    report = await context.backtesting_engine.run(body, candles)
     return success_response({"report": report.model_dump(mode="json")})
 
 

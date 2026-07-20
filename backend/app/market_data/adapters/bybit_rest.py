@@ -41,7 +41,7 @@ class BybitPublicRestClient:
         self._client = client or httpx.AsyncClient(
             base_url=base_url,
             timeout=timeout_seconds,
-            headers={"User-Agent": "capital-cipher-platform/0.13"},
+            headers={"User-Agent": "capital-cipher-platform/0.14"},
         )
 
     async def _get_json(self, path: str, *, params: dict | None = None) -> dict:

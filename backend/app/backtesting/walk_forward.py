@@ -7,11 +7,19 @@ import time
 from datetime import datetime, timezone
 from typing import Protocol
 
+from app.backtesting.acceptance import evaluate_walk_forward_gate
 from app.backtesting.artifacts import (
     canonical_sha256,
     walk_forward_artifact_hash,
 )
 from app.backtesting.engine import BacktestingEngine
+from app.backtesting.execution_data import (
+    build_historical_execution_manifest,
+)
+from app.backtesting.fitting import (
+    FrozenStrategyFitter,
+    WalkForwardCandidateFitter,
+)
 from app.market_data.catalog import build_candle_dataset_manifest
 from app.schemas.backtest import (
     BacktestReport,
@@ -136,6 +144,8 @@ def _summary(report: BacktestReport) -> WalkForwardBacktestSummary:
         fees=report.fees,
         slippage=report.slippage,
         funding=report.funding,
+        liquidations=report.liquidations,
+        liquidation_fees=report.liquidation_fees,
         total_execution_cost=report.total_execution_cost,
     )
 
@@ -162,6 +172,9 @@ def _aggregate(
             statistics.fmean(item.expectancy for item in summaries),
             4,
         ),
+        total_liquidations=sum(
+            item.liquidations for item in summaries
+        ),
     )
 
 
@@ -172,9 +185,11 @@ class WalkForwardEngine:
         self,
         backtesting_engine: BacktestingEngine,
         repository: WalkForwardReportRepository | None = None,
+        fitter: WalkForwardCandidateFitter | None = None,
     ) -> None:
         self._backtesting_engine = backtesting_engine
         self._repository = repository
+        self._fitter = fitter or FrozenStrategyFitter()
         self.reports: list[WalkForwardReport] = []
 
     async def list_reports(self, *, limit: int = 100) -> list[WalkForwardReport]:
@@ -234,16 +249,34 @@ class WalkForwardEngine:
             request.backtest
         )
         simulation_context_hash = canonical_sha256(simulation_context)
+        historical_execution_manifest = (
+            build_historical_execution_manifest(
+                request.backtest.historical_execution
+            )
+            if request.backtest.historical_execution is not None
+            else None
+        )
         identity_payload = {
             "dataset_hash": full_manifest.dataset_hash,
             "candidate_version": actual_candidate,
             "protocol": request.protocol.model_dump(mode="json"),
             "resolved_step_candles": request.protocol.resolved_step_candles,
             "execution_assumptions": assumptions.model_dump(mode="json"),
+            "historical_execution_dataset_hash": (
+                historical_execution_manifest.dataset_hash
+                if historical_execution_manifest is not None
+                else None
+            ),
+            "margin_assumptions": request.backtest.margin.model_dump(
+                mode="json"
+            ),
+            "fitter_version": self._fitter.version,
+            "research_plan": request.research_plan.model_dump(mode="json"),
+            "acceptance": request.acceptance.model_dump(mode="json"),
             "simulation_context_hash": simulation_context_hash,
         }
         experiment_id = (
-            f"walk-forward:v1:{canonical_sha256(identity_payload)}"
+            f"walk-forward:v2:{canonical_sha256(identity_payload)}"
         )
         if self._repository is not None:
             existing = await self._repository.load_walk_forward_report(
@@ -256,6 +289,15 @@ class WalkForwardEngine:
         validation_summaries: list[WalkForwardBacktestSummary] = []
         test_summaries: list[WalkForwardBacktestSummary] = []
         for fold_index, (train, validation, test) in enumerate(windows):
+            fitted_candidate = self._fitter.fit(
+                candidate_version=actual_candidate,
+                fold_index=fold_index,
+                train_segment=train,
+                train_candles=ordered[
+                    train.start_index : train.end_index_exclusive
+                ],
+                strategy_parameters=simulation_context["strategy"],
+            )
             validation_report = await self._backtesting_engine.run(
                 request.backtest,
                 ordered[validation.start_index : validation.end_index_exclusive],
@@ -278,21 +320,40 @@ class WalkForwardEngine:
                     "train_hash": train.dataset_hash,
                     "validation_hash": validation.dataset_hash,
                     "test_hash": test.dataset_hash,
+                    "fitted_candidate_hash": (
+                        fitted_candidate.artifact_hash
+                    ),
                 }
             )
             folds.append(
                 WalkForwardFoldReport(
-                    fold_id=f"walk-forward-fold:v1:{fold_hash}",
+                    fold_id=f"walk-forward-fold:v2:{fold_hash}",
                     fold_index=fold_index,
                     train=train,
                     validation=validation,
                     test=test,
+                    fitted_candidate=fitted_candidate,
                     validation_result=validation_summary,
                     test_result=test_summary,
                 )
             )
 
+        validation_aggregate = _aggregate(validation_summaries)
+        test_aggregate = _aggregate(test_summaries)
+        validation_gate = evaluate_walk_forward_gate(
+            phase="VALIDATION",
+            aggregate=validation_aggregate,
+            criteria=request.acceptance,
+            research_plan=request.research_plan,
+        )
+        test_gate = evaluate_walk_forward_gate(
+            phase="TEST",
+            aggregate=test_aggregate,
+            criteria=request.acceptance,
+            research_plan=request.research_plan,
+        )
         report = WalkForwardReport(
+            report_version="walk-forward-report-v2",
             experiment_id=experiment_id,
             artifact_hash="0" * 64,
             dataset_id=full_manifest.dataset_id,
@@ -303,11 +364,23 @@ class WalkForwardEngine:
             protocol=request.protocol,
             resolved_step_candles=request.protocol.resolved_step_candles,
             execution_assumptions=assumptions,
+            historical_execution_manifest=historical_execution_manifest,
+            margin_assumptions=request.backtest.margin,
+            research_plan=request.research_plan,
+            acceptance_criteria=request.acceptance,
+            fitter_version=self._fitter.version,
             simulation_context=simulation_context,
             simulation_context_hash=simulation_context_hash,
             folds=folds,
-            validation_aggregate=_aggregate(validation_summaries),
-            test_aggregate=_aggregate(test_summaries),
+            validation_aggregate=validation_aggregate,
+            test_aggregate=test_aggregate,
+            validation_gate=validation_gate,
+            test_gate=test_gate,
+            research_decision=(
+                "PASS"
+                if validation_gate.passed and test_gate.passed
+                else "FAIL"
+            ),
             duration_ms=int((time.monotonic() - started) * 1000),
             created_at=datetime.now(timezone.utc),
         )

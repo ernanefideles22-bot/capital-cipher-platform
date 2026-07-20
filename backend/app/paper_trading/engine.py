@@ -14,6 +14,7 @@ from app.core.errors import RiskError, ValidationError
 from app.core.logging import ServiceLogger
 from app.paper_trading.execution import (
     ExecutionCostLedger,
+    IsolatedMarginModel,
     RealisticExecutionModel,
 )
 from app.risk.manager import RiskManager
@@ -36,6 +37,7 @@ class PaperTradingEngine:
         fee_rate_percent: float = 0.08,
         slippage_rate_percent: float = 0.02,
         execution_model: RealisticExecutionModel | None = None,
+        margin_model: IsolatedMarginModel | None = None,
         started_at: datetime | None = None,
         repository=None,
     ) -> None:
@@ -47,6 +49,7 @@ class PaperTradingEngine:
         self.fee_rate = fee_rate_percent / 100
         self.slippage_rate = slippage_rate_percent / 100
         self._execution_model = execution_model
+        self._margin_model = margin_model
         self.open_orders: dict[str, PaperOrder] = {}
         self.closed_orders: list[PaperOrder] = []
         self._execution_costs: dict[str, ExecutionCostLedger] = {}
@@ -119,6 +122,26 @@ class PaperTradingEngine:
             slippage_estimate = slippage_cost
             entry_precision = 2
         opened_at = occurred_at or datetime.now(timezone.utc)
+        margin_values: dict = {}
+        if self._margin_model is not None:
+            margin = self._margin_model.assumptions
+            margin_values = {
+                "leverage": margin.leverage,
+                "initial_margin": round(
+                    self._margin_model.initial_margin(position_size),
+                    8,
+                ),
+                "maintenance_margin_ratio": (
+                    margin.maintenance_margin_ratio
+                ),
+                "liquidation_price": round(
+                    self._margin_model.liquidation_price(
+                        side=side,
+                        entry_price=entry_price,
+                    ),
+                    8,
+                ),
+            }
 
         order = PaperOrder(
             decision_id=decision.decision_id,
@@ -136,6 +159,7 @@ class PaperTradingEngine:
             fees_estimated=round(fees, 4),
             slippage_estimated=round(slippage_estimate, 4),
             opened_at=opened_at,
+            **margin_values,
         )
         # Audit BEFORE accepting the order into the book (docs/12 critical rule).
         await self._audit.record(
@@ -171,12 +195,19 @@ class PaperTradingEngine:
             self._accrue_funding(order, candle.closed_at)
             exit_price: float | None = None
             exit_reason: str | None = None
-            if order.side == OrderSide.BUY:
+            if self._margin_model is not None:
+                exit_price = self._margin_model.liquidation_reference(
+                    order=order,
+                    candle=candle,
+                )
+                if exit_price is not None:
+                    exit_reason = "LIQUIDATION"
+            if exit_price is None and order.side == OrderSide.BUY:
                 if order.stop_loss is not None and candle.low <= order.stop_loss:
                     exit_price, exit_reason = order.stop_loss, "STOP_LOSS"
                 elif order.take_profit is not None and candle.high >= order.take_profit:
                     exit_price, exit_reason = order.take_profit, "TAKE_PROFIT"
-            else:
+            elif exit_price is None:
                 if order.stop_loss is not None and candle.high >= order.stop_loss:
                     exit_price, exit_reason = order.stop_loss, "STOP_LOSS"
                 elif order.take_profit is not None and candle.low <= order.take_profit:
@@ -223,6 +254,7 @@ class PaperTradingEngine:
             slippage=stored_ledger.slippage,
             volume_impact=stored_ledger.volume_impact,
             funding=stored_ledger.funding,
+            liquidation_fees=stored_ledger.liquidation_fees,
         )
         if self._execution_model is not None:
             fill = self._execution_model.close_fill(
@@ -241,9 +273,24 @@ class PaperTradingEngine:
         else:
             exit_fees = order.position_size * self.fee_rate
             slippage_estimate = order.slippage_estimated
+        liquidation_fee = 0.0
+        if (
+            exit_reason == "LIQUIDATION"
+            and self._margin_model is not None
+        ):
+            liquidation_fee = self._margin_model.liquidation_fee(
+                qty * exit_price
+            )
+            ledger.liquidation_fees += liquidation_fee
         direction = 1 if order.side == OrderSide.BUY else -1
         gross_pnl = (exit_price - order.entry_price) * qty * direction
-        net_pnl = gross_pnl - order.fees_estimated - exit_fees - ledger.funding
+        net_pnl = (
+            gross_pnl
+            - order.fees_estimated
+            - exit_fees
+            - ledger.funding
+            - liquidation_fee
+        )
         closed_at = occurred_at or datetime.now(timezone.utc)
 
         closed = order.model_copy(
@@ -255,6 +302,7 @@ class PaperTradingEngine:
                 "exit_reason": exit_reason,
                 "fees_estimated": round(order.fees_estimated + exit_fees, 4),
                 "slippage_estimated": round(slippage_estimate, 4),
+                "liquidation_fee": round(liquidation_fee, 4),
             }
         )
         # Record the terminal state before it advances the in-memory account.
@@ -346,6 +394,17 @@ class PaperTradingEngine:
             ).volume_impact
             for order in self.closed_orders
         )
+        liquidation_fees_total = sum(
+            self._execution_costs.get(
+                order.paper_order_id,
+                ExecutionCostLedger(),
+            ).liquidation_fees
+            for order in self.closed_orders
+        )
+        liquidations = sum(
+            order.exit_reason == "LIQUIDATION"
+            for order in self.closed_orders
+        )
         gross = sum(
             (o.pnl or 0)
             + (
@@ -360,6 +419,10 @@ class PaperTradingEngine:
                 o.paper_order_id,
                 ExecutionCostLedger(),
             ).funding
+            + self._execution_costs.get(
+                o.paper_order_id,
+                ExecutionCostLedger(),
+            ).liquidation_fees
             for o in self.closed_orders
         )
         net = sum(o.pnl or 0 for o in self.closed_orders)
@@ -383,6 +446,7 @@ class PaperTradingEngine:
         rounded_spread = round(spread_total, 4)
         rounded_volume_impact = round(volume_impact_total, 4)
         rounded_funding = round(funding_total, 4)
+        rounded_liquidation_fees = round(liquidation_fees_total, 4)
         return PaperPerformance(
             total_trades=closed_count + len(self.open_orders),
             open_trades=len(self.open_orders),
@@ -397,11 +461,14 @@ class PaperTradingEngine:
             spread_total=rounded_spread,
             volume_impact_total=rounded_volume_impact,
             funding_total=rounded_funding,
+            liquidations=liquidations,
+            liquidation_fees_total=rounded_liquidation_fees,
             total_execution_cost=round(
                 rounded_fees
                 + rounded_slippage
                 + rounded_spread
-                + rounded_funding,
+                + rounded_funding
+                + rounded_liquidation_fees,
                 4,
             ),
             max_drawdown_percent=round(self._max_drawdown_percent, 4),

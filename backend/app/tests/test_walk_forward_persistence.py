@@ -138,6 +138,74 @@ async def test_repository_rejects_content_conflict_for_same_experiment():
     await database.dispose()
 
 
+async def test_repository_keeps_v1_artifact_hash_compatibility():
+    database = Database("sqlite+aiosqlite:///:memory:")
+    await database.create_all()
+    repository = Repository(database)
+    report, _ = await _report()
+    payload = report.model_dump(mode="json")
+    payload["experiment_id"] = payload["experiment_id"].replace(
+        "walk-forward:v2:",
+        "walk-forward:v1:",
+    )
+    for field in (
+        "report_version",
+        "historical_execution_manifest",
+        "margin_assumptions",
+        "research_plan",
+        "acceptance_criteria",
+        "fitter_version",
+        "validation_gate",
+        "test_gate",
+        "research_decision",
+    ):
+        payload.pop(field, None)
+    for fold in payload["folds"]:
+        fold["fold_id"] = fold["fold_id"].replace(
+            "walk-forward-fold:v2:",
+            "walk-forward-fold:v1:",
+        )
+        fold.pop("fitted_candidate", None)
+        fold["validation_result"].pop("liquidations", None)
+        fold["validation_result"].pop("liquidation_fees", None)
+        fold["test_result"].pop("liquidations", None)
+        fold["test_result"].pop("liquidation_fees", None)
+    payload["validation_aggregate"].pop("total_liquidations", None)
+    payload["test_aggregate"].pop("total_liquidations", None)
+    payload["artifact_hash"] = walk_forward_artifact_hash(payload)
+
+    async with database.session() as session, session.begin():
+        session.add(
+            WalkForwardExperimentModel(
+                experiment_id=payload["experiment_id"],
+                artifact_hash=payload["artifact_hash"],
+                schema_version=payload["schema_version"],
+                artifact_version="walk-forward-artifact-v1",
+                protocol_version=payload["protocol"]["protocol_version"],
+                dataset_id=payload["dataset_id"],
+                dataset_hash=payload["dataset_hash"],
+                symbol=payload["symbol"],
+                timeframe=payload["timeframe"],
+                candidate_version=payload["candidate_version"],
+                promotion_status=payload["promotion_status"],
+                report_payload=payload,
+                created_at=report.created_at,
+                recorded_at=report.created_at,
+            )
+        )
+
+    loaded = await repository.load_walk_forward_report(
+        payload["experiment_id"]
+    )
+    await database.dispose()
+
+    assert loaded is not None
+    assert loaded.experiment_id.startswith("walk-forward:v1:")
+    assert loaded.artifact_hash == payload["artifact_hash"]
+    assert loaded.validation_gate is None
+    assert loaded.test_gate is None
+
+
 async def test_database_guards_reject_update_and_delete():
     database = Database("sqlite+aiosqlite:///:memory:")
     await database.create_all()

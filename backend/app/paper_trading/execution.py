@@ -6,7 +6,11 @@ import math
 from dataclasses import dataclass
 from datetime import datetime
 
-from app.schemas.backtest import BacktestExecutionAssumptions
+from app.backtesting.execution_data import HistoricalExecutionResolver
+from app.schemas.backtest import (
+    BacktestExecutionAssumptions,
+    BacktestMarginAssumptions,
+)
 from app.schemas.common import OrderSide
 from app.schemas.market import Candle
 from app.schemas.paper import PaperOrder
@@ -30,13 +34,75 @@ class ExecutionCostLedger:
     slippage: float = 0.0
     volume_impact: float = 0.0
     funding: float = 0.0
+    liquidation_fees: float = 0.0
+
+
+class IsolatedMarginModel:
+    """Deterministic isolated-margin and liquidation approximation."""
+
+    def __init__(self, assumptions: BacktestMarginAssumptions) -> None:
+        self.assumptions = assumptions
+
+    def initial_margin(self, position_notional: float) -> float:
+        return position_notional / self.assumptions.leverage
+
+    def liquidation_price(
+        self,
+        *,
+        side: OrderSide,
+        entry_price: float,
+    ) -> float:
+        inverse_leverage = 1.0 / self.assumptions.leverage
+        maintenance = self.assumptions.maintenance_margin_ratio
+        if side == OrderSide.BUY:
+            return max(
+                0.0,
+                entry_price * (1.0 - inverse_leverage + maintenance),
+            )
+        return entry_price * (
+            1.0 + inverse_leverage - maintenance
+        )
+
+    def liquidation_reference(
+        self,
+        *,
+        order: PaperOrder,
+        candle: Candle,
+    ) -> float | None:
+        liquidation_price = order.liquidation_price
+        if liquidation_price is None or liquidation_price <= 0:
+            return None
+        if (
+            order.side == OrderSide.BUY
+            and candle.low <= liquidation_price
+        ):
+            return min(liquidation_price, candle.open)
+        if (
+            order.side == OrderSide.SELL
+            and candle.high >= liquidation_price
+        ):
+            return max(liquidation_price, candle.open)
+        return None
+
+    def liquidation_fee(self, executed_notional: float) -> float:
+        return (
+            executed_notional
+            * self.assumptions.liquidation_fee_bps
+            / 10_000
+        )
 
 
 class RealisticExecutionModel:
     """Conservative market fills based only on information in the candle."""
 
-    def __init__(self, assumptions: BacktestExecutionAssumptions) -> None:
+    def __init__(
+        self,
+        assumptions: BacktestExecutionAssumptions,
+        *,
+        historical_execution: HistoricalExecutionResolver | None = None,
+    ) -> None:
         self.assumptions = assumptions
+        self.historical_execution = historical_execution
 
     def open_fill(
         self,
@@ -89,6 +155,13 @@ class RealisticExecutionModel:
         if elapsed_hours == 0:
             return 0.0
         direction = 1.0 if order.side == OrderSide.BUY else -1.0
+        if self.historical_execution is not None:
+            return self.historical_execution.funding_cost(
+                position_notional=order.position_size,
+                direction=direction,
+                start_at=start_at,
+                end_at=end_at,
+            )
         rate = self.assumptions.funding_rate_bps_per_8h / 10_000
         return order.position_size * rate * (elapsed_hours / 8.0) * direction
 
@@ -120,8 +193,17 @@ class RealisticExecutionModel:
             self.assumptions.volume_impact_bps
             * math.sqrt(participation)
         )
+        half_spread_bps = self.assumptions.half_spread_bps
+        if self.historical_execution is not None:
+            if candle is None:
+                raise ValueError(
+                    "Historical execution fills require a timestamped candle"
+                )
+            half_spread_bps = self.historical_execution.resolve(
+                candle.closed_at
+            ).half_spread_bps
         adverse_bps = (
-            self.assumptions.half_spread_bps
+            half_spread_bps
             + self.assumptions.base_slippage_bps
             + impact_bps
         )
@@ -141,7 +223,7 @@ class RealisticExecutionModel:
         )
         spread_cost = (
             position_notional
-            * self.assumptions.half_spread_bps
+            * half_spread_bps
             / 10_000
         )
         base_slippage_cost = (

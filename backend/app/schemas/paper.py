@@ -23,6 +23,15 @@ class PaperOrder(BaseModel):
     stop_loss: float | None = None
     take_profit: float | None = None
     position_size: float = Field(ge=0)
+    leverage: float = Field(default=1.0, ge=1.0)
+    initial_margin: float | None = Field(default=None, ge=0)
+    maintenance_margin_ratio: float | None = Field(
+        default=None,
+        ge=0,
+        lt=0.5,
+    )
+    liquidation_price: float | None = Field(default=None, ge=0)
+    liquidation_fee: float = Field(default=0.0, ge=0)
     status: PaperOrderStatus = PaperOrderStatus.CREATED
     fees_estimated: float = Field(ge=0, default=0.0)
     slippage_estimated: float = Field(ge=0, default=0.0)
@@ -50,6 +59,8 @@ class PaperPerformance(BaseModel):
     spread_total: float = 0.0
     volume_impact_total: float = 0.0
     funding_total: float = 0.0
+    liquidations: int = 0
+    liquidation_fees_total: float = 0.0
     total_execution_cost: float = 0.0
     max_drawdown_percent: float = 0.0
     consecutive_losses: int = 0

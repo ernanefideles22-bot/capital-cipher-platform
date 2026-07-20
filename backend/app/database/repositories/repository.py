@@ -98,8 +98,8 @@ class Repository:
     def _walk_forward_report_from_row(
         row: WalkForwardExperimentModel,
     ) -> WalkForwardReport:
+        expected_hash = walk_forward_artifact_hash(row.report_payload)
         report = WalkForwardReport.model_validate(row.report_payload)
-        expected_hash = walk_forward_artifact_hash(report)
         if (
             report.experiment_id != row.experiment_id
             or report.artifact_hash != row.artifact_hash

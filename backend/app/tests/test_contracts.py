@@ -14,8 +14,13 @@ from app.schemas.agents import AgentOutput
 from app.schemas.backfill import HistoricalBackfillJob, MarketDataGap
 from app.schemas.backtest import (
     BacktestExecutionAssumptions,
+    BacktestMarginAssumptions,
+    HistoricalExecutionDataset,
+    HistoricalExecutionObservation,
+    WalkForwardAcceptanceCriteria,
     WalkForwardArtifactMetadata,
     WalkForwardProtocol,
+    WalkForwardResearchPlan,
 )
 from app.schemas.common import AgentStatus, Signal
 from app.schemas.data_catalog import CandleDatasetManifest
@@ -253,6 +258,40 @@ def test_backtest_execution_matches_published_v1_contract():
     ) == []
 
 
+def test_historical_execution_matches_published_v1_contract():
+    from datetime import datetime, timezone
+
+    dataset = HistoricalExecutionDataset(
+        source="binance.archive",
+        exchange="BINANCE",
+        symbol="BTCUSDT",
+        observations=[
+            HistoricalExecutionObservation(
+                observed_at=datetime.now(timezone.utc),
+                half_spread_bps=2,
+                funding_rate_bps_per_8h=1,
+                source_record_id="funding-1",
+            )
+        ],
+    )
+    validator = Draft202012Validator(
+        load_contract("historical-execution-dataset.schema.json")
+    )
+    assert list(
+        validator.iter_errors(dataset.model_dump(mode="json"))
+    ) == []
+
+
+def test_backtest_margin_matches_published_v1_contract():
+    assumptions = BacktestMarginAssumptions()
+    validator = Draft202012Validator(
+        load_contract("backtest-margin-assumptions.schema.json")
+    )
+    assert list(
+        validator.iter_errors(assumptions.model_dump(mode="json"))
+    ) == []
+
+
 def test_walk_forward_protocol_matches_published_v1_contract():
     protocol = WalkForwardProtocol()
     validator = Draft202012Validator(
@@ -263,12 +302,32 @@ def test_walk_forward_protocol_matches_published_v1_contract():
     ) == []
 
 
+def test_walk_forward_research_plan_matches_published_v1_contract():
+    plan = WalkForwardResearchPlan()
+    validator = Draft202012Validator(
+        load_contract("walk-forward-research-plan.schema.json")
+    )
+    assert list(
+        validator.iter_errors(plan.model_dump(mode="json"))
+    ) == []
+
+
+def test_walk_forward_acceptance_matches_published_v1_contract():
+    criteria = WalkForwardAcceptanceCriteria()
+    validator = Draft202012Validator(
+        load_contract("walk-forward-acceptance.schema.json")
+    )
+    assert list(
+        validator.iter_errors(criteria.model_dump(mode="json"))
+    ) == []
+
+
 def test_walk_forward_artifact_matches_published_v1_contract():
     from datetime import datetime, timezone
 
     now = datetime.now(timezone.utc)
     artifact = WalkForwardArtifactMetadata(
-        experiment_id=f"walk-forward:v1:{'a' * 64}",
+        experiment_id=f"walk-forward:v2:{'a' * 64}",
         artifact_hash="b" * 64,
         dataset_id=f"candles:v1:{'c' * 64}",
         dataset_hash="c" * 64,

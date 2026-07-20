@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/backtest-margin-assumptions.schema.json",
+  "title": "Capital Cipher Backtest Margin Assumptions v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "model_version",
+    "leverage",
+    "maintenance_margin_ratio",
+    "liquidation_fee_bps"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "model_version": {"const": "isolated-margin-v1"},
+    "leverage": {
+      "type": "number",
+      "minimum": 1,
+      "maximum": 125
+    },
+    "maintenance_margin_ratio": {
+      "type": "number",
+      "minimum": 0,
+      "exclusiveMaximum": 0.5
+    },
+    "liquidation_fee_bps": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1000
+    }
+  },
+  "additionalProperties": false
+}

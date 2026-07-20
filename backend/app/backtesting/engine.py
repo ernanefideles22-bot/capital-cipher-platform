@@ -19,6 +19,7 @@ from app.agents.market_data import MarketDataAgent
 from app.agents.quant import QuantAgent
 from app.agents.trend import TrendAgent
 from app.audit.service import AuditService
+from app.backtesting.execution_data import HistoricalExecutionResolver
 from app.core.event_bus import EventBus
 from app.core.logging import ServiceLogger
 from app.core.state_machine import SystemState, SystemStateMachine
@@ -27,10 +28,14 @@ from app.market_data.catalog import build_candle_dataset_manifest
 from app.orchestrator.decision_engine import DecisionEngine
 from app.orchestrator.service import Orchestrator
 from app.paper_trading.engine import PaperTradingEngine
-from app.paper_trading.execution import RealisticExecutionModel
+from app.paper_trading.execution import (
+    IsolatedMarginModel,
+    RealisticExecutionModel,
+)
 from app.risk.manager import RiskManager
 from app.schemas.backtest import (
     BacktestExecutionAssumptions,
+    HistoricalExecutionDatasetManifest,
     BacktestReport,
     BacktestRequest,
 )
@@ -39,7 +44,7 @@ from app.schemas.risk import RiskLimits
 from app.strategy.engine import StrategyEngine
 
 logger = ServiceLogger("backtesting")
-BACKTEST_ENGINE_VERSION = "backtesting-v1"
+BACKTEST_ENGINE_VERSION = "backtesting-v2"
 
 
 async def _paper_state_machine() -> SystemStateMachine:
@@ -99,12 +104,21 @@ class BacktestingEngine:
             raise ValueError(
                 f"No enabled strategy for {request.symbol} {request.timeframe}"
             )
-        return {
+        context = {
             "backtest_engine_version": BACKTEST_ENGINE_VERSION,
             "initial_balance": self._initial_balance,
             "risk_limits": self._limits.model_dump(mode="json"),
             "strategy": strategy.model_dump(mode="json"),
+            "margin_assumptions": request.margin.model_dump(mode="json"),
         }
+        if request.historical_execution is not None:
+            resolver = HistoricalExecutionResolver(
+                request.historical_execution
+            )
+            context["historical_execution_manifest"] = (
+                resolver.manifest.model_dump(mode="json")
+            )
+        return context
 
     async def run(
         self,
@@ -121,6 +135,19 @@ class BacktestingEngine:
         ordered = sorted(candles, key=lambda c: c.closed_at)
         dataset_manifest = build_candle_dataset_manifest(ordered)
         execution_assumptions = self.resolve_execution_assumptions(request)
+        if request.margin.leverage > self._limits.max_leverage:
+            raise ValueError(
+                f"Backtest leverage {request.margin.leverage} exceeds "
+                f"simulated risk limit {self._limits.max_leverage}"
+            )
+        historical_resolver: HistoricalExecutionResolver | None = None
+        historical_manifest: HistoricalExecutionDatasetManifest | None = None
+        if request.historical_execution is not None:
+            historical_resolver = HistoricalExecutionResolver(
+                request.historical_execution
+            )
+            historical_resolver.validate_candles(ordered)
+            historical_manifest = historical_resolver.manifest
 
         sm = await _paper_state_machine()
         audit = AuditService()
@@ -133,8 +160,10 @@ class BacktestingEngine:
             fee_rate_percent=self._fee_rate,
             slippage_rate_percent=self._slippage_rate,
             execution_model=RealisticExecutionModel(
-                execution_assumptions
+                execution_assumptions,
+                historical_execution=historical_resolver,
             ),
+            margin_model=IsolatedMarginModel(request.margin),
             started_at=ordered[0].closed_at,
         )
         orchestrator = Orchestrator(
@@ -186,6 +215,7 @@ class BacktestingEngine:
             dataset_id=dataset_manifest.dataset_id,
             dataset_hash=dataset_manifest.dataset_hash,
             execution_assumptions=execution_assumptions,
+            historical_execution_manifest=historical_manifest,
         )
         report = report.model_copy(
             update={"duration_ms": int((time.monotonic() - started) * 1000)}
@@ -212,6 +242,9 @@ class BacktestingEngine:
         dataset_id: str,
         dataset_hash: str,
         execution_assumptions: BacktestExecutionAssumptions,
+        historical_execution_manifest: (
+            HistoricalExecutionDatasetManifest | None
+        ),
     ) -> BacktestReport:
         closed = paper.closed_orders
         wins = [o for o in closed if (o.pnl or 0) > 0]
@@ -266,8 +299,15 @@ class BacktestingEngine:
             spread=round(perf.spread_total, 4),
             volume_impact=round(perf.volume_impact_total, 4),
             funding=round(perf.funding_total, 4),
+            liquidations=perf.liquidations,
+            liquidation_fees=round(
+                perf.liquidation_fees_total,
+                4,
+            ),
             total_execution_cost=round(perf.total_execution_cost, 4),
             execution_assumptions=execution_assumptions,
+            historical_execution_manifest=historical_execution_manifest,
+            margin_assumptions=request.margin,
             final_balance=round(paper.balance, 2),
             equity_curve=[p.model_dump() for p in paper.equity_curve],
             created_at=datetime.now(timezone.utc).isoformat(),

@@ -24,7 +24,7 @@ class Settings(BaseSettings):
 
     app_env: str = Field(default="local", alias="APP_ENV")
     app_name: str = "capital-cipher-api"
-    app_version: str = "0.13.0"
+    app_version: str = "0.14.0"
 
     system_mode: str = Field(default="PAPER", alias="SYSTEM_MODE")
 
@@ -80,8 +80,18 @@ class Settings(BaseSettings):
     max_daily_drawdown_percent: float = Field(default=5.0, alias="MAX_DAILY_DRAWDOWN_PERCENT")
     max_consecutive_losses: int = Field(default=3, alias="MAX_CONSECUTIVE_LOSSES")
     max_open_positions: int = Field(default=3, alias="MAX_OPEN_POSITIONS")
-    default_leverage: float = Field(default=1.0, alias="DEFAULT_LEVERAGE")
-    max_leverage_simulated: float = Field(default=5.0, alias="MAX_LEVERAGE_SIMULATED")
+    default_leverage: float = Field(
+        default=1.0,
+        alias="DEFAULT_LEVERAGE",
+        ge=1,
+        le=125,
+    )
+    max_leverage_simulated: float = Field(
+        default=5.0,
+        alias="MAX_LEVERAGE_SIMULATED",
+        ge=1,
+        le=125,
+    )
 
     # Paper trading account (simulated balance only — no real money, docs/18).
     paper_initial_balance: float = Field(default=10_000.0, alias="PAPER_INITIAL_BALANCE")
@@ -284,6 +294,10 @@ class Settings(BaseSettings):
             raise ValueError("Clock round-trip thresholds are inconsistent")
         if self.backfill_retry_base_seconds > self.backfill_retry_max_seconds:
             raise ValueError("Backfill retry delay settings are inconsistent")
+        if self.default_leverage > self.max_leverage_simulated:
+            raise ValueError(
+                "DEFAULT_LEVERAGE cannot exceed MAX_LEVERAGE_SIMULATED"
+            )
         return self
 
     @property

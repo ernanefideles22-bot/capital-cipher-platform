@@ -38,6 +38,13 @@ class Database:
             if self.engine.dialect.name == "postgresql":
                 await conn.execute(
                     text(
+                        f'ALTER TABLE "{INTERNAL_SCHEMA}".'
+                        '"walk_forward_experiments" '
+                        "ENABLE ROW LEVEL SECURITY"
+                    )
+                )
+                await conn.execute(
+                    text(
                         f'REVOKE ALL ON ALL TABLES IN SCHEMA "{INTERNAL_SCHEMA}" '
                         "FROM PUBLIC"
                     )
@@ -60,6 +67,8 @@ class Database:
                     "{INTERNAL_SCHEMA}".reject_walk_forward_experiment_mutation()
                     RETURNS trigger
                     LANGUAGE plpgsql
+                    SECURITY INVOKER
+                    SET search_path = ''
                     AS $function$
                     BEGIN
                         RAISE EXCEPTION

@@ -23,7 +23,7 @@
     "artifact_version": {"const": "walk-forward-artifact-v1"},
     "experiment_id": {
       "type": "string",
-      "pattern": "^walk-forward:v1:[a-f0-9]{64}$"
+      "pattern": "^walk-forward:v[12]:[a-f0-9]{64}$"
     },
     "artifact_hash": {
       "type": "string",

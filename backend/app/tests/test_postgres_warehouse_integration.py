@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from pathlib import Path
 
 import pytest
 from sqlalchemy import text, update
@@ -34,6 +35,27 @@ from app.tests.conftest import make_series
     reason="POSTGRES_TEST_URL is not configured",
 )
 async def test_real_postgres_internal_warehouse_round_trip():
+    import asyncpg
+
+    migration_path = (
+        Path(__file__).resolve().parents[3]
+        / "supabase"
+        / "migrations"
+        / "20260720065032_create_walk_forward_experiments.sql"
+    )
+    migration_connection = await asyncpg.connect(
+        os.environ["POSTGRES_TEST_URL"].replace(
+            "postgresql+asyncpg://",
+            "postgresql://",
+        )
+    )
+    try:
+        await migration_connection.execute(
+            migration_path.read_text(encoding="utf-8")
+        )
+    finally:
+        await migration_connection.close()
+
     database = Database(os.environ["POSTGRES_TEST_URL"])
     await database.create_all()
     repository = Repository(database)
@@ -166,6 +188,27 @@ async def test_real_postgres_internal_warehouse_round_trip():
                 {"schema_name": INTERNAL_SCHEMA},
             )
         )
+        row_security_enabled = await connection.scalar(
+            text(
+                "SELECT c.relrowsecurity "
+                "FROM pg_class c "
+                "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                "WHERE n.nspname = :schema_name "
+                "AND c.relname = 'walk_forward_experiments'"
+            ),
+            {"schema_name": INTERNAL_SCHEMA},
+        )
+        function_is_security_definer = await connection.scalar(
+            text(
+                "SELECT p.prosecdef "
+                "FROM pg_proc p "
+                "JOIN pg_namespace n ON n.oid = p.pronamespace "
+                "WHERE n.nspname = :schema_name "
+                "AND p.proname = "
+                "'reject_walk_forward_experiment_mutation'"
+            ),
+            {"schema_name": INTERNAL_SCHEMA},
+        )
     await database.dispose()
 
     assert loaded == manifest
@@ -189,3 +232,5 @@ async def test_real_postgres_internal_warehouse_round_trip():
         "walk_forward_experiments",
     } <= tables
     assert "trg_walk_forward_experiments_immutable" in immutable_triggers
+    assert row_security_enabled is True
+    assert function_is_security_definer is False

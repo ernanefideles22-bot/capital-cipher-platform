@@ -1,6 +1,6 @@
 {
   "name": "capital-cipher-platform",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "private": true,
   "packageManager": "pnpm@11.9.0",
   "scripts": {
@@ -11,6 +11,7 @@
     "check:affected": "turbo run build typecheck test --affected"
   },
   "devDependencies": {
+    "supabase": "2.109.1",
     "turbo": "2.8.21"
   }
 }

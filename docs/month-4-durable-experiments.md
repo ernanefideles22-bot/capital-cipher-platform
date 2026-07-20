@@ -111,18 +111,16 @@ promotion_status = RESEARCH_ONLY
 Persistence cannot enable a strategy, alter risk limits, change system mode,
 or authorize real execution.
 
-## Deployment boundary and deferred work
+## Deployment boundary and Month 4 completion
 
-This repository currently creates additive tables through its existing
-trusted `create_all` bootstrap. Before a shared or production rollout, the
-schema and trigger should also be represented in a reviewed, versioned
-migration workflow.
+The artifact schema and trigger are represented by a reviewed, versioned
+Supabase migration and exercised against disposable PostgreSQL in CI. No
+migration has been applied to a hosted project by this work.
 
-Still deferred:
+Versioned train-only fitting, pre-registered acceptance gates, minimum sample
+sizes, multiple-testing correction, search budgets, historical
+spread/funding data, and margin/liquidation mechanics are completed in
+[`month-4-completion.md`](month-4-completion.md).
 
-- versioned fitting that consumes train data without test access;
-- pre-registered acceptance gates and minimum sample sizes;
-- multiple-testing correction and search budgets;
-- historical spread/funding data;
-- margin and liquidation mechanics;
-- external immutable archival and retention policy.
+External WORM archival and organization-specific retention policy remain
+future governance hardening, not part of the Month 4 backtester scope.

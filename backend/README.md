@@ -95,11 +95,13 @@ consumer handling and resume from the next confirmed event. See
 See `../docs/month-4-realistic-execution.md` for formulas, configuration,
 report fields, and safety boundaries. See
 `../docs/month-4-walk-forward-protocol.md` for pre-registration, embargoed
-temporal folds, reproducible experiment identities, and deferred fitting and
-promotion controls.
+temporal folds and reproducible experiment identities.
 Durable content-addressed reports, atomic idempotency, private PostgreSQL
 storage, and mutation guards are documented in
 `../docs/month-4-durable-experiments.md`.
+The completed Month 4 boundary—historical spread/funding data, margin and
+liquidation, train-only fitting, statistical gates, and versioned Supabase
+migration—is documented in `../docs/month-4-completion.md`.
 
 ## Architecture
 
