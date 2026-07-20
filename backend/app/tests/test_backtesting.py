@@ -46,6 +46,9 @@ async def test_backtest_is_deterministic():
     assert first.decisions == second.decisions
     assert first.dataset_hash == second.dataset_hash
     assert first.dataset_id == second.dataset_id
+    assert first.equity_curve == second.equity_curve
+    assert first.execution_assumptions == second.execution_assumptions
+    assert first.total_execution_cost == second.total_execution_cost
 
 
 async def test_backtest_processes_candles_in_order_even_if_shuffled():

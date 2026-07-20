@@ -24,7 +24,7 @@ class Settings(BaseSettings):
 
     app_env: str = Field(default="local", alias="APP_ENV")
     app_name: str = "capital-cipher-api"
-    app_version: str = "0.10.0"
+    app_version: str = "0.11.0"
 
     system_mode: str = Field(default="PAPER", alias="SYSTEM_MODE")
 
@@ -85,8 +85,36 @@ class Settings(BaseSettings):
 
     # Paper trading account (simulated balance only — no real money, docs/18).
     paper_initial_balance: float = Field(default=10_000.0, alias="PAPER_INITIAL_BALANCE")
-    fee_rate_percent: float = Field(default=0.08, alias="FEE_RATE_PERCENT")
-    slippage_rate_percent: float = Field(default=0.02, alias="SLIPPAGE_RATE_PERCENT")
+    fee_rate_percent: float = Field(
+        default=0.08,
+        alias="FEE_RATE_PERCENT",
+        ge=0,
+        le=10,
+    )
+    slippage_rate_percent: float = Field(
+        default=0.02,
+        alias="SLIPPAGE_RATE_PERCENT",
+        ge=0,
+        le=10,
+    )
+    backtest_half_spread_bps: float = Field(
+        default=1.0,
+        alias="BACKTEST_HALF_SPREAD_BPS",
+        ge=0,
+        le=1_000,
+    )
+    backtest_volume_impact_bps: float = Field(
+        default=10.0,
+        alias="BACKTEST_VOLUME_IMPACT_BPS",
+        ge=0,
+        le=10_000,
+    )
+    backtest_funding_rate_bps_per_8h: float = Field(
+        default=0.0,
+        alias="BACKTEST_FUNDING_RATE_BPS_PER_8H",
+        ge=-1_000,
+        le=1_000,
+    )
 
     # Decision engine (docs/25-decision-engine.md).
     minimum_candidate_confidence: int = Field(default=70, alias="MINIMUM_CANDIDATE_CONFIDENCE")

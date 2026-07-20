@@ -83,11 +83,16 @@ consumer handling and resume from the next confirmed event. See
   profiles; regime rules (HIGH_VOLATILITY blocks, RANGE raises min confidence).
   Strategy overrides can only tighten docs/06 global limits, never loosen them.
 - `app/backtesting/` — Backtesting Engine (docs/17): isolated pipeline replay,
-  no lookahead (input order irrelevant), mandatory metrics, fees/slippage.
+  no lookahead (input order irrelevant), mandatory metrics, and versioned
+  adverse entry/exit costs for fees, spread, slippage, volume impact, and
+  signed funding.
   API: `POST /api/v1/backtest/run` (source: store | inline | csv).
 - Reports: `GET /api/v1/reports/performance?by=symbol|timeframe` (equity curve
   included), `GET /api/v1/reports/agents/ranking` (report-only, docs/27).
 - Risk: total-drawdown gate (10% default) + daily reset on UTC day change.
+
+See `../docs/month-4-realistic-execution.md` for formulas, configuration,
+report fields, safety boundaries, and deferred liquidation/walk-forward work.
 
 ## Architecture
 

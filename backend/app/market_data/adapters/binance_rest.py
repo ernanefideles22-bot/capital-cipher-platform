@@ -33,7 +33,7 @@ class BinancePublicRestClient:
         self._client = client or httpx.AsyncClient(
             base_url=base_url,
             timeout=timeout_seconds,
-            headers={"User-Agent": "capital-cipher-platform/0.10"},
+            headers={"User-Agent": "capital-cipher-platform/0.11"},
         )
 
     async def _get_json(self, path: str, *, params: dict | None = None):

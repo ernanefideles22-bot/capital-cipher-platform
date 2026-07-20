@@ -16,3 +16,5 @@ backend implementation classes.
 The v1 family currently includes event, candle, raw source, replay checkpoint,
 dataset manifest, clock observation, market-data gap, historical backfill job,
 durable backfill queue, and content-addressed raw object contracts.
+Backtest execution assumptions are also versioned so cost-model changes cannot
+silently alter experiment results.

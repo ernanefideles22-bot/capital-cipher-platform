@@ -47,6 +47,10 @@ class PaperPerformance(BaseModel):
     net_pnl: float = 0.0
     fees_total: float = 0.0
     slippage_total: float = 0.0
+    spread_total: float = 0.0
+    volume_impact_total: float = 0.0
+    funding_total: float = 0.0
+    total_execution_cost: float = 0.0
     max_drawdown_percent: float = 0.0
     consecutive_losses: int = 0
     balance: float = 0.0

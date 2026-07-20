@@ -39,3 +39,6 @@ backfills are documented in
 Durable worker leases, retries, dead letters, raw provider storage, and full
 backfill lineage are documented in
 [`docs/month-3-durable-data-lake.md`](docs/month-3-durable-data-lake.md).
+The first Month 4 increment—versioned spread, slippage, volume impact, fees,
+and funding assumptions—is documented in
+[`docs/month-4-realistic-execution.md`](docs/month-4-realistic-execution.md).

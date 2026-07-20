@@ -27,8 +27,13 @@ from app.market_data.catalog import build_candle_dataset_manifest
 from app.orchestrator.decision_engine import DecisionEngine
 from app.orchestrator.service import Orchestrator
 from app.paper_trading.engine import PaperTradingEngine
+from app.paper_trading.execution import RealisticExecutionModel
 from app.risk.manager import RiskManager
-from app.schemas.backtest import BacktestReport, BacktestRequest
+from app.schemas.backtest import (
+    BacktestExecutionAssumptions,
+    BacktestReport,
+    BacktestRequest,
+)
 from app.schemas.market import Candle
 from app.schemas.risk import RiskLimits
 from app.strategy.engine import StrategyEngine
@@ -53,12 +58,22 @@ class BacktestingEngine:
         initial_balance: float = 10_000.0,
         fee_rate_percent: float = 0.08,
         slippage_rate_percent: float = 0.02,
+        half_spread_bps: float = 1.0,
+        volume_impact_bps: float = 10.0,
+        funding_rate_bps_per_8h: float = 0.0,
         strategy_engine: StrategyEngine | None = None,
     ) -> None:
         self._limits = limits or RiskLimits()
         self._initial_balance = initial_balance
         self._fee_rate = fee_rate_percent
         self._slippage_rate = slippage_rate_percent
+        self._execution_assumptions = BacktestExecutionAssumptions(
+            taker_fee_bps=fee_rate_percent * 100,
+            half_spread_bps=half_spread_bps,
+            base_slippage_bps=slippage_rate_percent * 100,
+            volume_impact_bps=volume_impact_bps,
+            funding_rate_bps_per_8h=funding_rate_bps_per_8h,
+        )
         self._strategy_engine = strategy_engine
         self.reports: list[BacktestReport] = []
 
@@ -70,6 +85,9 @@ class BacktestingEngine:
         # Candles must be processed in temporal order (docs/17, docs/32).
         ordered = sorted(candles, key=lambda c: c.closed_at)
         dataset_manifest = build_candle_dataset_manifest(ordered)
+        execution_assumptions = (
+            request.execution or self._execution_assumptions
+        )
 
         sm = await _paper_state_machine()
         audit = AuditService()
@@ -81,6 +99,10 @@ class BacktestingEngine:
             initial_balance=self._initial_balance,
             fee_rate_percent=self._fee_rate,
             slippage_rate_percent=self._slippage_rate,
+            execution_model=RealisticExecutionModel(
+                execution_assumptions
+            ),
+            started_at=ordered[0].closed_at,
         )
         orchestrator = Orchestrator(
             state_machine=sm,
@@ -113,7 +135,13 @@ class BacktestingEngine:
         # simulation boundary; avoids phantom open PnL in metrics).
         last_close = ordered[-1].close
         for order_id in list(paper.open_orders.keys()):
-            await paper.close_order(order_id, last_close, "BACKTEST_END")
+            await paper.close_order(
+                order_id,
+                last_close,
+                "BACKTEST_END",
+                market_candle=ordered[-1],
+                occurred_at=ordered[-1].closed_at,
+            )
 
         report = self._build_report(
             request,
@@ -124,6 +152,7 @@ class BacktestingEngine:
             blocked_by_risk,
             dataset_id=dataset_manifest.dataset_id,
             dataset_hash=dataset_manifest.dataset_hash,
+            execution_assumptions=execution_assumptions,
         )
         report = report.model_copy(
             update={"duration_ms": int((time.monotonic() - started) * 1000)}
@@ -148,6 +177,7 @@ class BacktestingEngine:
         *,
         dataset_id: str,
         dataset_hash: str,
+        execution_assumptions: BacktestExecutionAssumptions,
     ) -> BacktestReport:
         closed = paper.closed_orders
         wins = [o for o in closed if (o.pnl or 0) > 0]
@@ -199,6 +229,11 @@ class BacktestingEngine:
             net_pnl_percent=round(net_pnl / self._initial_balance * 100, 4),
             fees=round(perf.fees_total, 4),
             slippage=round(perf.slippage_total, 4),
+            spread=round(perf.spread_total, 4),
+            volume_impact=round(perf.volume_impact_total, 4),
+            funding=round(perf.funding_total, 4),
+            total_execution_cost=round(perf.total_execution_cost, 4),
+            execution_assumptions=execution_assumptions,
             final_balance=round(paper.balance, 2),
             equity_curve=[p.model_dump() for p in paper.equity_curve],
             created_at=datetime.now(timezone.utc).isoformat(),

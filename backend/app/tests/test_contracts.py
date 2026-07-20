@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from app.schemas.agents import AgentOutput
 from app.schemas.backfill import HistoricalBackfillJob, MarketDataGap
+from app.schemas.backtest import BacktestExecutionAssumptions
 from app.schemas.common import AgentStatus, Signal
 from app.schemas.data_catalog import CandleDatasetManifest
 from app.schemas.data_lake import BackfillQueueItem, RawDataObject
@@ -235,4 +236,14 @@ def test_raw_data_object_matches_published_v1_contract():
     )
     assert list(
         validator.iter_errors(raw_object.model_dump(mode="json"))
+    ) == []
+
+
+def test_backtest_execution_matches_published_v1_contract():
+    assumptions = BacktestExecutionAssumptions()
+    validator = Draft202012Validator(
+        load_contract("backtest-execution-assumptions.schema.json")
+    )
+    assert list(
+        validator.iter_errors(assumptions.model_dump(mode="json"))
     ) == []

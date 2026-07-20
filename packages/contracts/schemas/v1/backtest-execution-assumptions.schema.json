@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/backtest-execution-assumptions.schema.json",
+  "title": "Capital Cipher Backtest Execution Assumptions v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "model_version",
+    "taker_fee_bps",
+    "half_spread_bps",
+    "base_slippage_bps",
+    "volume_impact_bps",
+    "funding_rate_bps_per_8h"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "model_version": {"const": "realistic-v1"},
+    "taker_fee_bps": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1000
+    },
+    "half_spread_bps": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1000
+    },
+    "base_slippage_bps": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1000
+    },
+    "volume_impact_bps": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 10000
+    },
+    "funding_rate_bps_per_8h": {
+      "type": "number",
+      "minimum": -1000,
+      "maximum": 1000
+    }
+  },
+  "additionalProperties": false
+}

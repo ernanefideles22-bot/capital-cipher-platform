@@ -2,7 +2,27 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
+
+from app.schemas.events import CONTRACT_VERSION
+
+
+class BacktestExecutionAssumptions(BaseModel):
+    """Versioned, explicit cost assumptions for deterministic simulation."""
+
+    schema_version: Literal["1.0.0"] = CONTRACT_VERSION
+    model_version: Literal["realistic-v1"] = "realistic-v1"
+    taker_fee_bps: float = Field(default=8.0, ge=0, le=1_000)
+    half_spread_bps: float = Field(default=1.0, ge=0, le=1_000)
+    base_slippage_bps: float = Field(default=2.0, ge=0, le=1_000)
+    volume_impact_bps: float = Field(default=10.0, ge=0, le=10_000)
+    funding_rate_bps_per_8h: float = Field(
+        default=0.0,
+        ge=-1_000,
+        le=1_000,
+    )
 
 
 class BacktestRequest(BaseModel):
@@ -12,6 +32,7 @@ class BacktestRequest(BaseModel):
     exchange: str = "BINANCE"
     candles: list[dict] | None = None
     csv_path: str | None = None
+    execution: BacktestExecutionAssumptions | None = None
 
 
 class BacktestReport(BaseModel):
@@ -41,6 +62,13 @@ class BacktestReport(BaseModel):
     net_pnl_percent: float
     fees: float
     slippage: float
+    spread: float = 0.0
+    volume_impact: float = 0.0
+    funding: float = 0.0
+    total_execution_cost: float = 0.0
+    execution_assumptions: BacktestExecutionAssumptions = Field(
+        default_factory=BacktestExecutionAssumptions
+    )
     final_balance: float
     equity_curve: list[dict] = Field(default_factory=list)
     duration_ms: int = 0

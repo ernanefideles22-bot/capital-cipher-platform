@@ -214,6 +214,11 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         initial_balance=settings.paper_initial_balance,
         fee_rate_percent=settings.fee_rate_percent,
         slippage_rate_percent=settings.slippage_rate_percent,
+        half_spread_bps=settings.backtest_half_spread_bps,
+        volume_impact_bps=settings.backtest_volume_impact_bps,
+        funding_rate_bps_per_8h=(
+            settings.backtest_funding_rate_bps_per_8h
+        ),
     )
     ctx = AppContext(
         settings=settings,

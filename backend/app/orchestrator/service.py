@@ -431,7 +431,11 @@ class Orchestrator:
 
         # Paper order (only APPROVED / REDUCED reach this point).
         order = await self._paper.create_order(
-            decision_after_risk, risk_check, current_price=candle.close
+            decision_after_risk,
+            risk_check,
+            current_price=candle.close,
+            market_candle=candle,
+            occurred_at=candle.closed_at,
         )
         await self._bus.publish(
             Topics.PAPER_ORDERS,

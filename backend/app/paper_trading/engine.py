@@ -12,6 +12,10 @@ from datetime import datetime, timezone
 from app.audit.service import AuditService
 from app.core.errors import RiskError, ValidationError
 from app.core.logging import ServiceLogger
+from app.paper_trading.execution import (
+    ExecutionCostLedger,
+    RealisticExecutionModel,
+)
 from app.risk.manager import RiskManager
 from app.schemas.common import Exchange, OrderSide, PaperOrderStatus, RiskStatus
 from app.schemas.decisions import Decision
@@ -31,6 +35,8 @@ class PaperTradingEngine:
         initial_balance: float = 10_000.0,
         fee_rate_percent: float = 0.08,
         slippage_rate_percent: float = 0.02,
+        execution_model: RealisticExecutionModel | None = None,
+        started_at: datetime | None = None,
         repository=None,
     ) -> None:
         self._audit = audit_service
@@ -40,18 +46,30 @@ class PaperTradingEngine:
         self.balance = initial_balance
         self.fee_rate = fee_rate_percent / 100
         self.slippage_rate = slippage_rate_percent / 100
+        self._execution_model = execution_model
         self.open_orders: dict[str, PaperOrder] = {}
         self.closed_orders: list[PaperOrder] = []
+        self._execution_costs: dict[str, ExecutionCostLedger] = {}
+        self._last_funding_at: dict[str, datetime] = {}
         self._processed_keys: set[tuple[str, str]] = set()
         self._peak_equity = initial_balance
         self._max_drawdown_percent = 0.0
         self.equity_curve: list[EquityPoint] = [
-            EquityPoint(timestamp=datetime.now(timezone.utc).isoformat(), balance=initial_balance)
+            EquityPoint(
+                timestamp=(started_at or datetime.now(timezone.utc)).isoformat(),
+                balance=initial_balance,
+            )
         ]
 
     # -- order creation --------------------------------------------------------
     async def create_order(
-        self, decision: Decision, risk_check: RiskCheck, *, current_price: float
+        self,
+        decision: Decision,
+        risk_check: RiskCheck,
+        *,
+        current_price: float,
+        market_candle: Candle | None = None,
+        occurred_at: datetime | None = None,
     ) -> PaperOrder:  # noqa: D401
         # Invariants (docs/18, docs/29): no order without approved risk check.
         if risk_check.risk_status not in (RiskStatus.APPROVED, RiskStatus.REDUCED):
@@ -73,12 +91,34 @@ class PaperTradingEngine:
             )
 
         side = OrderSide(decision.candidate_action.value)
-        slippage_cost = current_price * self.slippage_rate
-        entry_price = (
-            current_price + slippage_cost if side == OrderSide.BUY else current_price - slippage_cost
-        )
         position_size = risk_check.position_size or 0.0
-        fees = position_size * self.fee_rate
+        ledger = ExecutionCostLedger()
+        if self._execution_model is not None:
+            fill = self._execution_model.open_fill(
+                side=side,
+                reference_price=current_price,
+                position_notional=position_size,
+                candle=market_candle,
+            )
+            entry_price = fill.fill_price
+            fees = fill.fee_cost
+            slippage_estimate = fill.spread_cost + fill.slippage_cost
+            ledger.fees = fees
+            ledger.spread = fill.spread_cost
+            ledger.slippage = fill.slippage_cost
+            ledger.volume_impact = fill.volume_impact_cost
+            entry_precision = 8
+        else:
+            slippage_cost = current_price * self.slippage_rate
+            entry_price = (
+                current_price + slippage_cost
+                if side == OrderSide.BUY
+                else current_price - slippage_cost
+            )
+            fees = position_size * self.fee_rate
+            slippage_estimate = slippage_cost
+            entry_precision = 2
+        opened_at = occurred_at or datetime.now(timezone.utc)
 
         order = PaperOrder(
             decision_id=decision.decision_id,
@@ -88,14 +128,14 @@ class PaperTradingEngine:
             symbol=decision.symbol,
             timeframe=decision.timeframe,
             side=side,
-            entry_price=round(entry_price, 2),
+            entry_price=round(entry_price, entry_precision),
             stop_loss=risk_check.stop_loss,
             take_profit=risk_check.take_profit,
             position_size=position_size,
             status=PaperOrderStatus.FILLED,
             fees_estimated=round(fees, 4),
-            slippage_estimated=round(slippage_cost, 4),
-            opened_at=datetime.now(timezone.utc),
+            slippage_estimated=round(slippage_estimate, 4),
+            opened_at=opened_at,
         )
         # Audit BEFORE accepting the order into the book (docs/12 critical rule).
         await self._audit.record(
@@ -107,6 +147,9 @@ class PaperTradingEngine:
         )
         self._processed_keys.add(key)
         self.open_orders[order.paper_order_id] = order
+        if self._execution_model is not None:
+            self._execution_costs[order.paper_order_id] = ledger
+            self._last_funding_at[order.paper_order_id] = opened_at
         self._risk.set_open_positions(len(self.open_orders))
         if self._repository is not None:
             await self._repository.save_paper_order(order)
@@ -125,6 +168,7 @@ class PaperTradingEngine:
         for order in list(self.open_orders.values()):
             if order.symbol != candle.symbol:
                 continue
+            self._accrue_funding(order, candle.closed_at)
             exit_price: float | None = None
             exit_reason: str | None = None
             if order.side == OrderSide.BUY:
@@ -138,43 +182,82 @@ class PaperTradingEngine:
                 elif order.take_profit is not None and candle.low <= order.take_profit:
                     exit_price, exit_reason = order.take_profit, "TAKE_PROFIT"
             if exit_price is not None:
-                closed.append(await self.close_order(order.paper_order_id, exit_price, exit_reason))
+                closed.append(
+                    await self.close_order(
+                        order.paper_order_id,
+                        exit_price,
+                        exit_reason,
+                        market_candle=candle,
+                        occurred_at=candle.closed_at,
+                    )
+                )
         return closed
 
     async def close_order(
-        self, paper_order_id: str, exit_price: float, exit_reason: str | None = None
+        self,
+        paper_order_id: str,
+        exit_price: float,
+        exit_reason: str | None = None,
+        *,
+        market_candle: Candle | None = None,
+        occurred_at: datetime | None = None,
     ) -> PaperOrder:
-        order = self.open_orders.pop(paper_order_id, None)
+        if exit_price <= 0:
+            raise ValidationError("Paper order exit price must be positive")
+        order = self.open_orders.get(paper_order_id)
         if order is None:
             raise ValidationError(f"Paper order {paper_order_id} is not open")
-        exit_fees = order.position_size * self.fee_rate
         qty = order.position_size / order.entry_price
+        if (
+            self._execution_model is not None
+            and occurred_at is not None
+        ):
+            self._accrue_funding(order, occurred_at)
+        stored_ledger = self._execution_costs.get(
+            paper_order_id,
+            ExecutionCostLedger(),
+        )
+        ledger = ExecutionCostLedger(
+            fees=stored_ledger.fees,
+            spread=stored_ledger.spread,
+            slippage=stored_ledger.slippage,
+            volume_impact=stored_ledger.volume_impact,
+            funding=stored_ledger.funding,
+        )
+        if self._execution_model is not None:
+            fill = self._execution_model.close_fill(
+                position_side=order.side,
+                reference_price=exit_price,
+                quantity=qty,
+                candle=market_candle,
+            )
+            exit_price = fill.fill_price
+            exit_fees = fill.fee_cost
+            ledger.fees += exit_fees
+            ledger.spread += fill.spread_cost
+            ledger.slippage += fill.slippage_cost
+            ledger.volume_impact += fill.volume_impact_cost
+            slippage_estimate = ledger.spread + ledger.slippage
+        else:
+            exit_fees = order.position_size * self.fee_rate
+            slippage_estimate = order.slippage_estimated
         direction = 1 if order.side == OrderSide.BUY else -1
         gross_pnl = (exit_price - order.entry_price) * qty * direction
-        net_pnl = gross_pnl - order.fees_estimated - exit_fees
+        net_pnl = gross_pnl - order.fees_estimated - exit_fees - ledger.funding
+        closed_at = occurred_at or datetime.now(timezone.utc)
 
         closed = order.model_copy(
             update={
                 "status": PaperOrderStatus.CLOSED,
-                "closed_at": datetime.now(timezone.utc),
+                "closed_at": closed_at,
                 "pnl": round(net_pnl, 4),
-                "exit_price": exit_price,
+                "exit_price": round(exit_price, 8),
                 "exit_reason": exit_reason,
                 "fees_estimated": round(order.fees_estimated + exit_fees, 4),
+                "slippage_estimated": round(slippage_estimate, 4),
             }
         )
-        self.closed_orders.append(closed)
-        self.balance += net_pnl
-        self._risk.set_open_positions(len(self.open_orders))
-        self._risk.register_trade_result(net_pnl)
-        self._peak_equity = max(self._peak_equity, self.balance)
-        drawdown = (self._peak_equity - self.balance) / self._peak_equity * 100
-        self._max_drawdown_percent = max(self._max_drawdown_percent, drawdown)
-        self._risk.update_equity(self.balance)
-        self.equity_curve.append(
-            EquityPoint(timestamp=datetime.now(timezone.utc).isoformat(), balance=round(self.balance, 4))
-        )
-
+        # Record the terminal state before it advances the in-memory account.
         await self._audit.record(
             correlation_id=order.correlation_id,
             audit_type="PAPER_ORDER_CLOSED",
@@ -184,6 +267,26 @@ class PaperTradingEngine:
         )
         if self._repository is not None:
             await self._repository.save_paper_order(closed)
+
+        if self._execution_model is not None:
+            self._execution_costs[paper_order_id] = ledger
+            self._last_funding_at.pop(paper_order_id, None)
+        self.open_orders.pop(paper_order_id)
+        self.closed_orders.append(closed)
+        self.balance += net_pnl
+        self._risk.set_open_positions(len(self.open_orders))
+        self._risk.register_trade_result(net_pnl)
+        self._peak_equity = max(self._peak_equity, self.balance)
+        drawdown = (self._peak_equity - self.balance) / self._peak_equity * 100
+        self._max_drawdown_percent = max(self._max_drawdown_percent, drawdown)
+        self._risk.update_equity(self.balance)
+        self.equity_curve.append(
+            EquityPoint(
+                timestamp=closed_at.isoformat(),
+                balance=round(self.balance, 4),
+            )
+        )
+
         logger.info(
             f"Paper order closed {closed.symbol} pnl={closed.pnl}",
             event_type="PAPER_ORDER_CLOSED",
@@ -192,13 +295,94 @@ class PaperTradingEngine:
         )
         return closed
 
+    def _accrue_funding(
+        self,
+        order: PaperOrder,
+        end_at: datetime,
+    ) -> None:
+        if self._execution_model is None:
+            return
+        start_at = self._last_funding_at.get(order.paper_order_id)
+        if start_at is None or end_at <= start_at:
+            return
+        ledger = self._execution_costs[order.paper_order_id]
+        ledger.funding += self._execution_model.funding_cost(
+            order=order,
+            start_at=start_at,
+            end_at=end_at,
+        )
+        self._last_funding_at[order.paper_order_id] = end_at
+
     # -- reporting ---------------------------------------------------------------
     def performance(self) -> PaperPerformance:
         wins = [o for o in self.closed_orders if (o.pnl or 0) > 0]
         losses = [o for o in self.closed_orders if (o.pnl or 0) <= 0]
         closed_count = len(self.closed_orders)
-        gross = sum((o.pnl or 0) + o.fees_estimated for o in self.closed_orders)
+        funding_total = sum(
+            self._execution_costs.get(
+                order.paper_order_id,
+                ExecutionCostLedger(),
+            ).funding
+            for order in self.closed_orders
+        )
+        spread_total = sum(
+            self._execution_costs.get(
+                order.paper_order_id,
+                ExecutionCostLedger(),
+            ).spread
+            for order in self.closed_orders
+        )
+        slippage_total = sum(
+            self._execution_costs.get(
+                order.paper_order_id,
+                ExecutionCostLedger(),
+            ).slippage
+            for order in self.closed_orders
+        )
+        volume_impact_total = sum(
+            self._execution_costs.get(
+                order.paper_order_id,
+                ExecutionCostLedger(),
+            ).volume_impact
+            for order in self.closed_orders
+        )
+        gross = sum(
+            (o.pnl or 0)
+            + (
+                self._execution_costs.get(
+                    o.paper_order_id,
+                    ExecutionCostLedger(),
+                ).fees
+                if self._execution_model is not None
+                else o.fees_estimated
+            )
+            + self._execution_costs.get(
+                o.paper_order_id,
+                ExecutionCostLedger(),
+            ).funding
+            for o in self.closed_orders
+        )
         net = sum(o.pnl or 0 for o in self.closed_orders)
+        if self._execution_model is None:
+            fees_total = sum(
+                o.fees_estimated for o in self.closed_orders
+            )
+            slippage_total = sum(
+                o.slippage_estimated for o in self.closed_orders
+            )
+        else:
+            fees_total = sum(
+                self._execution_costs.get(
+                    order.paper_order_id,
+                    ExecutionCostLedger(),
+                ).fees
+                for order in self.closed_orders
+            )
+        rounded_fees = round(fees_total, 4)
+        rounded_slippage = round(slippage_total, 4)
+        rounded_spread = round(spread_total, 4)
+        rounded_volume_impact = round(volume_impact_total, 4)
+        rounded_funding = round(funding_total, 4)
         return PaperPerformance(
             total_trades=closed_count + len(self.open_orders),
             open_trades=len(self.open_orders),
@@ -208,8 +392,18 @@ class PaperTradingEngine:
             win_rate=round(len(wins) / closed_count * 100, 2) if closed_count else 0.0,
             gross_pnl=round(gross, 4),
             net_pnl=round(net, 4),
-            fees_total=round(sum(o.fees_estimated for o in self.closed_orders), 4),
-            slippage_total=round(sum(o.slippage_estimated for o in self.closed_orders), 4),
+            fees_total=rounded_fees,
+            slippage_total=rounded_slippage,
+            spread_total=rounded_spread,
+            volume_impact_total=rounded_volume_impact,
+            funding_total=rounded_funding,
+            total_execution_cost=round(
+                rounded_fees
+                + rounded_slippage
+                + rounded_spread
+                + rounded_funding,
+                4,
+            ),
             max_drawdown_percent=round(self._max_drawdown_percent, 4),
             consecutive_losses=self._risk.state.consecutive_losses,
             balance=round(self.balance, 2),
