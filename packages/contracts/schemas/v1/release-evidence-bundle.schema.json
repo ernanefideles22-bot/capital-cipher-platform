@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/release-evidence-bundle.schema.json",
+  "title": "ReleaseEvidenceBundleV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "protocol_version", "evidence_bundle_id",
+    "source_revision", "source_tree_sha256", "month11_report_id",
+    "month11_report_sha256", "collection_environment", "checks", "status",
+    "contract_count", "live_execution_surface_present", "bundle_sha256",
+    "collected_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "protocol_version": { "const": "testnet-release-readiness-v1" },
+    "evidence_bundle_id": { "type": "string", "format": "uuid" },
+    "source_revision": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "source_tree_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "month11_report_id": { "type": "string", "minLength": 1 },
+    "month11_report_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "collection_environment": { "const": "PAPER" },
+    "checks": {
+      "type": "array", "minItems": 10, "maxItems": 64,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["check_name", "status", "summary", "evidence_sha256"],
+        "properties": {
+          "check_name": { "type": "string", "pattern": "^[a-z][a-z0-9_]{2,63}$" },
+          "status": { "enum": ["PASSED", "FAILED"] },
+          "summary": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "evidence_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+        }
+      }
+    },
+    "status": { "enum": ["PASSED", "FAILED"] },
+    "contract_count": { "const": 56 },
+    "live_execution_surface_present": { "const": false },
+    "bundle_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "collected_at": { "type": "string", "format": "date-time" }
+  }
+}

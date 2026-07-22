@@ -68,6 +68,10 @@ from app.database.models import (
     ResilienceTestRunModel,
     ShadowCampaignCheckpointModel,
     ShadowValidationReportModel,
+    ReleaseEvidenceBundleModel,
+    IndependentAuditAttestationModel,
+    TestnetCanaryDrillReportModel,
+    ReleaseGateDecisionModel,
 )
 from app.database.session import Database
 from app.market_data.identity import candle_event_id
@@ -146,6 +150,12 @@ from app.schemas.operations import (
 from app.schemas.shadow_validation import (
     ShadowCampaignCheckpoint,
     ShadowValidationReport,
+)
+from app.schemas.release_readiness import (
+    IndependentAuditAttestation,
+    ReleaseEvidenceBundle,
+    ReleaseGateDecision,
+    TestnetCanaryDrillReport,
 )
 
 
@@ -4699,6 +4709,173 @@ class Repository:
                 ShadowValidationReport.model_validate(row.payload)
                 for row in rows
             ]
+
+    async def save_release_evidence_bundle(
+        self,
+        evidence: ReleaseEvidenceBundle,
+    ) -> ReleaseEvidenceBundle:
+        payload = evidence.model_dump(mode="json")
+        return await self._save_governance_artifact(
+            model_class=ReleaseEvidenceBundleModel,
+            identity=evidence.evidence_bundle_id,
+            payload=payload,
+            values={
+                "evidence_bundle_id": evidence.evidence_bundle_id,
+                "schema_version": evidence.schema_version,
+                "source_revision": evidence.source_revision,
+                "bundle_sha256": evidence.bundle_sha256,
+                "status": evidence.status,
+                "payload": payload,
+                "collected_at": evidence.collected_at,
+            },
+            contract_class=ReleaseEvidenceBundle,
+            label="release evidence bundle",
+        )
+
+    async def list_release_evidence_bundles(
+        self, *, limit: int = 100
+    ) -> list[ReleaseEvidenceBundle]:
+        self._validate_release_limit(limit)
+        async with self._db.session() as session:
+            rows = list(
+                await session.scalars(
+                    select(ReleaseEvidenceBundleModel)
+                    .order_by(
+                        ReleaseEvidenceBundleModel.collected_at.desc(),
+                        ReleaseEvidenceBundleModel.evidence_bundle_id,
+                    )
+                    .limit(limit)
+                )
+            )
+            return [ReleaseEvidenceBundle.model_validate(row.payload) for row in rows]
+
+    async def save_independent_audit_attestation(
+        self,
+        attestation: IndependentAuditAttestation,
+    ) -> IndependentAuditAttestation:
+        payload = attestation.model_dump(mode="json")
+        return await self._save_governance_artifact(
+            model_class=IndependentAuditAttestationModel,
+            identity=attestation.attestation_id,
+            payload=payload,
+            values={
+                "attestation_id": attestation.attestation_id,
+                "schema_version": attestation.schema_version,
+                "evidence_bundle_id": attestation.evidence_bundle_id,
+                "source_revision": attestation.source_revision,
+                "decision": attestation.decision,
+                "payload": payload,
+                "issued_at": attestation.issued_at,
+                "expires_at": attestation.expires_at,
+            },
+            contract_class=IndependentAuditAttestation,
+            label="independent audit attestation",
+        )
+
+    async def list_independent_audit_attestations(
+        self, *, limit: int = 100
+    ) -> list[IndependentAuditAttestation]:
+        self._validate_release_limit(limit)
+        async with self._db.session() as session:
+            rows = list(
+                await session.scalars(
+                    select(IndependentAuditAttestationModel)
+                    .order_by(
+                        IndependentAuditAttestationModel.issued_at.desc(),
+                        IndependentAuditAttestationModel.attestation_id,
+                    )
+                    .limit(limit)
+                )
+            )
+            return [
+                IndependentAuditAttestation.model_validate(row.payload)
+                for row in rows
+            ]
+
+    async def save_testnet_canary_drill_report(
+        self,
+        report: TestnetCanaryDrillReport,
+    ) -> TestnetCanaryDrillReport:
+        payload = report.model_dump(mode="json")
+        return await self._save_governance_artifact(
+            model_class=TestnetCanaryDrillReportModel,
+            identity=report.drill_id,
+            payload=payload,
+            values={
+                "drill_id": report.drill_id,
+                "schema_version": report.schema_version,
+                "evidence_bundle_id": report.evidence_bundle_id,
+                "attestation_id": report.attestation_id,
+                "status": report.status,
+                "payload": payload,
+                "completed_at": report.completed_at,
+            },
+            contract_class=TestnetCanaryDrillReport,
+            label="TESTNET canary drill report",
+        )
+
+    async def list_testnet_canary_drill_reports(
+        self, *, limit: int = 100
+    ) -> list[TestnetCanaryDrillReport]:
+        self._validate_release_limit(limit)
+        async with self._db.session() as session:
+            rows = list(
+                await session.scalars(
+                    select(TestnetCanaryDrillReportModel)
+                    .order_by(
+                        TestnetCanaryDrillReportModel.completed_at.desc(),
+                        TestnetCanaryDrillReportModel.drill_id,
+                    )
+                    .limit(limit)
+                )
+            )
+            return [TestnetCanaryDrillReport.model_validate(row.payload) for row in rows]
+
+    async def save_release_gate_decision(
+        self,
+        decision: ReleaseGateDecision,
+    ) -> ReleaseGateDecision:
+        payload = decision.model_dump(mode="json")
+        return await self._save_governance_artifact(
+            model_class=ReleaseGateDecisionModel,
+            identity=decision.gate_decision_id,
+            payload=payload,
+            values={
+                "gate_decision_id": decision.gate_decision_id,
+                "schema_version": decision.schema_version,
+                "evidence_bundle_id": decision.evidence_bundle_id,
+                "source_revision": decision.source_revision,
+                "outcome": decision.outcome,
+                "testnet_release_authorized": decision.testnet_release_authorized,
+                "live_execution_authorized": decision.live_execution_authorized,
+                "payload": payload,
+                "decided_at": decision.decided_at,
+            },
+            contract_class=ReleaseGateDecision,
+            label="release gate decision",
+        )
+
+    async def list_release_gate_decisions(
+        self, *, limit: int = 100
+    ) -> list[ReleaseGateDecision]:
+        self._validate_release_limit(limit)
+        async with self._db.session() as session:
+            rows = list(
+                await session.scalars(
+                    select(ReleaseGateDecisionModel)
+                    .order_by(
+                        ReleaseGateDecisionModel.decided_at.desc(),
+                        ReleaseGateDecisionModel.gate_decision_id,
+                    )
+                    .limit(limit)
+                )
+            )
+            return [ReleaseGateDecision.model_validate(row.payload) for row in rows]
+
+    @staticmethod
+    def _validate_release_limit(limit: int) -> None:
+        if not 1 <= limit <= 100_000:
+            raise ValueError("Release readiness limit must be 1..100000")
 
     async def get_decisions(self, limit: int = 50) -> list[DecisionModel]:
         async with self._db.session() as session:

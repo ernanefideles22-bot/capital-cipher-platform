@@ -67,6 +67,7 @@ from app.oms.reconciliation import ReconciliationService
 from app.oms.service import OMSService
 from app.operations.service import OperationsService
 from app.paper_trading.engine import PaperTradingEngine
+from app.release_readiness.service import ReleaseReadinessService
 from app.risk.manager import RiskManager
 from app.shadow_validation.service import ShadowValidationService
 from app.schemas.common import Exchange
@@ -116,6 +117,7 @@ class AppContext:
     portfolio_construction_service: PortfolioConstructionService | None = None
     operations_service: OperationsService | None = None
     shadow_validation_service: ShadowValidationService | None = None
+    release_readiness_service: ReleaseReadinessService | None = None
     market_connected: bool = False
 
 
@@ -399,6 +401,7 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         paper_engine=paper_engine,
         repository=repository,
     )
+    release_readiness_service = ReleaseReadinessService(repository)
     decision_engine = DecisionEngine(
         minimum_candidate_confidence=settings.minimum_candidate_confidence
     )
@@ -497,6 +500,7 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         portfolio_construction_service=portfolio_construction_service,
         operations_service=operations_service,
         shadow_validation_service=shadow_validation_service,
+        release_readiness_service=release_readiness_service,
     )
     context_holder["ctx"] = ctx
     return ctx

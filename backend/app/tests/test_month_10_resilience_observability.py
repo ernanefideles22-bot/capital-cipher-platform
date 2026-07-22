@@ -514,7 +514,7 @@ def test_month10_contracts_and_private_migration_are_complete():
     )
     artifacts = _artifacts()
 
-    assert len(manifest["schemas"]) == 52
+    assert len(manifest["schemas"]) == 56
     for name, artifact in zip(names, artifacts, strict=True):
         assert f"schemas/v1/{name}" in manifest["schemas"]
         schema = json.loads((CONTRACT_ROOT / name).read_text(encoding="utf-8"))

@@ -1548,6 +1548,128 @@ class ShadowValidationReportModel(Base):
     )
 
 
+class ReleaseEvidenceBundleModel(Base):
+    """Immutable automated technical audit evidence."""
+
+    __tablename__ = "release_evidence_bundles"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('PASSED', 'FAILED')",
+            name="ck_release_evidence_status",
+        ),
+        Index(
+            "ix_release_evidence_collected",
+            "collected_at",
+            "evidence_bundle_id",
+        ),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    evidence_bundle_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_revision: Mapped[str] = mapped_column(String(40), nullable=False)
+    bundle_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    payload: Mapped[dict] = mapped_column(JsonType, nullable=False)
+    collected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class IndependentAuditAttestationModel(Base):
+    """Immutable external reviewer attestation."""
+
+    __tablename__ = "independent_audit_attestations"
+    __table_args__ = (
+        CheckConstraint(
+            "decision IN ('APPROVED_TESTNET', 'REJECTED')",
+            name="ck_independent_audit_decision",
+        ),
+        Index(
+            "ix_independent_audit_issued",
+            "issued_at",
+            "attestation_id",
+        ),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    attestation_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    evidence_bundle_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    source_revision: Mapped[str] = mapped_column(String(40), nullable=False)
+    decision: Mapped[str] = mapped_column(String(24), nullable=False)
+    payload: Mapped[dict] = mapped_column(JsonType, nullable=False)
+    issued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class TestnetCanaryDrillReportModel(Base):
+    """Immutable no-network TESTNET control rehearsal evidence."""
+
+    __tablename__ = "testnet_canary_drill_reports"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('PASSED', 'FAILED')",
+            name="ck_testnet_canary_drill_status",
+        ),
+        Index(
+            "ix_testnet_canary_completed",
+            "completed_at",
+            "drill_id",
+        ),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    drill_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    evidence_bundle_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    attestation_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    payload: Mapped[dict] = mapped_column(JsonType, nullable=False)
+    completed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class ReleaseGateDecisionModel(Base):
+    """Immutable fail-closed TESTNET release decision."""
+
+    __tablename__ = "release_gate_decisions"
+    __table_args__ = (
+        CheckConstraint(
+            "outcome IN ('APPROVED_TESTNET', "
+            "'BLOCKED_PENDING_EXTERNAL_AUDIT', 'BLOCKED_TECHNICAL')",
+            name="ck_release_gate_outcome",
+        ),
+        CheckConstraint(
+            "live_execution_authorized = false",
+            name="ck_release_gate_no_live",
+        ),
+        Index(
+            "ix_release_gate_decided",
+            "decided_at",
+            "gate_decision_id",
+        ),
+        {"schema": INTERNAL_SCHEMA},
+    )
+
+    gate_decision_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    evidence_bundle_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    source_revision: Mapped[str] = mapped_column(String(40), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(40), nullable=False)
+    testnet_release_authorized: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    live_execution_authorized: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    payload: Mapped[dict] = mapped_column(JsonType, nullable=False)
+    decided_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
 class AgentOutputModel(Base):
     __tablename__ = "agent_outputs"
 

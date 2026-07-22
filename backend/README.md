@@ -226,6 +226,30 @@ python scripts/run_month11_shadow_validation.py
 
 See `../docs/month-11-shadow-validation.md`.
 
+Month 12 adds a reproducible technical evidence bundle, an external auditor
+attestation contract, a bounded no-network TESTNET canary with immediate
+rollback, and a short-lived fail-closed release gate. The platform cannot issue
+its own external approval and does not change runtime configuration.
+
+Authenticated Month 12 read-only APIs:
+
+```text
+GET /api/v1/operations/release-readiness/evidence
+GET /api/v1/operations/release-readiness/attestations
+GET /api/v1/operations/release-readiness/canary-drills
+GET /api/v1/operations/release-readiness/gates
+```
+
+Run the credential-free repository audit with:
+
+```bash
+python scripts/run_release_readiness_audit.py --help
+```
+
+See `../docs/month-12-release-readiness.md`. Without a genuine external signed
+attestation the expected state is `BLOCKED_PENDING_EXTERNAL_AUDIT`; TESTNET is
+not activated and LIVE remains absent.
+
 ## Architecture
 
 ```text

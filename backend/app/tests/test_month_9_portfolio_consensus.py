@@ -481,7 +481,7 @@ def test_month9_contracts_and_private_migration_are_complete():
         "drift-observation.schema.json",
         "portfolio-proposal.schema.json",
     )
-    assert len(manifest["schemas"]) == 52
+    assert len(manifest["schemas"]) == 56
     for name in names:
         assert f"schemas/v1/{name}" in manifest["schemas"]
         Draft202012Validator.check_schema(

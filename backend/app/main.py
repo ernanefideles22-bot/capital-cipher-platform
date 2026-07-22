@@ -80,6 +80,8 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
             await ctx.operations_service.initialize()
         if ctx.shadow_validation_service is not None:
             await ctx.shadow_validation_service.initialize()
+        if ctx.release_readiness_service is not None:
+            await ctx.release_readiness_service.initialize()
         outbox_stop = asyncio.Event()
         outbox_task = None
         backfill_stop = asyncio.Event()

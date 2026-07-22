@@ -283,7 +283,7 @@ def test_month11_contract_and_private_migration_are_complete():
         "shadow-campaign-checkpoint.schema.json",
         "shadow-validation-report.schema.json",
     )
-    assert len(manifest["schemas"]) == 52
+    assert len(manifest["schemas"]) == 56
     for name in names:
         assert f"schemas/v1/{name}" in manifest["schemas"]
         schema = json.loads(

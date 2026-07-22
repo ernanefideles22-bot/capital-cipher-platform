@@ -54,6 +54,10 @@
     "schemas/v1/resilience-test-run.schema.json",
     "schemas/v1/shadow-campaign-definition.schema.json",
     "schemas/v1/shadow-campaign-checkpoint.schema.json",
-    "schemas/v1/shadow-validation-report.schema.json"
+    "schemas/v1/shadow-validation-report.schema.json",
+    "schemas/v1/release-evidence-bundle.schema.json",
+    "schemas/v1/independent-audit-attestation.schema.json",
+    "schemas/v1/testnet-canary-drill-report.schema.json",
+    "schemas/v1/release-gate-decision.schema.json"
   ]
 }

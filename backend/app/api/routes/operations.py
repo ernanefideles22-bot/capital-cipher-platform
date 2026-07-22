@@ -205,3 +205,82 @@ async def list_shadow_validation_checkpoints(
             "mutation_api_available": False,
         }
     )
+
+
+@router.get("/release-readiness/evidence")
+async def list_release_evidence(
+    limit: int = Query(default=100, ge=1, le=1_000),
+    context: AppContext = Depends(get_context),
+) -> dict:
+    service = context.release_readiness_service
+    if service is None:
+        return error_response("RELEASE_READINESS_UNAVAILABLE", "Unavailable")
+    return success_response(
+        {
+            "evidence_bundles": [
+                item.model_dump(mode="json")
+                for item in service.evidence_bundles(limit=limit)
+            ],
+            "mutation_api_available": False,
+            "live_execution_available": False,
+        }
+    )
+
+
+@router.get("/release-readiness/attestations")
+async def list_release_attestations(
+    limit: int = Query(default=100, ge=1, le=1_000),
+    context: AppContext = Depends(get_context),
+) -> dict:
+    service = context.release_readiness_service
+    if service is None:
+        return error_response("RELEASE_READINESS_UNAVAILABLE", "Unavailable")
+    return success_response(
+        {
+            "attestations": [
+                item.model_dump(mode="json")
+                for item in service.attestations(limit=limit)
+            ],
+            "external_submission_api_available": False,
+        }
+    )
+
+
+@router.get("/release-readiness/canary-drills")
+async def list_testnet_canary_drills(
+    limit: int = Query(default=100, ge=1, le=1_000),
+    context: AppContext = Depends(get_context),
+) -> dict:
+    service = context.release_readiness_service
+    if service is None:
+        return error_response("RELEASE_READINESS_UNAVAILABLE", "Unavailable")
+    return success_response(
+        {
+            "canary_drills": [
+                item.model_dump(mode="json")
+                for item in service.canary_drills(limit=limit)
+            ],
+            "remote_testnet_call_available": False,
+            "real_funds_used": False,
+        }
+    )
+
+
+@router.get("/release-readiness/gates")
+async def list_release_gates(
+    limit: int = Query(default=100, ge=1, le=1_000),
+    context: AppContext = Depends(get_context),
+) -> dict:
+    service = context.release_readiness_service
+    if service is None:
+        return error_response("RELEASE_READINESS_UNAVAILABLE", "Unavailable")
+    return success_response(
+        {
+            "gate_decisions": [
+                item.model_dump(mode="json")
+                for item in service.gate_decisions(limit=limit)
+            ],
+            "runtime_activation_api_available": False,
+            "live_execution_available": False,
+        }
+    )
