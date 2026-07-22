@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:17-alpine
         env:
           POSTGRES_USER: cipher
           POSTGRES_PASSWORD: cipher
@@ -60,6 +60,20 @@ jobs:
           POSTGRES_MIGRATION_VALIDATION_URL: postgresql://cipher:cipher@localhost:5432/capital_cipher_test
           MIGRATION_VALIDATION_ACK: EPHEMERAL_TEST_DATABASE
         run: python backend/scripts/validate_supabase_migrations.py
+      - name: Validate staging Compose
+        env:
+          STAGING_POSTGRES_PASSWORD: ci-postgres-abcdefghijklmnopqrstuvwxyz-012345
+          STAGING_REDIS_PASSWORD: ci-redis-abcdefghijklmnopqrstuvwxyz-0123456789
+          ADMIN_API_KEY: ci-admin-abcdefghijklmnopqrstuvwxyz-0123456789
+        run: docker compose -f deploy/staging/compose.yml config --quiet
+      - name: Build and preflight staging image
+        env:
+          STAGING_POSTGRES_PASSWORD: ci-postgres-abcdefghijklmnopqrstuvwxyz-012345
+          STAGING_REDIS_PASSWORD: ci-redis-abcdefghijklmnopqrstuvwxyz-0123456789
+          ADMIN_API_KEY: ci-admin-abcdefghijklmnopqrstuvwxyz-0123456789
+        run: |
+          docker compose -f deploy/staging/compose.yml build preflight
+          docker compose -f deploy/staging/compose.yml run --rm --no-deps preflight
       - name: Install workspace dependencies
         run: pnpm install --frozen-lockfile
       - name: Build, typecheck, and test all packages

@@ -72,6 +72,10 @@ async def test_rate_limit_is_enforced_and_health_is_exempt():
         assert limited.headers["retry-after"]
         assert limited.json()["error"]["code"] == "RATE_LIMITED"
         assert (await client.get("/health")).status_code == 200
+        ready = await client.get("/ready")
+        assert ready.status_code == 200
+        assert ready.json()["status"] == "ready"
+        assert ready.json()["live_execution_available"] is False
 
 
 async def test_unauthenticated_websocket_streams_are_not_exposed():

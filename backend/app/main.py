@@ -7,7 +7,6 @@ not exist.
 from __future__ import annotations
 
 import asyncio
-import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -50,7 +49,7 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
     settings = context.settings if context is not None else get_settings()
     configure_logging(settings.log_level)
     if with_market_data is None:
-        with_market_data = os.environ.get("ENABLE_MARKET_DATA", "0") == "1"
+        with_market_data = settings.enable_market_data
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
