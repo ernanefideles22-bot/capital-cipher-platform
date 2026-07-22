@@ -14,15 +14,27 @@ class PaperOrder(BaseModel):
     paper_order_id: str = Field(default_factory=lambda: str(uuid4()))
     decision_id: str
     risk_check_id: str
+    approval_id: str | None = None
+    request_fingerprint: str | None = None
     correlation_id: str
     exchange: Exchange
     symbol: str = Field(min_length=1)
     timeframe: str | None = None
+    strategy: str = "UNSPECIFIED"
     side: OrderSide
     entry_price: float
     stop_loss: float | None = None
     take_profit: float | None = None
     position_size: float = Field(ge=0)
+    leverage: float = Field(default=1.0, ge=1.0)
+    initial_margin: float | None = Field(default=None, ge=0)
+    maintenance_margin_ratio: float | None = Field(
+        default=None,
+        ge=0,
+        lt=0.5,
+    )
+    liquidation_price: float | None = Field(default=None, ge=0)
+    liquidation_fee: float = Field(default=0.0, ge=0)
     status: PaperOrderStatus = PaperOrderStatus.CREATED
     fees_estimated: float = Field(ge=0, default=0.0)
     slippage_estimated: float = Field(ge=0, default=0.0)
@@ -47,6 +59,12 @@ class PaperPerformance(BaseModel):
     net_pnl: float = 0.0
     fees_total: float = 0.0
     slippage_total: float = 0.0
+    spread_total: float = 0.0
+    volume_impact_total: float = 0.0
+    funding_total: float = 0.0
+    liquidations: int = 0
+    liquidation_fees_total: float = 0.0
+    total_execution_cost: float = 0.0
     max_drawdown_percent: float = 0.0
     consecutive_losses: int = 0
     balance: float = 0.0

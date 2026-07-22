@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from app.core.logging import ServiceLogger
 from app.market_data.adapters.base import MarketDataAdapter
 from app.schemas.common import Exchange
-from app.schemas.market import Candle
+from app.schemas.market import Candle, RawMarketEvent
 
 logger = ServiceLogger("bybit_adapter")
 
@@ -17,6 +17,29 @@ BYBIT_WS_URL = "wss://stream.bybit.com/v5/public/linear"
 
 TIMEFRAME_TO_BYBIT = {"1m": "1", "5m": "5", "15m": "15", "1h": "60", "4h": "240", "1d": "D"}
 BYBIT_TO_TIMEFRAME = {v: k for k, v in TIMEFRAME_TO_BYBIT.items()}
+
+
+def build_raw_kline_event(message: dict) -> RawMarketEvent | None:
+    """Wrap the untouched Bybit payload in the versioned ingestion contract."""
+    topic = message.get("topic", "")
+    if not isinstance(topic, str) or not topic.startswith("kline."):
+        return None
+    parts = topic.split(".")
+    symbol = parts[2].upper() if len(parts) == 3 else None
+    event_millis = message.get("ts")
+    if event_millis is None and message.get("data"):
+        event_millis = message["data"][0].get("end")
+    occurred_at = None
+    if event_millis is not None:
+        occurred_at = datetime.fromtimestamp(int(event_millis) / 1000, tz=timezone.utc)
+    return RawMarketEvent(
+        source="bybit.public.websocket",
+        exchange=Exchange.BYBIT,
+        event_type="BYBIT_KLINE",
+        symbol=symbol,
+        occurred_at=occurred_at,
+        payload=message,
+    )
 
 
 def normalize_kline(message: dict) -> list[Candle]:
@@ -95,6 +118,9 @@ class BybitMarketDataAdapter(MarketDataAdapter):
                     await self._emit_status("MARKET_CONNECTED", {"exchange": self.exchange_name})
                     async for raw in ws:
                         message = json.loads(raw)
+                        raw_event = build_raw_kline_event(message)
+                        if raw_event is not None:
+                            await self._emit_raw_event(raw_event)
                         for candle in normalize_kline(message):
                             await self._emit_candle(candle)
             except asyncio.CancelledError:

@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://capital-cipher.local/contracts/v1/venue-order-snapshot.schema.json",
+  "title": "VenueOrderSnapshotV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "exchange", "environment", "venue_order_id",
+    "client_order_id", "symbol", "side", "order_type", "status",
+    "quantity", "cumulative_filled_quantity", "average_fill_price",
+    "observed_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "exchange": { "enum": ["BINANCE", "BYBIT"] },
+    "environment": { "enum": ["PAPER", "TESTNET"] },
+    "venue_order_id": { "type": "string", "minLength": 1 },
+    "client_order_id": { "type": "string", "minLength": 1 },
+    "symbol": { "type": "string", "minLength": 1 },
+    "side": { "enum": ["BUY", "SELL"] },
+    "order_type": { "enum": ["MARKET", "LIMIT"] },
+    "status": {
+      "enum": [
+        "CREATED", "PENDING_SUBMISSION", "SUBMITTED", "PARTIALLY_FILLED",
+        "FILLED", "CANCEL_PENDING", "CANCELED", "REJECTED", "EXPIRED",
+        "UNKNOWN", "QUARANTINED"
+      ]
+    },
+    "quantity": { "type": "number", "exclusiveMinimum": 0 },
+    "cumulative_filled_quantity": { "type": "number", "minimum": 0 },
+    "average_fill_price": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+    "observed_at": { "type": "string", "format": "date-time" }
+  }
+}

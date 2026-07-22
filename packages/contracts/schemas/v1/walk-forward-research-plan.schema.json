@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/walk-forward-research-plan.schema.json",
+  "title": "Capital Cipher Walk-Forward Research Plan v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "plan_version",
+    "research_program_id",
+    "candidate_index",
+    "candidate_budget",
+    "familywise_alpha",
+    "multiple_testing_correction"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "plan_version": {"const": "research-plan-v1"},
+    "research_program_id": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]+$"
+    },
+    "candidate_index": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10000
+    },
+    "candidate_budget": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10000
+    },
+    "familywise_alpha": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "maximum": 0.25
+    },
+    "multiple_testing_correction": {"const": "bonferroni"}
+  },
+  "additionalProperties": false
+}

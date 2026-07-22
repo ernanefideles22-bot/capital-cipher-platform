@@ -1,13 +1,58 @@
-# Capital Cipher AI — Phase 1 Implementation
+# Capital Cipher AI — PAPER and gated TESTNET platform
 
-Implementation of the [capital-cipher-specification](https://github.com/ernanefideles22-bot/capital-cipher-specification)
-Phase 1 MVP + Phase 2 (robust paper trading): multi-agent platform with backtesting engine, strategy engine (SCALP_15M/DAY_1H/SWING_4H), market replay, performance reports per symbol/timeframe, equity curve, total-drawdown control and report-only agent ranking. **No real money, no private
-API keys, no live execution — by design and by test.**
+Active implementation of the
+[capital-cipher-specification](https://github.com/ernanefideles22-bot/capital-cipher-specification):
+an institutional multi-agent research platform with realistic backtesting,
+central portfolio risk, an idempotent order management system, PAPER trading,
+and explicitly gated exchange TESTNET adapters.
+
+**LIVE execution is absent by design and by test.** The default remains PAPER.
+TESTNET requires PostgreSQL, the Month 7 migration, an explicit enable flag,
+an exact acknowledgement, runtime-only sandbox credentials, and an exact
+testnet host allowlist.
 
 ```text
-backend/   FastAPI + Pydantic + SQLAlchemy (98 tests passing)
-frontend/  React + Vite + TS + Tailwind dashboard
-docker-compose.yml  backend + PostgreSQL (dev)
+backend/             FastAPI + Pydantic + SQLAlchemy
+frontend/            React + Vite + TypeScript dashboard
+packages/contracts/  versioned, language-neutral JSON Schema contracts
+Redis Streams        optional durable broker with PostgreSQL outbox
+Data warehouse       time-series, manifests, clock gates, gaps, backfills
+Agent runtime        registry, durable queue, isolated memory, 300 PAPER agents
+Agent governance     performance consensus, drift, versioned experiments
+Operations           metrics, SLOs, cost guard, load/chaos/recovery evidence
+Release gate         independent evidence + bounded TESTNET-only approval
+Portfolio            bounded targets that can only tighten central risk
+Central risk         portfolio limits, VaR, single-use approvals, kill switch
+OMS                  PAPER mirror, Binance Spot/Bybit linear TESTNET outbox
+turbo.json           monorepo task graph
+docker-compose.yml   backend + PostgreSQL (development)
 ```
 
-Quick start: see `backend/README.md` and `frontend/README.md`.
+Install the JavaScript workspace with `pnpm install`, install the backend with
+`python -m pip install -e "backend[dev]"`, then run the complete quality gate
+with `pnpm check`. See `backend/README.md` and `frontend/README.md` for
+service-specific commands.
+
+Repository roles are described in [MIGRATION.md](MIGRATION.md). Incremental
+architecture and completion evidence:
+
+- [Month 2 event foundation](docs/month-2-event-foundation.md)
+- [Month 2 Redis replay](docs/month-2-redis-replay.md)
+- [Month 3 data foundation](docs/month-3-data-foundation.md)
+- [Month 3 clocks, gaps and backfills](docs/month-3-clock-gap-backfill.md)
+- [Month 3 durable data lake](docs/month-3-durable-data-lake.md)
+- [Month 4 realistic execution](docs/month-4-realistic-execution.md)
+- [Month 4 walk-forward protocol](docs/month-4-walk-forward-protocol.md)
+- [Month 4 durable experiments](docs/month-4-durable-experiments.md)
+- [Month 4 completion](docs/month-4-completion.md)
+- [Month 5 governed agent runtime](docs/month-5-agent-runtime.md)
+- [Month 6 central risk engine](docs/month-6-central-risk-engine.md)
+- [Month 7 OMS, TESTNET and reconciliation](docs/month-7-oms-testnet-reconciliation.md)
+- [Month 8 specialist cohort and evaluation](docs/month-8-specialist-cohort-evaluation.md)
+- [Month 9 portfolio, consensus and drift](docs/month-9-portfolio-consensus-drift.md)
+- [Month 10 resilience and observability](docs/month-10-resilience-observability.md)
+- [Month 11 prolonged shadow validation](docs/month-11-shadow-validation.md)
+- [Month 12 independent audit and release readiness](docs/month-12-release-readiness.md)
+
+The specification repository remains the authoritative product and
+architecture specification. This repository is the executable platform.

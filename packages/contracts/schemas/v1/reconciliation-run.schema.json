@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://capital-cipher.local/contracts/v1/reconciliation-run.schema.json",
+  "title": "ReconciliationRunV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "run_id", "exchange", "environment", "status",
+    "local_order_count", "venue_order_count", "fill_count",
+    "position_count", "balance_count", "mismatch_count",
+    "critical_mismatch_count", "started_at", "completed_at", "error_type"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "exchange": { "enum": ["BINANCE", "BYBIT"] },
+    "environment": { "enum": ["PAPER", "TESTNET"] },
+    "status": { "enum": ["MATCHED", "DRIFT", "FAILED"] },
+    "local_order_count": { "type": "integer", "minimum": 0 },
+    "venue_order_count": { "type": "integer", "minimum": 0 },
+    "fill_count": { "type": "integer", "minimum": 0 },
+    "position_count": { "type": "integer", "minimum": 0 },
+    "balance_count": { "type": "integer", "minimum": 0 },
+    "mismatch_count": { "type": "integer", "minimum": 0 },
+    "critical_mismatch_count": { "type": "integer", "minimum": 0 },
+    "started_at": { "type": "string", "format": "date-time" },
+    "completed_at": { "type": "string", "format": "date-time" },
+    "error_type": { "type": ["string", "null"] }
+  }
+}

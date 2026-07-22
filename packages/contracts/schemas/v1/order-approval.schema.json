@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://capital-cipher.local/contracts/v1/order-approval.schema.json",
+  "title": "OrderApprovalV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "approval_id",
+    "evaluation_id",
+    "risk_check_id",
+    "decision_id",
+    "correlation_id",
+    "request_fingerprint",
+    "position_snapshot_hash",
+    "symbol",
+    "timeframe",
+    "strategy",
+    "side",
+    "max_notional",
+    "max_leverage",
+    "reference_price",
+    "max_entry_deviation_bps",
+    "status",
+    "created_at",
+    "expires_at",
+    "consumed_at",
+    "paper_order_id"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "approval_id": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "evaluation_id": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "risk_check_id": { "type": "string", "minLength": 1 },
+    "decision_id": { "type": "string", "minLength": 1 },
+    "correlation_id": { "type": "string", "minLength": 1 },
+    "request_fingerprint": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "position_snapshot_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "symbol": { "type": "string", "minLength": 1 },
+    "timeframe": { "type": "string", "minLength": 1 },
+    "strategy": { "type": "string", "minLength": 1 },
+    "side": { "enum": ["BUY", "SELL"] },
+    "max_notional": { "type": "number", "exclusiveMinimum": 0 },
+    "max_leverage": { "type": "number", "minimum": 1 },
+    "reference_price": { "type": "number", "exclusiveMinimum": 0 },
+    "max_entry_deviation_bps": { "type": "number", "minimum": 0 },
+    "status": {
+      "enum": ["ACTIVE", "CONSUMED", "REVOKED", "EXPIRED"]
+    },
+    "created_at": { "type": "string", "format": "date-time" },
+    "expires_at": { "type": "string", "format": "date-time" },
+    "consumed_at": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    },
+    "paper_order_id": { "type": ["string", "null"] },
+    "oms_order_id": { "type": ["string", "null"] }
+  }
+}

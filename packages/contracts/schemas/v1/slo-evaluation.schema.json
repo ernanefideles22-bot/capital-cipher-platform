@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/slo-evaluation.schema.json",
+  "title": "SLOEvaluationV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "evaluation_id", "slo_name", "comparator", "target",
+    "measured", "sample_count", "compliant",
+    "error_budget_remaining_percent", "status", "window_seconds",
+    "evaluated_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "evaluation_id": { "type": "string", "format": "uuid" },
+    "slo_name": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_.-]+$"
+    },
+    "comparator": { "enum": ["GTE", "LTE"] },
+    "target": { "type": "number", "minimum": 0 },
+    "measured": {
+      "anyOf": [
+        { "type": "number", "minimum": 0 },
+        { "type": "null" }
+      ]
+    },
+    "sample_count": { "type": "integer", "minimum": 0 },
+    "compliant": { "type": ["boolean", "null"] },
+    "error_budget_remaining_percent": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "status": { "enum": ["NO_DATA", "HEALTHY", "WARNING", "BREACHED"] },
+    "window_seconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
+    "evaluated_at": { "type": "string", "format": "date-time" }
+  }
+}

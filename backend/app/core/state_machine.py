@@ -141,8 +141,10 @@ class SystemStateMachine:
         return None
 
     def reset_kill_switch_after_maintenance(self) -> None:
-        """Kill switch can only be cleared outside operational states."""
-        if self._state in OPERATIONAL_STATES:
-            raise SystemStateError("Cannot reset kill switch while system is operational.")
+        """Kill switch can only be cleared in an explicit maintenance window."""
+        if self._state != SystemState.MAINTENANCE:
+            raise SystemStateError(
+                "Kill switch reset requires MAINTENANCE state."
+            )
         self._kill_switch_active = False
         self._kill_switch_reason = None

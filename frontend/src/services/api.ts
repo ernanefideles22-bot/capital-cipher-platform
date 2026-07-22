@@ -31,10 +31,10 @@ export const api = {
     get<PerformanceReport>(`/reports/performance?by=${by}`),
   agentRanking: () => get<{ ranking: AgentRankingRow[] }>("/reports/agents/ranking"),
   backtestReports: () => get<{ reports: BacktestReport[] }>("/backtest/reports"),
-  runBacktest: async (body: Record<string, unknown>) => {
+  runBacktest: async (body: Record<string, unknown>, apiKey: string) => {
     const response = await fetch(`${BASE}/backtest/run`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
       body: JSON.stringify(body),
     });
     return response.json() as Promise<ApiResponse<{ report: BacktestReport }>>;

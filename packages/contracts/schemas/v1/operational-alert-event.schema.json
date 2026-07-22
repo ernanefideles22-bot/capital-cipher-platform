@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/operational-alert-event.schema.json",
+  "title": "OperationalAlertEventV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "alert_event_id", "alert_key", "lifecycle_sequence",
+    "event_type", "severity", "source", "correlation_id", "reason",
+    "metadata", "occurred_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "alert_event_id": { "type": "string", "format": "uuid" },
+    "alert_key": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 160,
+      "pattern": "^[a-z][a-z0-9:_.-]+$"
+    },
+    "lifecycle_sequence": { "type": "integer", "minimum": 1 },
+    "event_type": { "enum": ["OPENED", "RESOLVED"] },
+    "severity": { "enum": ["WARNING", "ERROR", "CRITICAL"] },
+    "source": { "type": "string", "minLength": 2, "maxLength": 128 },
+    "correlation_id": {
+      "anyOf": [
+        { "type": "string", "maxLength": 64 },
+        { "type": "null" }
+      ]
+    },
+    "reason": { "type": "string", "minLength": 1, "maxLength": 1000 },
+    "metadata": { "type": "object" },
+    "occurred_at": { "type": "string", "format": "date-time" }
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/walk-forward-protocol.schema.json",
+  "title": "Capital Cipher Walk-Forward Protocol v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "protocol_version",
+    "selection_mode",
+    "train_candles",
+    "validation_candles",
+    "test_candles",
+    "embargo_candles",
+    "step_candles",
+    "anchored_train",
+    "max_folds"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "protocol_version": {"const": "walk-forward-v1"},
+    "selection_mode": {"const": "pre-registered"},
+    "train_candles": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000
+    },
+    "validation_candles": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000
+    },
+    "test_candles": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000
+    },
+    "embargo_candles": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100000
+    },
+    "step_candles": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "maximum": 1000000
+    },
+    "anchored_train": {"type": "boolean"},
+    "max_folds": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
+    }
+  },
+  "additionalProperties": false
+}

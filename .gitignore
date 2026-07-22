@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+*.egg-info/
 .venv/
 venv/
 *.db
@@ -9,3 +10,7 @@ node_modules/
 dist/
 .DS_Store
 tsconfig.tsbuildinfo
+.turbo/
+.capital-cipher-data-lake/
+supabase/.temp/
+supabase/.branches/

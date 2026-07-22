@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/raw-market-event.schema.json",
+  "title": "Capital Cipher Raw Market Event v1",
+  "type": "object",
+  "required": [
+    "event_id",
+    "schema_version",
+    "source",
+    "exchange",
+    "event_type",
+    "symbol",
+    "occurred_at",
+    "received_at",
+    "payload",
+    "payload_sha256"
+  ],
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1
+    },
+    "exchange": {
+      "enum": ["BINANCE", "BYBIT"]
+    },
+    "event_type": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]+$"
+    },
+    "symbol": {
+      "type": ["string", "null"],
+      "pattern": "^[A-Z0-9._-]{2,32}$"
+    },
+    "occurred_at": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    },
+    "received_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "type": "object"
+    },
+    "payload_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    }
+  },
+  "additionalProperties": false
+}

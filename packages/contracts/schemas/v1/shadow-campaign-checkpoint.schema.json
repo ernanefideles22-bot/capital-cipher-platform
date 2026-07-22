@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/shadow-campaign-checkpoint.schema.json",
+  "title": "ShadowCampaignCheckpointV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "checkpoint_id", "campaign_id", "sequence",
+    "replay_at", "status", "acceptance_status", "recovery_mode", "degradation_scenario",
+    "registered_agents", "primary_agents", "shadow_agents",
+    "executed_agents", "failed_agents", "skipped_agents", "duration_ms",
+    "p95_latency_ms", "error_rate", "reconciliation_status",
+    "reconciliation_mismatches", "reconciliation_critical_mismatches",
+    "risk_state_hash", "risk_limits_hash", "order_count",
+    "paper_trade_count", "invariants", "order_submission_attempted",
+    "live_execution_attempted", "captured_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "checkpoint_id": { "type": "string", "format": "uuid" },
+    "campaign_id": { "type": "string", "format": "uuid" },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "replay_at": { "type": "string", "format": "date-time" },
+    "status": { "enum": ["EXECUTED", "SUSPENDED_SAFE_DEGRADATION", "BLOCKED_RECONCILIATION", "BLOCKED_RISK"] },
+    "acceptance_status": { "enum": ["PASSED", "FAILED"] },
+    "recovery_mode": { "enum": ["HEALTHY", "DEGRADED", "SAFE_HALT"] },
+    "degradation_scenario": {
+      "anyOf": [{ "enum": ["BROKER", "DATABASE"] }, { "type": "null" }]
+    },
+    "registered_agents": { "const": 300 },
+    "primary_agents": { "const": 3 },
+    "shadow_agents": { "const": 297 },
+    "executed_agents": { "type": "integer", "minimum": 0, "maximum": 300 },
+    "failed_agents": { "type": "integer", "minimum": 0, "maximum": 300 },
+    "skipped_agents": { "type": "integer", "minimum": 0, "maximum": 300 },
+    "duration_ms": { "type": "number", "minimum": 0 },
+    "p95_latency_ms": { "type": "number", "minimum": 0 },
+    "error_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+    "reconciliation_status": { "enum": ["MATCHED", "DRIFT", "FAILED"] },
+    "reconciliation_mismatches": { "type": "integer", "minimum": 0 },
+    "reconciliation_critical_mismatches": { "type": "integer", "minimum": 0 },
+    "risk_state_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "risk_limits_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "order_count": { "type": "integer", "minimum": 0 },
+    "paper_trade_count": { "type": "integer", "minimum": 0 },
+    "invariants": {
+      "type": "object", "minProperties": 1, "maxProperties": 64,
+      "additionalProperties": { "type": "boolean" }
+    },
+    "order_submission_attempted": { "const": false },
+    "live_execution_attempted": { "const": false },
+    "captured_at": { "type": "string", "format": "date-time" }
+  }
+}

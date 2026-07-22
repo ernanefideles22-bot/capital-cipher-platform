@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://capital-cipher.local/contracts/v1/execution-command.schema.json",
+  "title": "ExecutionCommandV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "command_id", "oms_order_id", "command_type",
+    "status", "attempt_count", "max_attempts", "leased_by",
+    "lease_expires_at", "available_at", "last_error_type", "created_at",
+    "completed_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "command_id": { "type": "string", "minLength": 1 },
+    "oms_order_id": { "type": "string", "minLength": 1 },
+    "command_type": { "enum": ["SUBMIT", "CANCEL"] },
+    "status": { "enum": ["PENDING", "LEASED", "COMPLETED", "DEAD_LETTER"] },
+    "attempt_count": { "type": "integer", "minimum": 0 },
+    "max_attempts": { "const": 1 },
+    "leased_by": { "type": ["string", "null"] },
+    "lease_expires_at": { "type": ["string", "null"], "format": "date-time" },
+    "available_at": { "type": "string", "format": "date-time" },
+    "last_error_type": { "type": ["string", "null"] },
+    "created_at": { "type": "string", "format": "date-time" },
+    "completed_at": { "type": ["string", "null"], "format": "date-time" }
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/shadow-campaign-definition.schema.json",
+  "title": "ShadowCampaignDefinitionV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "protocol_version", "campaign_id", "execution_mode",
+    "symbol", "timeframe", "replay_start_at", "replay_end_at",
+    "replay_candle_count", "checkpoint_interval_candles",
+    "target_registered_agents", "expected_primary_agents",
+    "expected_shadow_agents", "max_error_rate", "max_p95_latency_ms",
+    "dataset_fingerprint", "definition_hash", "live_execution_attempted",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "protocol_version": { "const": "shadow-validation-v1" },
+    "campaign_id": { "type": "string", "format": "uuid" },
+    "execution_mode": { "const": "PAPER" },
+    "symbol": { "type": "string", "pattern": "^[A-Z0-9._-]{2,32}$" },
+    "timeframe": { "type": "string", "pattern": "^[1-9][0-9]*[mhdw]$" },
+    "replay_start_at": { "type": "string", "format": "date-time" },
+    "replay_end_at": { "type": "string", "format": "date-time" },
+    "replay_candle_count": { "type": "integer", "minimum": 673, "maximum": 1000000 },
+    "checkpoint_interval_candles": { "type": "integer", "minimum": 1, "maximum": 100000 },
+    "target_registered_agents": { "const": 300 },
+    "expected_primary_agents": { "const": 3 },
+    "expected_shadow_agents": { "const": 297 },
+    "max_error_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+    "max_p95_latency_ms": { "type": "number", "exclusiveMinimum": 0, "maximum": 300000 },
+    "dataset_fingerprint": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "definition_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "live_execution_attempted": { "const": false },
+    "created_at": { "type": "string", "format": "date-time" }
+  }
+}

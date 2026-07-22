@@ -19,20 +19,32 @@ from app.agents.market_data import MarketDataAgent
 from app.agents.quant import QuantAgent
 from app.agents.trend import TrendAgent
 from app.audit.service import AuditService
+from app.backtesting.execution_data import HistoricalExecutionResolver
 from app.core.event_bus import EventBus
 from app.core.logging import ServiceLogger
 from app.core.state_machine import SystemState, SystemStateMachine
 from app.market_data.store import CandleStore
+from app.market_data.catalog import build_candle_dataset_manifest
 from app.orchestrator.decision_engine import DecisionEngine
 from app.orchestrator.service import Orchestrator
 from app.paper_trading.engine import PaperTradingEngine
+from app.paper_trading.execution import (
+    IsolatedMarginModel,
+    RealisticExecutionModel,
+)
 from app.risk.manager import RiskManager
-from app.schemas.backtest import BacktestReport, BacktestRequest
+from app.schemas.backtest import (
+    BacktestExecutionAssumptions,
+    HistoricalExecutionDatasetManifest,
+    BacktestReport,
+    BacktestRequest,
+)
 from app.schemas.market import Candle
 from app.schemas.risk import RiskLimits
 from app.strategy.engine import StrategyEngine
 
 logger = ServiceLogger("backtesting")
+BACKTEST_ENGINE_VERSION = "backtesting-v2"
 
 
 async def _paper_state_machine() -> SystemStateMachine:
@@ -52,22 +64,90 @@ class BacktestingEngine:
         initial_balance: float = 10_000.0,
         fee_rate_percent: float = 0.08,
         slippage_rate_percent: float = 0.02,
+        half_spread_bps: float = 1.0,
+        volume_impact_bps: float = 10.0,
+        funding_rate_bps_per_8h: float = 0.0,
         strategy_engine: StrategyEngine | None = None,
     ) -> None:
         self._limits = limits or RiskLimits()
         self._initial_balance = initial_balance
         self._fee_rate = fee_rate_percent
         self._slippage_rate = slippage_rate_percent
+        self._execution_assumptions = BacktestExecutionAssumptions(
+            taker_fee_bps=fee_rate_percent * 100,
+            half_spread_bps=half_spread_bps,
+            base_slippage_bps=slippage_rate_percent * 100,
+            volume_impact_bps=volume_impact_bps,
+            funding_rate_bps_per_8h=funding_rate_bps_per_8h,
+        )
         self._strategy_engine = strategy_engine
         self.reports: list[BacktestReport] = []
 
-    async def run(self, request: BacktestRequest, candles: list[Candle]) -> BacktestReport:
+    def resolve_execution_assumptions(
+        self, request: BacktestRequest
+    ) -> BacktestExecutionAssumptions:
+        return request.execution or self._execution_assumptions
+
+    def resolve_strategy_version(self, request: BacktestRequest) -> str:
+        strategy_engine = self._strategy_engine or StrategyEngine()
+        strategy = strategy_engine.select(request.symbol, request.timeframe)
+        if strategy is None:
+            raise ValueError(
+                f"No enabled strategy for {request.symbol} {request.timeframe}"
+            )
+        return strategy.versioned_id
+
+    def simulation_context(self, request: BacktestRequest) -> dict[str, Any]:
+        strategy_engine = self._strategy_engine or StrategyEngine()
+        strategy = strategy_engine.select(request.symbol, request.timeframe)
+        if strategy is None:
+            raise ValueError(
+                f"No enabled strategy for {request.symbol} {request.timeframe}"
+            )
+        context = {
+            "backtest_engine_version": BACKTEST_ENGINE_VERSION,
+            "initial_balance": self._initial_balance,
+            "risk_limits": self._limits.model_dump(mode="json"),
+            "strategy": strategy.model_dump(mode="json"),
+            "margin_assumptions": request.margin.model_dump(mode="json"),
+        }
+        if request.historical_execution is not None:
+            resolver = HistoricalExecutionResolver(
+                request.historical_execution
+            )
+            context["historical_execution_manifest"] = (
+                resolver.manifest.model_dump(mode="json")
+            )
+        return context
+
+    async def run(
+        self,
+        request: BacktestRequest,
+        candles: list[Candle],
+        *,
+        record_report: bool = True,
+    ) -> BacktestReport:
         started = time.monotonic()
         if not candles:
             raise ValueError("Backtest requires at least one candle")
 
         # Candles must be processed in temporal order (docs/17, docs/32).
         ordered = sorted(candles, key=lambda c: c.closed_at)
+        dataset_manifest = build_candle_dataset_manifest(ordered)
+        execution_assumptions = self.resolve_execution_assumptions(request)
+        if request.margin.leverage > self._limits.max_leverage:
+            raise ValueError(
+                f"Backtest leverage {request.margin.leverage} exceeds "
+                f"simulated risk limit {self._limits.max_leverage}"
+            )
+        historical_resolver: HistoricalExecutionResolver | None = None
+        historical_manifest: HistoricalExecutionDatasetManifest | None = None
+        if request.historical_execution is not None:
+            historical_resolver = HistoricalExecutionResolver(
+                request.historical_execution
+            )
+            historical_resolver.validate_candles(ordered)
+            historical_manifest = historical_resolver.manifest
 
         sm = await _paper_state_machine()
         audit = AuditService()
@@ -79,6 +159,12 @@ class BacktestingEngine:
             initial_balance=self._initial_balance,
             fee_rate_percent=self._fee_rate,
             slippage_rate_percent=self._slippage_rate,
+            execution_model=RealisticExecutionModel(
+                execution_assumptions,
+                historical_execution=historical_resolver,
+            ),
+            margin_model=IsolatedMarginModel(request.margin),
+            started_at=ordered[0].closed_at,
         )
         orchestrator = Orchestrator(
             state_machine=sm,
@@ -111,13 +197,31 @@ class BacktestingEngine:
         # simulation boundary; avoids phantom open PnL in metrics).
         last_close = ordered[-1].close
         for order_id in list(paper.open_orders.keys()):
-            await paper.close_order(order_id, last_close, "BACKTEST_END")
+            await paper.close_order(
+                order_id,
+                last_close,
+                "BACKTEST_END",
+                market_candle=ordered[-1],
+                occurred_at=ordered[-1].closed_at,
+            )
 
-        report = self._build_report(request, ordered, paper, decisions, actionable, blocked_by_risk)
+        report = self._build_report(
+            request,
+            ordered,
+            paper,
+            decisions,
+            actionable,
+            blocked_by_risk,
+            dataset_id=dataset_manifest.dataset_id,
+            dataset_hash=dataset_manifest.dataset_hash,
+            execution_assumptions=execution_assumptions,
+            historical_execution_manifest=historical_manifest,
+        )
         report = report.model_copy(
             update={"duration_ms": int((time.monotonic() - started) * 1000)}
         )
-        self.reports.append(report)
+        if record_report:
+            self.reports.append(report)
         logger.info(
             f"Backtest completed: {report.total_trades} trades",
             event_type="BACKTEST_COMPLETED",
@@ -134,6 +238,13 @@ class BacktestingEngine:
         decisions: int,
         actionable: int,
         blocked_by_risk: int,
+        *,
+        dataset_id: str,
+        dataset_hash: str,
+        execution_assumptions: BacktestExecutionAssumptions,
+        historical_execution_manifest: (
+            HistoricalExecutionDatasetManifest | None
+        ),
     ) -> BacktestReport:
         closed = paper.closed_orders
         wins = [o for o in closed if (o.pnl or 0) > 0]
@@ -162,6 +273,8 @@ class BacktestingEngine:
 
         return BacktestReport(
             backtest_id=str(uuid4()),
+            dataset_id=dataset_id,
+            dataset_hash=dataset_hash,
             symbol=request.symbol,
             timeframe=request.timeframe,
             start_date=candles[0].closed_at.date().isoformat(),
@@ -183,6 +296,18 @@ class BacktestingEngine:
             net_pnl_percent=round(net_pnl / self._initial_balance * 100, 4),
             fees=round(perf.fees_total, 4),
             slippage=round(perf.slippage_total, 4),
+            spread=round(perf.spread_total, 4),
+            volume_impact=round(perf.volume_impact_total, 4),
+            funding=round(perf.funding_total, 4),
+            liquidations=perf.liquidations,
+            liquidation_fees=round(
+                perf.liquidation_fees_total,
+                4,
+            ),
+            total_execution_cost=round(perf.total_execution_cost, 4),
+            execution_assumptions=execution_assumptions,
+            historical_execution_manifest=historical_execution_manifest,
+            margin_assumptions=request.margin,
             final_balance=round(paper.balance, 2),
             equity_curve=[p.model_dump() for p in paper.equity_curve],
             created_at=datetime.now(timezone.utc).isoformat(),

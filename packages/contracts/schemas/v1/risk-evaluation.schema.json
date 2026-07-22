@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://capital-cipher.local/contracts/v1/risk-evaluation.schema.json",
+  "title": "RiskEvaluationV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "engine_version",
+    "risk_check_id",
+    "evaluation_id",
+    "idempotency_key",
+    "request_fingerprint",
+    "decision_id",
+    "correlation_id",
+    "risk_status",
+    "approved",
+    "position_size",
+    "leverage",
+    "risk_percent",
+    "stop_loss",
+    "take_profit",
+    "risk_reward",
+    "reason",
+    "warnings",
+    "effective_limits",
+    "portfolio_snapshot",
+    "var_result",
+    "approval_id",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "engine_version": { "const": "central-risk-v1" },
+    "risk_check_id": { "type": "string", "minLength": 1 },
+    "evaluation_id": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "idempotency_key": { "type": "string", "minLength": 1 },
+    "request_fingerprint": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "decision_id": { "type": "string", "minLength": 1 },
+    "correlation_id": { "type": "string", "minLength": 1 },
+    "risk_status": {
+      "enum": ["APPROVED", "REDUCED", "BLOCKED", "KILL_SWITCH"]
+    },
+    "approved": { "type": "boolean" },
+    "position_size": { "type": ["number", "null"], "minimum": 0 },
+    "leverage": { "type": ["number", "null"], "minimum": 1 },
+    "risk_percent": { "type": ["number", "null"], "minimum": 0 },
+    "stop_loss": { "type": ["number", "null"] },
+    "take_profit": { "type": ["number", "null"] },
+    "risk_reward": { "type": ["number", "null"], "minimum": 0 },
+    "reason": { "type": "string" },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "effective_limits": { "type": "object" },
+    "portfolio_snapshot": {
+      "oneOf": [
+        { "$ref": "portfolio-risk-snapshot.schema.json" },
+        { "type": "null" }
+      ]
+    },
+    "var_result": {
+      "type": ["object", "null"]
+    },
+    "approval_id": {
+      "type": ["string", "null"],
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "created_at": { "type": "string", "format": "date-time" }
+  }
+}

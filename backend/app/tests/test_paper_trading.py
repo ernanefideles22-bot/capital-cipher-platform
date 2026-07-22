@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.errors import RiskError, ValidationError
+from app.core.errors import AuditError, RiskError, ValidationError
 from app.schemas.common import CandidateAction, PaperOrderStatus, RiskStatus
 from app.tests.conftest import make_candle, make_decision
 
@@ -102,3 +102,30 @@ async def test_performance_metrics(paper_engine, risk_manager):
     assert perf.win_rate == 100.0
     assert perf.net_pnl > 0
     assert perf.fees_total > 0
+
+
+async def test_close_fails_without_mutating_account_when_audit_fails(
+    paper_engine,
+    risk_manager,
+    audit_service,
+):
+    decision = make_decision()
+    check = await approved_check(risk_manager, decision)
+    order = await paper_engine.create_order(
+        decision,
+        check,
+        current_price=100.0,
+    )
+    initial_balance = paper_engine.balance
+    audit_service.fail_mode = True
+
+    with pytest.raises(AuditError):
+        await paper_engine.close_order(
+            order.paper_order_id,
+            order.take_profit,
+            "TAKE_PROFIT",
+        )
+
+    assert order.paper_order_id in paper_engine.open_orders
+    assert paper_engine.closed_orders == []
+    assert paper_engine.balance == initial_balance

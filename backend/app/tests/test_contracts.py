@@ -2,13 +2,63 @@
 
 from __future__ import annotations
 
-import pytest
-from pydantic import ValidationError
+import json
+from pathlib import Path
+from uuid import uuid4
 
-from app.schemas.agents import AgentOutput
+import pytest
+from jsonschema import Draft202012Validator
+from pydantic import ValidationError
+from referencing import Registry, Resource
+
+from app.agents.registry import AgentRegistry
+from app.agents.runtime import AgentRuntime
+from app.agents.specialists import MomentumAgent
+from app.market_data.store import CandleStore
+from app.schemas.agents import (
+    AgentExecutionRequest,
+    AgentInput,
+    AgentOutput,
+)
+from app.schemas.backfill import HistoricalBackfillJob, MarketDataGap
+from app.schemas.backtest import (
+    BacktestExecutionAssumptions,
+    BacktestMarginAssumptions,
+    HistoricalExecutionDataset,
+    HistoricalExecutionObservation,
+    WalkForwardAcceptanceCriteria,
+    WalkForwardArtifactMetadata,
+    WalkForwardProtocol,
+    WalkForwardResearchPlan,
+)
 from app.schemas.common import AgentStatus, Signal
+from app.schemas.data_catalog import CandleDatasetManifest
+from app.schemas.data_lake import BackfillQueueItem, RawDataObject
 from app.schemas.decisions import Decision
+from app.schemas.events import BusMessage
 from app.schemas.market import Candle
+from app.schemas.replay import ReplayCheckpoint
+from app.market_data.clock import evaluate_clock_probe
+from app.tests.conftest import make_candle
+
+CONTRACT_ROOT = Path(__file__).resolve().parents[3] / "packages" / "contracts" / "schemas" / "v1"
+
+
+def load_contract(name: str) -> dict:
+    schema = json.loads((CONTRACT_ROOT / name).read_text(encoding="utf-8"))
+    Draft202012Validator.check_schema(schema)
+    return schema
+
+
+def contract_registry() -> Registry:
+    registry = Registry()
+    for path in CONTRACT_ROOT.glob("*.json"):
+        schema = json.loads(path.read_text(encoding="utf-8"))
+        registry = registry.with_resource(
+            schema["$id"],
+            Resource.from_contents(schema),
+        )
+    return registry
 
 
 def test_agent_output_valid_contract():
@@ -42,6 +92,51 @@ def test_agent_output_rejects_invalid_signal():
             signal="MOON",
             confidence=50,
             reason="test",
+        )
+
+
+async def test_agent_runtime_matches_all_published_v1_contracts():
+    agent = MomentumAgent(CandleStore())
+    runtime = AgentRuntime(AgentRegistry([agent]))
+    request = AgentExecutionRequest(
+        idempotency_key="published-agent-contract",
+        input=AgentInput(
+            request_id="published-agent-contract",
+            correlation_id="published-agent-correlation",
+            agent_name=agent.name,
+            symbol="BTCUSDT",
+            timeframe="15m",
+        ),
+    )
+    trace = await runtime.execute(request)
+    assert trace.job.output is not None
+    documents = {
+        "agent-input.schema.json": request.input.model_dump(mode="json"),
+        "agent-output.schema.json": trace.job.output.model_dump(mode="json"),
+        "agent-registration.schema.json": (
+            agent.registration().model_dump(mode="json")
+        ),
+        "agent-execution-request.schema.json": request.model_dump(mode="json"),
+        "agent-execution-job.schema.json": trace.job.model_dump(mode="json"),
+        "agent-execution-trace.schema.json": trace.model_dump(mode="json"),
+    }
+    for contract_name, document in documents.items():
+        validator = Draft202012Validator(
+            load_contract(contract_name),
+            registry=contract_registry(),
+        )
+        assert list(validator.iter_errors(document)) == []
+
+
+def test_python_agent_contracts_reject_unknown_fields():
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        AgentInput(
+            request_id="strict-agent-input",
+            correlation_id="strict-correlation",
+            agent_name="MomentumAgent",
+            symbol="BTCUSDT",
+            timeframe="15m",
+            unexpected_authority="execute-orders",
         )
 
 
@@ -83,3 +178,233 @@ def test_candle_rejects_negative_volume():
             volume=-1,
             closed_at="2026-07-01T12:00:00Z",
         )
+
+
+def test_python_candle_matches_published_v1_contract():
+    candle = make_candle()
+    validator = Draft202012Validator(load_contract("market-candle.schema.json"))
+    assert list(validator.iter_errors(candle.model_dump(mode="json"))) == []
+
+
+def test_bus_message_matches_published_v1_contract():
+    message = BusMessage(
+        correlation_id=str(uuid4()),
+        topic="market.events.v1",
+        event_type="CANDLE_CLOSED",
+        source="contract-test",
+        payload={"symbol": "BTCUSDT"},
+    )
+    validator = Draft202012Validator(load_contract("event-envelope.schema.json"))
+    assert list(validator.iter_errors(message.model_dump(mode="json"))) == []
+
+
+def test_replay_checkpoint_matches_published_v1_contract():
+    checkpoint = ReplayCheckpoint(
+        replay_id="contract-replay",
+        consumer_name="market-replay",
+        topic="market.replay.v1",
+        dataset_hash="a" * 64,
+    )
+    validator = Draft202012Validator(load_contract("replay-checkpoint.schema.json"))
+    assert list(validator.iter_errors(checkpoint.model_dump(mode="json"))) == []
+
+
+def test_dataset_manifest_matches_published_v1_contract():
+    candle = make_candle()
+    manifest = CandleDatasetManifest(
+        dataset_id=f"candles:v1:{'a' * 64}",
+        dataset_hash="a" * 64,
+        exchange=candle.exchange,
+        symbol=candle.symbol,
+        timeframe=candle.timeframe,
+        start_at=candle.closed_at,
+        end_at=candle.closed_at,
+        row_count=1,
+        selection={"order": ["closed_at"]},
+        quality_summary={"status": "VALID"},
+    )
+    validator = Draft202012Validator(load_contract("dataset-manifest.schema.json"))
+    assert list(validator.iter_errors(manifest.model_dump(mode="json"))) == []
+
+
+def test_clock_observation_matches_published_v1_contract():
+    from datetime import datetime, timedelta, timezone
+
+    started = datetime.now(timezone.utc)
+    observation = evaluate_clock_probe(
+        source="binance.server-time",
+        request_started_at=started,
+        source_at=started + timedelta(milliseconds=50),
+        response_received_at=started + timedelta(milliseconds=100),
+    )
+    validator = Draft202012Validator(load_contract("clock-observation.schema.json"))
+    assert list(validator.iter_errors(observation.model_dump(mode="json"))) == []
+
+
+def test_market_data_gap_matches_published_v1_contract():
+    from datetime import datetime, timezone
+
+    at = datetime.now(timezone.utc)
+    gap = MarketDataGap(
+        gap_id="b" * 64,
+        exchange="BINANCE",
+        symbol="BTCUSDT",
+        timeframe="15m",
+        start_at=at,
+        end_at=at,
+        missing_count=1,
+    )
+    validator = Draft202012Validator(load_contract("market-data-gap.schema.json"))
+    assert list(validator.iter_errors(gap.model_dump(mode="json"))) == []
+
+
+def test_historical_backfill_matches_published_v1_contract():
+    from datetime import datetime, timezone
+
+    at = datetime.now(timezone.utc)
+    job = HistoricalBackfillJob(
+        job_id="c" * 64,
+        request_fingerprint="c" * 64,
+        exchange="BINANCE",
+        symbol="BTCUSDT",
+        timeframe="15m",
+        start_at=at,
+        end_at=at,
+        source="binance.public-rest",
+    )
+    validator = Draft202012Validator(
+        load_contract("historical-backfill-job.schema.json")
+    )
+    assert list(validator.iter_errors(job.model_dump(mode="json"))) == []
+
+
+def test_backfill_queue_item_matches_published_v1_contract():
+    from datetime import datetime, timezone
+
+    at = datetime.now(timezone.utc)
+    item = BackfillQueueItem(
+        queue_id="d" * 64,
+        job_id="d" * 64,
+        exchange="BINANCE",
+        symbol="BTCUSDT",
+        timeframe="15m",
+        start_at=at,
+        end_at=at,
+        max_candles=1,
+    )
+    validator = Draft202012Validator(
+        load_contract("backfill-queue-item.schema.json")
+    )
+    assert list(validator.iter_errors(item.model_dump(mode="json"))) == []
+
+
+def test_raw_data_object_matches_published_v1_contract():
+    raw_object = RawDataObject(
+        object_hash="e" * 64,
+        object_uri=f"lake://raw/binance.public-rest/2026/07/20/ee/{'e' * 64}.json.gz",
+        uncompressed_bytes=100,
+        stored_bytes=80,
+    )
+    validator = Draft202012Validator(
+        load_contract("raw-data-object.schema.json")
+    )
+    assert list(
+        validator.iter_errors(raw_object.model_dump(mode="json"))
+    ) == []
+
+
+def test_backtest_execution_matches_published_v1_contract():
+    assumptions = BacktestExecutionAssumptions()
+    validator = Draft202012Validator(
+        load_contract("backtest-execution-assumptions.schema.json")
+    )
+    assert list(
+        validator.iter_errors(assumptions.model_dump(mode="json"))
+    ) == []
+
+
+def test_historical_execution_matches_published_v1_contract():
+    from datetime import datetime, timezone
+
+    dataset = HistoricalExecutionDataset(
+        source="binance.archive",
+        exchange="BINANCE",
+        symbol="BTCUSDT",
+        observations=[
+            HistoricalExecutionObservation(
+                observed_at=datetime.now(timezone.utc),
+                half_spread_bps=2,
+                funding_rate_bps_per_8h=1,
+                source_record_id="funding-1",
+            )
+        ],
+    )
+    validator = Draft202012Validator(
+        load_contract("historical-execution-dataset.schema.json")
+    )
+    assert list(
+        validator.iter_errors(dataset.model_dump(mode="json"))
+    ) == []
+
+
+def test_backtest_margin_matches_published_v1_contract():
+    assumptions = BacktestMarginAssumptions()
+    validator = Draft202012Validator(
+        load_contract("backtest-margin-assumptions.schema.json")
+    )
+    assert list(
+        validator.iter_errors(assumptions.model_dump(mode="json"))
+    ) == []
+
+
+def test_walk_forward_protocol_matches_published_v1_contract():
+    protocol = WalkForwardProtocol()
+    validator = Draft202012Validator(
+        load_contract("walk-forward-protocol.schema.json")
+    )
+    assert list(
+        validator.iter_errors(protocol.model_dump(mode="json"))
+    ) == []
+
+
+def test_walk_forward_research_plan_matches_published_v1_contract():
+    plan = WalkForwardResearchPlan()
+    validator = Draft202012Validator(
+        load_contract("walk-forward-research-plan.schema.json")
+    )
+    assert list(
+        validator.iter_errors(plan.model_dump(mode="json"))
+    ) == []
+
+
+def test_walk_forward_acceptance_matches_published_v1_contract():
+    criteria = WalkForwardAcceptanceCriteria()
+    validator = Draft202012Validator(
+        load_contract("walk-forward-acceptance.schema.json")
+    )
+    assert list(
+        validator.iter_errors(criteria.model_dump(mode="json"))
+    ) == []
+
+
+def test_walk_forward_artifact_matches_published_v1_contract():
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    artifact = WalkForwardArtifactMetadata(
+        experiment_id=f"walk-forward:v2:{'a' * 64}",
+        artifact_hash="b" * 64,
+        dataset_id=f"candles:v1:{'c' * 64}",
+        dataset_hash="c" * 64,
+        symbol="BTCUSDT",
+        timeframe="15m",
+        candidate_version="SCALP_15M_v1",
+        created_at=now,
+        recorded_at=now,
+    )
+    validator = Draft202012Validator(
+        load_contract("walk-forward-artifact.schema.json")
+    )
+    assert list(
+        validator.iter_errors(artifact.model_dump(mode="json"))
+    ) == []

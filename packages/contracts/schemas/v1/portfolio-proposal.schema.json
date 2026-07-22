@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/portfolio-proposal.schema.json",
+  "title": "PortfolioProposalV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "proposal_id", "correlation_id", "consensus_id",
+    "experiment_id", "symbol", "timeframe", "strategy", "action",
+    "confidence", "balance", "requested_weight_percent",
+    "capped_weight_percent", "max_notional", "current_gross_exposure",
+    "current_net_exposure", "max_target_weight_percent",
+    "max_gross_exposure_percent", "max_net_exposure_percent",
+    "max_symbol_exposure_percent", "max_strategy_exposure_percent",
+    "max_single_position_percent", "status", "binding_limits",
+    "decision_authority", "created_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "proposal_id": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "correlation_id": { "type": "string", "minLength": 1, "maxLength": 36 },
+    "consensus_id": {
+      "anyOf": [
+        { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        { "type": "null" }
+      ]
+    },
+    "experiment_id": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "symbol": { "type": "string", "pattern": "^[A-Z0-9._-]{2,32}$" },
+    "timeframe": { "type": "string", "pattern": "^[1-9][0-9]*[mhdw]$" },
+    "strategy": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "action": { "enum": ["BUY", "SELL", "HOLD", "WAIT", "BLOCK"] },
+    "confidence": { "type": "integer", "minimum": 0, "maximum": 100 },
+    "balance": { "type": "number", "exclusiveMinimum": 0 },
+    "requested_weight_percent": { "type": "number", "minimum": 0, "maximum": 100 },
+    "capped_weight_percent": { "type": "number", "minimum": 0, "maximum": 100 },
+    "max_notional": { "type": "number", "minimum": 0 },
+    "current_gross_exposure": { "type": "number", "minimum": 0 },
+    "current_net_exposure": { "type": "number" },
+    "max_target_weight_percent": { "type": "number", "exclusiveMinimum": 0, "maximum": 100 },
+    "max_gross_exposure_percent": { "type": "number", "exclusiveMinimum": 0 },
+    "max_net_exposure_percent": { "type": "number", "exclusiveMinimum": 0 },
+    "max_symbol_exposure_percent": { "type": "number", "exclusiveMinimum": 0 },
+    "max_strategy_exposure_percent": { "type": "number", "exclusiveMinimum": 0 },
+    "max_single_position_percent": { "type": "number", "exclusiveMinimum": 0 },
+    "status": { "enum": ["NO_ACTION", "PROPOSED", "BLOCKED"] },
+    "binding_limits": { "type": "array", "items": { "type": "string" } },
+    "decision_authority": { "const": false },
+    "created_at": { "type": "string", "format": "date-time" }
+  }
+}

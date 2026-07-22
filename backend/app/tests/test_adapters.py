@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from app.market_data.adapters.binance import (
+    build_raw_kline_event as build_binance_raw,
+)
 from app.market_data.adapters.binance import normalize_kline as binance_normalize
+from app.market_data.adapters.bybit import build_raw_kline_event as build_bybit_raw
 from app.market_data.adapters.bybit import normalize_kline as bybit_normalize
 
 
@@ -20,6 +24,20 @@ def test_binance_closed_kline_normalized():
     assert candle.symbol == "BTCUSDT"
     assert candle.exchange.value == "BINANCE"
     assert candle.close == 100700.0
+
+
+def test_binance_raw_payload_is_preserved_before_normalization():
+    payload = {
+        "e": "kline",
+        "E": 1767268800123,
+        "k": {"s": "BTCUSDT", "i": "15m", "x": True, "T": 1767268800000},
+    }
+    event = build_binance_raw(payload)
+    assert event is not None
+    assert event.payload == payload
+    assert event.symbol == "BTCUSDT"
+    assert event.schema_version == "1.0.0"
+    assert len(event.payload_sha256) == 64
 
 
 def test_binance_open_kline_ignored():
@@ -42,6 +60,20 @@ def test_bybit_confirmed_kline_normalized():
     assert len(candles) == 1
     assert candles[0].exchange.value == "BYBIT"
     assert candles[0].timeframe == "15m"
+
+
+def test_bybit_raw_event_has_deterministic_identity():
+    payload = {
+        "topic": "kline.15.BTCUSDT",
+        "ts": 1767268800123,
+        "data": [{"end": 1767268800000}],
+    }
+    first = build_bybit_raw(payload)
+    second = build_bybit_raw(payload)
+    assert first is not None
+    assert second is not None
+    assert first.event_id == second.event_id
+    assert first.payload_sha256 == second.payload_sha256
 
 
 def test_bybit_unconfirmed_ignored():

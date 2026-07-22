@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Path, Query
 
 from app.api.context import AppContext
-from app.api.deps import get_context
+from app.api.deps import AdminRequired, get_context
 from app.schemas.api import error_response, success_response
+from app.schemas.backfill import GapScanRequest, HistoricalBackfillRequest
+from app.schemas.data_catalog import CandleDatasetRequest
 
 router = APIRouter(prefix="/market")
 
@@ -43,4 +45,205 @@ async def latency(context: AppContext = Depends(get_context)) -> dict:
             break
     return success_response(
         {"connected": context.market_connected, "last_candle_latency": latest}
+    )
+
+
+@router.post("/datasets", dependencies=[AdminRequired])
+async def create_dataset(
+    body: CandleDatasetRequest,
+    context: AppContext = Depends(get_context),
+) -> dict:
+    if context.data_catalog is None:
+        return error_response(
+            "DATABASE_UNAVAILABLE",
+            "Persistent data catalog is not configured",
+        )
+    manifest = await context.data_catalog.materialize_candle_dataset(
+        exchange=body.exchange.value,
+        symbol=body.symbol,
+        timeframe=body.timeframe,
+        start_at=body.start_at,
+        end_at=body.end_at,
+        limit=body.limit,
+        clock_status=body.clock_status,
+    )
+    return success_response({"manifest": manifest.model_dump(mode="json")})
+
+
+@router.get("/datasets/{dataset_hash}", dependencies=[AdminRequired])
+async def get_dataset(
+    dataset_hash: str = Path(pattern=r"^[a-f0-9]{64}$"),
+    context: AppContext = Depends(get_context),
+) -> dict:
+    if context.repository is None:
+        return error_response(
+            "DATABASE_UNAVAILABLE",
+            "Persistent data catalog is not configured",
+        )
+    manifest = await context.repository.load_dataset_manifest(dataset_hash)
+    if manifest is None:
+        return error_response("NOT_FOUND", f"Dataset {dataset_hash} not found")
+    return success_response({"manifest": manifest.model_dump(mode="json")})
+
+
+@router.post("/gaps/scan", dependencies=[AdminRequired])
+async def scan_gaps(
+    body: GapScanRequest,
+    context: AppContext = Depends(get_context),
+) -> dict:
+    if context.gap_service is None:
+        return error_response(
+            "DATABASE_UNAVAILABLE",
+            "Persistent market-data continuity service is not configured",
+        )
+    gaps = await context.gap_service.scan(
+        exchange=body.exchange.value,
+        symbol=body.symbol,
+        timeframe=body.timeframe,
+        start_at=body.start_at,
+        end_at=body.end_at,
+        limit=body.limit,
+    )
+    return success_response(
+        {"gaps": [gap.model_dump(mode="json") for gap in gaps]}
+    )
+
+
+@router.get("/gaps", dependencies=[AdminRequired])
+async def list_gaps(
+    context: AppContext = Depends(get_context),
+    exchange: str | None = Query(default=None),
+    symbol: str | None = Query(default=None),
+    timeframe: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    limit: int = Query(default=500, ge=1, le=10_000),
+) -> dict:
+    if context.repository is None:
+        return error_response(
+            "DATABASE_UNAVAILABLE",
+            "Persistent market-data continuity service is not configured",
+        )
+    gaps = await context.repository.list_market_data_gaps(
+        exchange=exchange,
+        symbol=symbol,
+        timeframe=timeframe,
+        status=status,
+        limit=limit,
+    )
+    return success_response(
+        {"gaps": [gap.model_dump(mode="json") for gap in gaps]}
+    )
+
+
+@router.post("/backfills", dependencies=[AdminRequired])
+async def create_backfill(
+    body: HistoricalBackfillRequest,
+    context: AppContext = Depends(get_context),
+) -> dict:
+    if body.symbol not in context.settings.allowed_symbols_list:
+        return error_response(
+            "VALIDATION_ERROR",
+            f"Symbol {body.symbol} not in allowed list",
+        )
+    if context.backfill_service is None:
+        return error_response(
+            "DATABASE_UNAVAILABLE",
+            "Historical backfill service is not configured",
+        )
+    job = await context.backfill_service.submit(
+        body,
+        max_attempts=context.settings.backfill_max_attempts,
+    )
+    queue_item = await context.repository.load_backfill_queue_item(job.job_id)
+    return success_response(
+        {
+            "job": job.model_dump(mode="json"),
+            "queue_item": (
+                queue_item.model_dump(mode="json")
+                if queue_item is not None
+                else None
+            ),
+        }
+    )
+
+
+@router.get("/backfills/{job_id}", dependencies=[AdminRequired])
+async def get_backfill(
+    job_id: str = Path(pattern=r"^[a-f0-9]{64}$"),
+    context: AppContext = Depends(get_context),
+) -> dict:
+    if context.repository is None:
+        return error_response(
+            "DATABASE_UNAVAILABLE",
+            "Historical backfill service is not configured",
+        )
+    job = await context.repository.load_historical_backfill_job(job_id)
+    if job is None:
+        return error_response("NOT_FOUND", f"Backfill {job_id} not found")
+    queue_item = await context.repository.load_backfill_queue_item(job_id)
+    return success_response(
+        {
+            "job": job.model_dump(mode="json"),
+            "queue_item": (
+                queue_item.model_dump(mode="json")
+                if queue_item is not None
+                else None
+            ),
+        }
+    )
+
+
+@router.get("/backfills/{job_id}/lineage", dependencies=[AdminRequired])
+async def get_backfill_lineage(
+    job_id: str = Path(pattern=r"^[a-f0-9]{64}$"),
+    context: AppContext = Depends(get_context),
+) -> dict:
+    """Trace a request through raw provider pages into its normalized dataset."""
+    if context.repository is None:
+        return error_response(
+            "DATABASE_UNAVAILABLE",
+            "Historical backfill service is not configured",
+        )
+    job = await context.repository.load_historical_backfill_job(job_id)
+    if job is None:
+        return error_response("NOT_FOUND", f"Backfill {job_id} not found")
+
+    queue_item = await context.repository.load_backfill_queue_item(job_id)
+    raw_pages = await context.repository.list_backfill_raw_pages(job_id)
+    raw_objects = {}
+    for page in raw_pages:
+        if page.object_hash not in raw_objects:
+            raw_object = await context.repository.load_raw_data_object(
+                page.object_hash
+            )
+            if raw_object is not None:
+                raw_objects[page.object_hash] = raw_object.model_dump(mode="json")
+    manifest = (
+        await context.repository.load_dataset_manifest(job.dataset_hash)
+        if job.dataset_hash is not None
+        else None
+    )
+    gaps = await context.repository.list_market_data_gaps(
+        backfill_job_id=job_id,
+        limit=10_000,
+    )
+    return success_response(
+        {
+            "job": job.model_dump(mode="json"),
+            "queue_item": (
+                queue_item.model_dump(mode="json")
+                if queue_item is not None
+                else None
+            ),
+            "raw_pages": [
+                page.model_dump(mode="json") for page in raw_pages
+            ],
+            "raw_objects": raw_objects,
+            "dataset_manifest": (
+                manifest.model_dump(mode="json")
+                if manifest is not None
+                else None
+            ),
+            "gaps": [gap.model_dump(mode="json") for gap in gaps],
+        }
     )

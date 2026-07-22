@@ -20,23 +20,35 @@ from uuid import uuid4
 from app.agents.base import BaseAgent
 from app.agents.market_data import MarketDataAgent
 from app.agents.quant import QuantAgent
+from app.agents.registry import AgentRegistry
+from app.agents.runtime import AgentRuntime
 from app.agents.trend import TrendAgent
 from app.audit.service import AuditService
-from app.core.errors import AuditError, CapitalCipherError
+from app.core.errors import (
+    AuditError,
+    CapitalCipherError,
+    DatabaseError,
+    DataQualityError,
+    RiskError,
+)
 from app.core.event_bus import EventBus, Topics
 from app.core.logging import ServiceLogger
 from app.core.state_machine import SystemStateMachine
 from app.market_data.data_quality import evaluate_candles
+from app.market_data.clock import ExchangeClockRegistry
+from app.market_data.gaps import GapService
 from app.market_data.store import CandleStore
 from app.orchestrator.decision_engine import DecisionEngine
+from app.operations.resilience import DependencyName
+from app.operations.service import OperationsService
 from app.paper_trading.engine import PaperTradingEngine
 from app.risk.manager import RiskManager
 from app.strategy.engine import StrategyEngine
-from app.schemas.agents import AgentInput
+from app.schemas.agents import AgentExecutionRequest, AgentInput
 from app.schemas.common import CandidateAction, MarketRegime, RiskStatus
 from app.schemas.decisions import Decision
 from app.schemas.events import EventTypes
-from app.schemas.market import Candle
+from app.schemas.market import Candle, DataQualityReport
 
 logger = ServiceLogger("orchestrator")
 
@@ -51,13 +63,22 @@ class Orchestrator:
         decision_engine: DecisionEngine,
         risk_manager: RiskManager,
         paper_engine: PaperTradingEngine,
+        oms_service=None,
         audit_service: AuditService,
         market_data_agent: MarketDataAgent,
         quant_agent: QuantAgent,
         trend_agent: TrendAgent,
+        agent_runtime: AgentRuntime | None = None,
         repository=None,
         max_data_delay_ms: int = 5000,
         strategy_engine: StrategyEngine | None = None,
+        clock_registry: ExchangeClockRegistry | None = None,
+        require_trusted_clock: bool = False,
+        gap_service: GapService | None = None,
+        agent_evaluation_service=None,
+        weighted_consensus_service=None,
+        portfolio_construction_service=None,
+        operations_service: OperationsService | None = None,
     ) -> None:
         self._sm = state_machine
         self._bus = event_bus
@@ -65,16 +86,26 @@ class Orchestrator:
         self._decision_engine = decision_engine
         self._risk = risk_manager
         self._paper = paper_engine
+        self._oms = oms_service
         self._audit = audit_service
         self._repository = repository
         self._max_data_delay_ms = max_data_delay_ms
+        self._clock_registry = clock_registry
+        self._require_trusted_clock = require_trusted_clock
+        self._gap_service = gap_service
+        self._agent_evaluation = agent_evaluation_service
+        self._weighted_consensus = weighted_consensus_service
+        self._portfolio_construction = portfolio_construction_service
+        self._operations = operations_service
         self.strategy_engine = strategy_engine or StrategyEngine()
         self._current_day = None
-        self.agents: dict[str, BaseAgent] = {
-            market_data_agent.name: market_data_agent,
-            quant_agent.name: quant_agent,
-            trend_agent.name: trend_agent,
-        }
+        self._agent_runtime = agent_runtime or AgentRuntime(
+            AgentRegistry(
+                [market_data_agent, quant_agent, trend_agent]
+            ),
+            repository=repository,
+            event_bus=event_bus,
+        )
         self.recent_decisions: deque[Decision] = deque(maxlen=200)
         self.last_decision: Decision | None = None
         self.cycle_latencies_ms: deque[int] = deque(maxlen=100)
@@ -82,11 +113,27 @@ class Orchestrator:
         self.pending_events: int = 0
 
     # -- status ------------------------------------------------------------------
+    @property
+    def agents(self) -> dict[str, BaseAgent]:
+        """Expose the active registry view without caching stale definitions."""
+
+        return self._agent_runtime.registry.agents
+
     def status(self) -> dict[str, Any]:
         avg_latency = (
             sum(self.cycle_latencies_ms) / len(self.cycle_latencies_ms)
             if self.cycle_latencies_ms
             else 0
+        )
+        consensus_items = (
+            self._weighted_consensus.list(limit=1)
+            if self._weighted_consensus is not None
+            else []
+        )
+        portfolio_items = (
+            self._portfolio_construction.list(limit=1)
+            if self._portfolio_construction is not None
+            else []
         )
         return {
             "mode": self._sm.state.value,
@@ -96,6 +143,22 @@ class Orchestrator:
             "avg_cycle_latency_ms": round(avg_latency, 2),
             "recent_failures": len(self.failures),
             "pending_events": self.pending_events,
+            "governance": {
+                "latest_consensus_status": (
+                    consensus_items[0].status if consensus_items else None
+                ),
+                "latest_consensus_mode": (
+                    consensus_items[0].mode if consensus_items else None
+                ),
+                "latest_portfolio_status": (
+                    portfolio_items[0].status if portfolio_items else None
+                ),
+            },
+            "operations": (
+                self._operations.status()
+                if self._operations is not None
+                else None
+            ),
         }
 
     # -- main entrypoint -----------------------------------------------------------
@@ -103,37 +166,167 @@ class Orchestrator:
         """Full decision cycle for a closed candle (docs/04 flow)."""
         started = time.monotonic()
         correlation_id = str(uuid4())
-        self._store.add(candle)
-
-        # Daily risk reset on UTC day change (docs/06 daily drawdown window).
-        candle_day = candle.closed_at.date()
-        if self._current_day is None:
-            self._current_day = candle_day
-        elif candle_day != self._current_day:
-            self._current_day = candle_day
-            self._risk.reset_daily()
-
-        # Monitor open paper positions on every candle regardless of new decisions.
-        closed_orders = await self._paper.on_candle(candle)
-        for order in closed_orders:
-            await self._bus.publish(
-                Topics.PAPER_ORDERS,
-                EventTypes.PAPER_ORDER_CLOSED,
-                order.model_dump(mode="json"),
-                source="PaperTradingEngine",
-                correlation_id=order.correlation_id,
-            )
-
-        if not self._sm.can_operate():
-            logger.warning(
-                "Skipping evaluation: system cannot operate",
-                event_type="SYSTEM_NOT_READY",
-                correlation_id=correlation_id,
-                metadata={"state": self._sm.state.value},
-            )
-            return None
-
+        operational_cycle_attempted = False
+        operational_cycle_succeeded = False
         try:
+            clock_verdict = None
+            if self._require_trusted_clock:
+                if self._clock_registry is None:
+                    raise DataQualityError(
+                        "Trusted market-data ingestion requires a clock registry"
+                    )
+                clock_verdict = self._clock_registry.verdict(candle.exchange)
+                if not clock_verdict.trusted:
+                    self.failures.append(
+                        {
+                            "correlation_id": correlation_id,
+                            "error": "CLOCK_UNTRUSTED",
+                        }
+                    )
+                    if self._repository is not None:
+                        await self._repository.save_system_event(
+                            {
+                                "event_type": "CLOCK_GATE_BLOCKED",
+                                "source": "Orchestrator",
+                                "correlation_id": correlation_id,
+                                "payload": {
+                                    "exchange": candle.exchange.value,
+                                    "clock_status": clock_verdict.status,
+                                    "reason": clock_verdict.reason,
+                                },
+                            }
+                        )
+                    logger.error(
+                        "Candle blocked by trusted clock gate",
+                        event_type="CLOCK_GATE_BLOCKED",
+                        correlation_id=correlation_id,
+                        metadata={
+                            "exchange": candle.exchange.value,
+                            "clock_status": clock_verdict.status,
+                            "reason": clock_verdict.reason,
+                        },
+                    )
+                    return None
+
+            existing = self._store.get(
+                candle.exchange.value,
+                candle.symbol,
+                candle.timeframe,
+                limit=200,
+            )
+            quality = evaluate_candles(
+                [*existing, candle],
+                timeframe=candle.timeframe,
+                max_delay_ms=self._max_data_delay_ms,
+            )
+            if clock_verdict is not None and clock_verdict.status == "WARNING":
+                quality = quality.model_copy(
+                    update={
+                        "data_quality_score": max(
+                            0,
+                            quality.data_quality_score - 5,
+                        ),
+                        "status": (
+                            quality.status
+                            if quality.status in {"SUSPECT", "INVALID"}
+                            else "WARNING"
+                        ),
+                        "warnings": sorted(
+                            set([*quality.warnings, "CLOCK_WARNING"])
+                        ),
+                    }
+                )
+
+            # Normalized data is persisted before it can reach agents, risk, or
+            # paper trading. A duplicate database identity stops redelivery.
+            if self._repository is not None:
+                inserted = await self._repository.save_candle(candle, quality)
+                if not inserted:
+                    logger.warning(
+                        "Duplicate candle ignored",
+                        event_type="DUPLICATE_CANDLE",
+                        correlation_id=correlation_id,
+                        metadata={
+                            "exchange": candle.exchange.value,
+                            "symbol": candle.symbol,
+                            "timeframe": candle.timeframe,
+                            "closed_at": candle.closed_at.isoformat(),
+                        },
+                    )
+                    return None
+                if (
+                    self._gap_service is not None
+                    and existing
+                    and candle.closed_at > existing[-1].closed_at
+                ):
+                    await self._gap_service.scan(
+                        exchange=candle.exchange.value,
+                        symbol=candle.symbol,
+                        timeframe=candle.timeframe,
+                        start_at=existing[-1].closed_at,
+                        end_at=candle.closed_at,
+                        limit=10_000,
+                    )
+
+            if quality.errors:
+                self.failures.append(
+                    {
+                        "correlation_id": correlation_id,
+                        "error": "DATA_QUALITY_ERROR",
+                    }
+                )
+                logger.error(
+                    "Candle rejected by data quality",
+                    event_type="DATA_QUALITY_ERROR",
+                    correlation_id=correlation_id,
+                    metadata={
+                        "errors": quality.errors,
+                        "warnings": quality.warnings,
+                    },
+                )
+                return None
+            if not self._store.add(candle):
+                return None
+
+            # Daily risk reset on UTC day change (docs/06 daily drawdown window).
+            candle_day = candle.closed_at.date()
+            if self._current_day is None:
+                self._current_day = candle_day
+            elif candle_day != self._current_day:
+                self._current_day = candle_day
+                self._risk.reset_daily()
+
+            # Monitor paper positions only after persistence and temporal checks.
+            closed_orders = await self._paper.on_candle(candle)
+            for order in closed_orders:
+                await self._bus.publish(
+                    Topics.PAPER_ORDERS,
+                    EventTypes.PAPER_ORDER_CLOSED,
+                    order.model_dump(mode="json"),
+                    source="PaperTradingEngine",
+                    correlation_id=order.correlation_id,
+                )
+
+            if not self._sm.can_operate():
+                logger.warning(
+                    "Skipping evaluation: system cannot operate",
+                    event_type="SYSTEM_NOT_READY",
+                    correlation_id=correlation_id,
+                    metadata={"state": self._sm.state.value},
+                )
+                return None
+            if (
+                self._operations is not None
+                and not self._operations.decisions_allowed
+            ):
+                logger.critical(
+                    "Operational recovery gate suspended decision evaluation",
+                    event_type="OPERATIONS_SAFE_HALT",
+                    correlation_id=correlation_id,
+                    metadata=self._operations.recovery.snapshot(),
+                )
+                return None
+
             await self._bus.publish(
                 Topics.MARKET_EVENTS,
                 EventTypes.CANDLE_CLOSED,
@@ -141,11 +334,18 @@ class Orchestrator:
                 source="MarketDataAdapter",
                 correlation_id=correlation_id,
             )
-            decision = await self._evaluate(candle, correlation_id)
+            operational_cycle_attempted = True
+            decision = await self._evaluate(candle, correlation_id, quality)
+            operational_cycle_succeeded = decision is not None
             self.cycle_latencies_ms.append(int((time.monotonic() - started) * 1000))
             return decision
         except AuditError:
             # Fail safe: audit failure blocks operations (docs/31).
+            await self._mark_operational_dependency_unhealthy(
+                "AUDIT",
+                reason="audit operation failed during decision cycle",
+                correlation_id=correlation_id,
+            )
             logger.critical(
                 "Audit failure during decision cycle — blocking",
                 event_type="AUDIT_LOG_FAILED",
@@ -154,6 +354,18 @@ class Orchestrator:
             self.failures.append({"correlation_id": correlation_id, "error": "AUDIT_FAILED"})
             return None
         except CapitalCipherError as exc:
+            if isinstance(exc, DatabaseError):
+                await self._mark_operational_dependency_unhealthy(
+                    "DATABASE",
+                    reason="database operation failed during decision cycle",
+                    correlation_id=correlation_id,
+                )
+            elif isinstance(exc, RiskError):
+                await self._mark_operational_dependency_unhealthy(
+                    "RISK",
+                    reason="central risk invariant failed during decision cycle",
+                    correlation_id=correlation_id,
+                )
             self.failures.append({"correlation_id": correlation_id, "error": exc.error_code})
             logger.error(
                 f"Decision cycle failed: {exc.message}",
@@ -161,38 +373,114 @@ class Orchestrator:
                 correlation_id=correlation_id,
             )
             return None
+        finally:
+            if operational_cycle_attempted and self._operations is not None:
+                self._operations.observe_orchestrator_cycle(
+                    success=operational_cycle_succeeded,
+                    duration_ms=(time.monotonic() - started) * 1_000,
+                )
 
-    async def _evaluate(self, candle: Candle, correlation_id: str) -> Decision:
+    async def _mark_operational_dependency_unhealthy(
+        self,
+        dependency: DependencyName,
+        *,
+        reason: str,
+        correlation_id: str,
+    ) -> None:
+        if self._operations is None:
+            return
+        try:
+            await self._operations.observe_dependency(
+                dependency,
+                healthy=False,
+                reason=reason,
+                correlation_id=correlation_id,
+            )
+        except Exception as exc:
+            logger.error(
+                "Operational dependency alert could not be recorded",
+                event_type="OPERATIONS_TELEMETRY_FAILED",
+                correlation_id=correlation_id,
+                metadata={
+                    "dependency": dependency,
+                    "error_type": type(exc).__name__,
+                },
+            )
+
+    async def _evaluate(
+        self,
+        candle: Candle,
+        correlation_id: str,
+        quality: DataQualityReport,
+    ) -> Decision:
         exchange = candle.exchange.value
         symbol, timeframe = candle.symbol, candle.timeframe
 
-        # Data quality assessment (docs/32).
-        candles = self._store.get(exchange, symbol, timeframe, limit=200)
-        quality = evaluate_candles(candles, timeframe=timeframe, max_delay_ms=self._max_data_delay_ms)
-
         # Run analytical agents through their contracts.
-        agent_outputs = []
-        for agent in self.agents.values():
+        registrations = self._agent_runtime.registry.registrations()
+        admitted_registrations = (
+            self._operations.admitted_registrations(registrations)
+            if self._operations is not None
+            else registrations
+        )
+        requests = []
+        for registration in admitted_registrations:
+            agent = self.agents[registration.agent_name]
             agent_input = AgentInput(
+                request_id=f"{correlation_id}:{agent.name}",
                 correlation_id=correlation_id,
                 agent_name=agent.name,
+                timestamp=candle.closed_at,
                 symbol=symbol,
                 timeframe=timeframe,
                 market_context={"exchange": exchange},
             )
-            output = await agent.run(agent_input)
-            agent_outputs.append(output)
-            await self._bus.publish(
-                Topics.AGENT_OUTPUTS,
-                EventTypes.AGENT_COMPLETED
-                if output.status.value == "COMPLETED"
-                else EventTypes.AGENT_FAILED,
-                output.model_dump(mode="json"),
-                source=agent.name,
-                correlation_id=correlation_id,
+            requests.append(
+                AgentExecutionRequest(
+                    agent_version=registration.version,
+                    idempotency_key=f"{correlation_id}:{agent.name}",
+                    input=agent_input,
+                )
             )
-            if self._repository is not None:
-                await self._repository.save_agent_output(correlation_id, output)
+        agent_batch_started = time.monotonic()
+        agent_outputs = await self._agent_runtime.execute_many(requests)
+        if self._operations is not None:
+            try:
+                await self._operations.observe_agent_batch(
+                    agent_outputs,
+                    correlation_id=correlation_id,
+                    duration_ms=(
+                        time.monotonic() - agent_batch_started
+                    )
+                    * 1_000,
+                )
+            except Exception as exc:
+                logger.error(
+                    "Operational agent telemetry could not be recorded",
+                    event_type="OPERATIONS_TELEMETRY_FAILED",
+                    correlation_id=correlation_id,
+                    metadata={"error_type": type(exc).__name__},
+                )
+        if self._agent_evaluation is not None:
+            try:
+                await self._agent_evaluation.observe(
+                    candle=candle,
+                    correlation_id=correlation_id,
+                    outputs=agent_outputs,
+                    registrations={
+                        item.agent_name: item
+                        for item in self._agent_runtime.registry.registrations()
+                    },
+                )
+            except Exception as exc:
+                # Month 8 evaluation is observational. It may never create,
+                # block, resize or route an order.
+                logger.error(
+                    "Agent evaluation evidence could not be recorded",
+                    event_type="AGENT_EVALUATION_FAILED",
+                    correlation_id=correlation_id,
+                    metadata={"error_type": type(exc).__name__},
+                )
 
         # Strategy selection and regime rules (docs/26).
         trend_output = next((o for o in agent_outputs if o.agent_name == "TrendAgent"), None)
@@ -237,6 +525,101 @@ class Orchestrator:
                     else decision.warnings,
                 }
             )
+
+        consensus = None
+        if self._weighted_consensus is not None:
+            try:
+                consensus = await self._weighted_consensus.evaluate(
+                    baseline=decision,
+                    outputs=agent_outputs,
+                    registrations={
+                        item.agent_name: item
+                        for item in self._agent_runtime.registry.registrations()
+                    },
+                )
+                if (
+                    consensus.final_action != decision.candidate_action
+                    or consensus.final_confidence != decision.confidence
+                ):
+                    decision = decision.model_copy(
+                        update={
+                            "candidate_action": consensus.final_action,
+                            "confidence": consensus.final_confidence,
+                            "reason": (
+                                f"{decision.reason} | "
+                                f"Consensus: {consensus.reason}"
+                            ),
+                            "warnings": sorted(
+                                set(
+                                    [
+                                        *decision.warnings,
+                                        "PERFORMANCE_CONSENSUS_VETO",
+                                    ]
+                                )
+                            ),
+                        }
+                    )
+                await self._audit.record(
+                    correlation_id=correlation_id,
+                    audit_type="WEIGHTED_CONSENSUS",
+                    entity_type="weighted_consensus",
+                    entity_id=consensus.consensus_id,
+                    payload=consensus.model_dump(mode="json"),
+                )
+                await self._bus.publish(
+                    Topics.DECISION_EVENTS,
+                    "WEIGHTED_CONSENSUS_CREATED",
+                    consensus.model_dump(mode="json"),
+                    source="WeightedConsensusService",
+                    correlation_id=correlation_id,
+                )
+            except Exception as exc:
+                # Fail-safe fallback preserves the static Month 8 engine.
+                consensus = None
+                logger.error(
+                    "Weighted consensus unavailable; static decision preserved",
+                    event_type="WEIGHTED_CONSENSUS_FAILED",
+                    correlation_id=correlation_id,
+                    metadata={"error_type": type(exc).__name__},
+                )
+
+        portfolio_proposal = None
+        if (
+            consensus is not None
+            and self._portfolio_construction is not None
+        ):
+            try:
+                portfolio_proposal = (
+                    await self._portfolio_construction.propose(
+                        decision=decision,
+                        consensus=consensus,
+                        balance=self._paper.balance,
+                    )
+                )
+                await self._audit.record(
+                    correlation_id=correlation_id,
+                    audit_type="PORTFOLIO_PROPOSAL",
+                    entity_type="portfolio_proposal",
+                    entity_id=portfolio_proposal.proposal_id,
+                    payload=portfolio_proposal.model_dump(mode="json"),
+                )
+                await self._bus.publish(
+                    Topics.DECISION_EVENTS,
+                    "PORTFOLIO_PROPOSAL_CREATED",
+                    portfolio_proposal.model_dump(mode="json"),
+                    source="PortfolioConstructionService",
+                    correlation_id=correlation_id,
+                )
+            except Exception as exc:
+                # The central Risk Manager still evaluates the unchanged
+                # Month 8 candidate if advisory construction is unavailable.
+                portfolio_proposal = None
+                logger.error(
+                    "Portfolio construction unavailable; central risk retained",
+                    event_type="PORTFOLIO_CONSTRUCTION_FAILED",
+                    correlation_id=correlation_id,
+                    metadata={"error_type": type(exc).__name__},
+                )
         self.last_decision = decision
         self.recent_decisions.append(decision)
 
@@ -271,6 +654,7 @@ class Orchestrator:
             atr=atr,
             data_quality_score=quality.data_quality_score,
             balance=self._paper.balance,
+            leverage=self._paper.simulated_leverage,
             risk_per_trade_percent_override=(
                 risk_profile.risk_per_trade_percent if risk_profile else None
             ),
@@ -278,12 +662,26 @@ class Orchestrator:
             max_open_positions_override=(
                 risk_profile.max_open_positions if risk_profile else None
             ),
+            max_strategy_exposure_percent_override=(
+                risk_profile.max_strategy_exposure_percent
+                if risk_profile
+                else None
+            ),
+            max_portfolio_var_percent_override=(
+                risk_profile.max_portfolio_var_percent
+                if risk_profile
+                else None
+            ),
+            max_notional_override=(
+                portfolio_proposal.max_notional
+                if portfolio_proposal is not None
+                else None
+            ),
         )
         decision_after_risk = decision.model_copy(update={"risk_status": risk_check.risk_status})
         self.last_decision = decision_after_risk
         self.recent_decisions[-1] = decision_after_risk
         if self._repository is not None:
-            await self._repository.save_risk_check(risk_check)
             await self._repository.update_decision_risk_status(
                 decision.decision_id, risk_check.risk_status.value
             )
@@ -303,15 +701,36 @@ class Orchestrator:
             )
             return decision_after_risk
 
-        # Paper order (only APPROVED / REDUCED reach this point).
-        order = await self._paper.create_order(
-            decision_after_risk, risk_check, current_price=candle.close
-        )
-        await self._bus.publish(
-            Topics.PAPER_ORDERS,
-            EventTypes.PAPER_ORDER_CREATED,
-            order.model_dump(mode="json"),
-            source="PaperTradingEngine",
-            correlation_id=correlation_id,
-        )
+        if self._oms is not None:
+            order = await self._oms.submit_approved(
+                decision_after_risk,
+                risk_check,
+                current_price=candle.close,
+                market_candle=candle,
+                occurred_at=candle.closed_at,
+            )
+            await self._bus.publish(
+                Topics.OMS_ORDERS,
+                EventTypes.OMS_ORDER_ACCEPTED,
+                order.model_dump(mode="json"),
+                source="OMSService",
+                correlation_id=correlation_id,
+            )
+        else:
+            # Compatibility path for isolated unit construction. Production
+            # composition always injects the OMS boundary.
+            order = await self._paper.create_order(
+                decision_after_risk,
+                risk_check,
+                current_price=candle.close,
+                market_candle=candle,
+                occurred_at=candle.closed_at,
+            )
+            await self._bus.publish(
+                Topics.PAPER_ORDERS,
+                EventTypes.PAPER_ORDER_CREATED,
+                order.model_dump(mode="json"),
+                source="PaperTradingEngine",
+                correlation_id=correlation_id,
+            )
         return decision_after_risk

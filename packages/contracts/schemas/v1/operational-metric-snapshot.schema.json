@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/operational-metric-snapshot.schema.json",
+  "title": "OperationalMetricSnapshotV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "snapshot_id", "correlation_id", "window_seconds",
+    "registered_agents", "active_agents", "metrics", "captured_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "snapshot_id": { "type": "string", "format": "uuid" },
+    "correlation_id": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "window_seconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
+    "registered_agents": { "type": "integer", "minimum": 0, "maximum": 10000 },
+    "active_agents": { "type": "integer", "minimum": 0, "maximum": 10000 },
+    "metrics": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 512,
+      "items": { "$ref": "#/$defs/metric_point" }
+    },
+    "captured_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "metric_point": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "kind", "value", "sample_count", "labels"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 128,
+          "pattern": "^[a-z][a-z0-9_.-]+$"
+        },
+        "kind": { "enum": ["COUNTER", "GAUGE", "HISTOGRAM"] },
+        "value": { "type": "number" },
+        "sample_count": { "type": "integer", "minimum": 0 },
+        "labels": {
+          "type": "object",
+          "maxProperties": 16,
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    }
+  }
+}

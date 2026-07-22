@@ -1,0 +1,19 @@
+{
+  "name": "@capital-cipher/contracts",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "files": [
+    "manifest.json",
+    "schemas"
+  ],
+  "exports": {
+    "./manifest": "./manifest.json",
+    "./schemas/*": "./schemas/*"
+  },
+  "scripts": {
+    "build": "node scripts/verify-contracts.mjs",
+    "test": "node --test",
+    "typecheck": "node scripts/verify-contracts.mjs"
+  }
+}

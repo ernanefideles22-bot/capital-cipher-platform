@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/shadow-validation-report.schema.json",
+  "title": "ShadowValidationReportV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "report_id", "campaign", "status", "checkpoint_ids",
+    "total_checkpoints", "executed_checkpoints", "suspended_checkpoints",
+    "total_agent_executions", "failed_agent_executions",
+    "aggregate_error_rate", "max_p95_latency_ms", "reconciliation_runs",
+    "reconciliation_critical_mismatches", "degradation_scenarios",
+    "recovery_confirmations", "initial_risk_state_hash",
+    "final_risk_state_hash", "risk_limits_hash", "initial_order_count",
+    "final_order_count", "initial_paper_trade_count", "final_paper_trade_count",
+    "invariants", "live_execution_attempted", "started_at", "completed_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "report_id": { "type": "string", "format": "uuid" },
+    "campaign": { "type": "object" },
+    "status": { "enum": ["PASSED", "FAILED"] },
+    "checkpoint_ids": {
+      "type": "array", "minItems": 1, "maxItems": 100000,
+      "items": { "type": "string", "format": "uuid" }
+    },
+    "total_checkpoints": { "type": "integer", "minimum": 1 },
+    "executed_checkpoints": { "type": "integer", "minimum": 0 },
+    "suspended_checkpoints": { "type": "integer", "minimum": 2 },
+    "total_agent_executions": { "type": "integer", "minimum": 0 },
+    "failed_agent_executions": { "type": "integer", "minimum": 0 },
+    "aggregate_error_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+    "max_p95_latency_ms": { "type": "number", "minimum": 0 },
+    "reconciliation_runs": { "type": "integer", "minimum": 1 },
+    "reconciliation_critical_mismatches": { "type": "integer", "minimum": 0 },
+    "degradation_scenarios": {
+      "type": "array", "minItems": 2, "maxItems": 2,
+      "items": { "enum": ["BROKER", "DATABASE"] }
+    },
+    "recovery_confirmations": { "type": "integer", "minimum": 3 },
+    "initial_risk_state_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "final_risk_state_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "risk_limits_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "initial_order_count": { "type": "integer", "minimum": 0 },
+    "final_order_count": { "type": "integer", "minimum": 0 },
+    "initial_paper_trade_count": { "type": "integer", "minimum": 0 },
+    "final_paper_trade_count": { "type": "integer", "minimum": 0 },
+    "invariants": {
+      "type": "object", "minProperties": 1, "maxProperties": 64,
+      "additionalProperties": { "type": "boolean" }
+    },
+    "live_execution_attempted": { "const": false },
+    "started_at": { "type": "string", "format": "date-time" },
+    "completed_at": { "type": "string", "format": "date-time" }
+  }
+}

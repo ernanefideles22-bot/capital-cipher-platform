@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/agent-scorecard.schema.json",
+  "title": "AgentScorecardV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "agent_name", "agent_version", "sample_count",
+    "directional_sample_count", "accuracy", "mean_brier_loss",
+    "mean_marginal_contribution", "status", "minimum_samples",
+    "evaluated_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "agent_name": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 128
+    },
+    "agent_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "sample_count": { "type": "integer", "minimum": 0 },
+    "directional_sample_count": { "type": "integer", "minimum": 0 },
+    "accuracy": {
+      "anyOf": [
+        { "type": "number", "minimum": 0, "maximum": 1 },
+        { "type": "null" }
+      ]
+    },
+    "mean_brier_loss": {
+      "anyOf": [
+        { "type": "number", "minimum": 0, "maximum": 1 },
+        { "type": "null" }
+      ]
+    },
+    "mean_marginal_contribution": {
+      "anyOf": [
+        { "type": "number", "minimum": -1, "maximum": 1 },
+        { "type": "null" }
+      ]
+    },
+    "status": { "enum": ["INSUFFICIENT_SAMPLE", "EVALUATED"] },
+    "minimum_samples": { "type": "integer", "minimum": 1 },
+    "evaluated_at": { "type": "string", "format": "date-time" }
+  }
+}

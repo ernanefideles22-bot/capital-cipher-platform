@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/weighted-consensus.schema.json",
+  "title": "WeightedConsensusV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "consensus_id", "correlation_id", "experiment_id",
+    "experiment_version", "mode", "symbol", "timeframe", "status",
+    "baseline_action", "baseline_confidence", "probability_up", "signal",
+    "consensus_confidence", "eligible_agent_count", "excluded_agents",
+    "weights", "applied", "final_action", "final_confidence", "reason",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "consensus_id": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "correlation_id": { "type": "string", "minLength": 1, "maxLength": 36 },
+    "experiment_id": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "experiment_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "mode": { "enum": ["SHADOW", "CONFIRMATION"] },
+    "symbol": { "type": "string", "pattern": "^[A-Z0-9._-]{2,32}$" },
+    "timeframe": { "type": "string", "pattern": "^[1-9][0-9]*[mhdw]$" },
+    "status": { "enum": ["INSUFFICIENT_DATA", "READY"] },
+    "baseline_action": { "enum": ["BUY", "SELL", "HOLD", "WAIT", "BLOCK"] },
+    "baseline_confidence": { "type": "integer", "minimum": 0, "maximum": 100 },
+    "probability_up": {
+      "anyOf": [
+        { "type": "number", "minimum": 0, "maximum": 1 },
+        { "type": "null" }
+      ]
+    },
+    "signal": { "enum": ["BUY", "SELL", "HOLD", "WAIT", "BLOCK", "NEUTRAL"] },
+    "consensus_confidence": { "type": "integer", "minimum": 0, "maximum": 100 },
+    "eligible_agent_count": { "type": "integer", "minimum": 0, "maximum": 200 },
+    "excluded_agents": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "weights": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/agent_weight" }
+    },
+    "applied": { "type": "boolean" },
+    "final_action": { "enum": ["BUY", "SELL", "HOLD", "WAIT", "BLOCK"] },
+    "final_confidence": { "type": "integer", "minimum": 0, "maximum": 100 },
+    "reason": { "type": "string", "minLength": 3, "maxLength": 2000 },
+    "created_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "agent_weight": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agent_name", "agent_version", "sample_count",
+        "directional_sample_count", "accuracy", "mean_brier_loss",
+        "mean_marginal_contribution", "probability_up", "raw_score",
+        "weight"
+      ],
+      "properties": {
+        "agent_name": { "type": "string", "minLength": 3, "maxLength": 128 },
+        "agent_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "sample_count": { "type": "integer", "minimum": 100 },
+        "directional_sample_count": { "type": "integer", "minimum": 20 },
+        "accuracy": { "type": "number", "minimum": 0, "maximum": 1 },
+        "mean_brier_loss": { "type": "number", "minimum": 0, "maximum": 1 },
+        "mean_marginal_contribution": { "type": "number", "minimum": -1, "maximum": 1 },
+        "probability_up": { "type": "number", "minimum": 0, "maximum": 1 },
+        "raw_score": { "type": "number", "exclusiveMinimum": 0 },
+        "weight": { "type": "number", "exclusiveMinimum": 0, "maximum": 0.34 }
+      }
+    }
+  }
+}

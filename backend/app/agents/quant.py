@@ -17,6 +17,9 @@ MIN_CANDLES = 60
 class QuantAgent(BaseAgent):
     name = "QuantAgent"
     description = "Performs quantitative technical analysis"
+    required_inputs = ("candles.ohlcv",)
+    capabilities = ("ema", "rsi", "atr", "vwap", "macd", "volume-ratio")
+    decision_role = "PRIMARY"
     critical = True
 
     def __init__(self, store: CandleStore) -> None:

@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/agent-forecast-outcome.schema.json",
+  "title": "AgentForecastOutcomeV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "outcome_id", "forecast_id", "realized_at",
+    "realized_price", "realized_return", "realized_up", "correct",
+    "brier_loss", "ensemble_probability_up", "ensemble_brier_loss",
+    "leave_one_out_probability_up", "leave_one_out_brier_loss",
+    "marginal_contribution", "cohort_size", "created_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "outcome_id": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "forecast_id": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "realized_at": { "type": "string", "format": "date-time" },
+    "realized_price": { "type": "number", "exclusiveMinimum": 0 },
+    "realized_return": { "type": "number" },
+    "realized_up": { "type": "number", "minimum": 0, "maximum": 1 },
+    "correct": {
+      "anyOf": [{ "type": "boolean" }, { "type": "null" }]
+    },
+    "brier_loss": { "type": "number", "minimum": 0, "maximum": 1 },
+    "ensemble_probability_up": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "ensemble_brier_loss": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "leave_one_out_probability_up": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "leave_one_out_brier_loss": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "marginal_contribution": {
+      "type": "number",
+      "minimum": -1,
+      "maximum": 1
+    },
+    "cohort_size": { "type": "integer", "minimum": 1 },
+    "created_at": { "type": "string", "format": "date-time" }
+  }
+}

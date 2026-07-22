@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/independent-audit-attestation.schema.json",
+  "title": "IndependentAuditAttestationV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "attestation_id", "evidence_bundle_id",
+    "evidence_bundle_sha256", "source_revision", "reviewer_id",
+    "reviewer_organization", "reviewer_kind", "independent_of_development_team",
+    "decision", "unresolved_critical_findings", "signed_artifact_sha256",
+    "live_execution_authorized", "issued_at", "expires_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "attestation_id": { "type": "string", "format": "uuid" },
+    "evidence_bundle_id": { "type": "string", "format": "uuid" },
+    "evidence_bundle_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "source_revision": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "reviewer_id": { "type": "string", "minLength": 3, "maxLength": 160 },
+    "reviewer_organization": { "type": "string", "minLength": 2, "maxLength": 160 },
+    "reviewer_kind": { "const": "EXTERNAL" },
+    "independent_of_development_team": { "const": true },
+    "decision": { "enum": ["APPROVED_TESTNET", "REJECTED"] },
+    "unresolved_critical_findings": { "type": "integer", "minimum": 0, "maximum": 10000 },
+    "signed_artifact_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "live_execution_authorized": { "const": false },
+    "issued_at": { "type": "string", "format": "date-time" },
+    "expires_at": { "type": "string", "format": "date-time" }
+  }
+}

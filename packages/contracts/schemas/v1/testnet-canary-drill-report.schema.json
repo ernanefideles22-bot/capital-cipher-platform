@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/testnet-canary-drill-report.schema.json",
+  "title": "TestnetCanaryDrillReportV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "drill_id", "evidence_bundle_id", "attestation_id",
+    "environment", "transport", "limits", "unapproved_attempt_blocked",
+    "approved_canary_admitted", "kill_switch_triggered", "canary_canceled",
+    "reconciliation_flat", "rollback_completed", "remote_api_call_attempted",
+    "real_funds_used", "live_execution_attempted", "status", "report_sha256",
+    "completed_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "drill_id": { "type": "string", "format": "uuid" },
+    "evidence_bundle_id": { "type": "string", "format": "uuid" },
+    "attestation_id": { "type": "string", "format": "uuid" },
+    "environment": { "const": "TESTNET" },
+    "transport": { "const": "LOCAL_NO_NETWORK_REHEARSAL" },
+    "limits": {
+      "type": "object", "additionalProperties": false,
+      "required": ["max_virtual_notional_usd", "max_orders", "max_open_positions", "leverage", "withdrawal_permission"],
+      "properties": {
+        "max_virtual_notional_usd": { "type": "number", "exclusiveMinimum": 0, "maximum": 100 },
+        "max_orders": { "const": 1 },
+        "max_open_positions": { "const": 1 },
+        "leverage": { "const": 1 },
+        "withdrawal_permission": { "const": false }
+      }
+    },
+    "unapproved_attempt_blocked": { "type": "boolean" },
+    "approved_canary_admitted": { "type": "boolean" },
+    "kill_switch_triggered": { "type": "boolean" },
+    "canary_canceled": { "type": "boolean" },
+    "reconciliation_flat": { "type": "boolean" },
+    "rollback_completed": { "type": "boolean" },
+    "remote_api_call_attempted": { "const": false },
+    "real_funds_used": { "const": false },
+    "live_execution_attempted": { "const": false },
+    "status": { "enum": ["PASSED", "FAILED"] },
+    "report_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "completed_at": { "type": "string", "format": "date-time" }
+  }
+}

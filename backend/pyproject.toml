@@ -1,7 +1,7 @@
 [project]
 name = "capital-cipher-backend"
-version = "0.5.0"
-description = "Capital Cipher AI — institutional multi-agent trading platform (Phase 1, PAPER only)"
+version = "0.22.0"
+description = "Capital Cipher AI - institutional multi-agent platform with PAPER and gated TESTNET OMS"
 readme = "README.md"
 # Spec target is Python 3.13+ (docs/09). Code is compatible with 3.10+ for CI portability.
 requires-python = ">=3.10"
@@ -12,7 +12,9 @@ dependencies = [
     "pydantic-settings>=2.4",
     "sqlalchemy[asyncio]>=2.0",
     "aiosqlite>=0.20",
+    "httpx>=0.27,<1",
     "websockets>=12.0",
+    "redis>=8.0.1,<9",
 ]
 
 [project.optional-dependencies]
@@ -20,6 +22,7 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "httpx>=0.27",
+    "jsonschema>=4.23",
 ]
 postgres = ["asyncpg>=0.29"]
 

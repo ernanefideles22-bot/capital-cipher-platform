@@ -12,12 +12,42 @@ import sys
 from datetime import datetime, timezone
 from typing import Any
 
-SENSITIVE_KEYS = {"api_key", "apikey", "secret", "token", "password", "authorization"}
+SENSITIVE_KEYS = {
+    "api_key",
+    "apikey",
+    "api-key",
+    "key_id",
+    "secret",
+    "api_secret",
+    "signing_secret",
+    "signature",
+    "token",
+    "password",
+    "authorization",
+    "x-mbx-apikey",
+    "x-bapi-api-key",
+    "x-bapi-sign",
+}
 
 
 def _sanitize(metadata: dict[str, Any]) -> dict[str, Any]:
     """Remove obviously sensitive keys from log metadata."""
-    return {k: ("***" if k.lower() in SENSITIVE_KEYS else v) for k, v in metadata.items()}
+
+    def sanitize_value(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: (
+                    "***"
+                    if key.lower() in SENSITIVE_KEYS
+                    else sanitize_value(item)
+                )
+                for key, item in value.items()
+            }
+        if isinstance(value, (list, tuple)):
+            return [sanitize_value(item) for item in value]
+        return value
+
+    return sanitize_value(metadata)
 
 
 class StructuredFormatter(logging.Formatter):
@@ -42,6 +72,10 @@ def configure_logging(level: str = "INFO") -> None:
     root = logging.getLogger()
     root.handlers = [handler]
     root.setLevel(level.upper())
+    # HTTPX logs full URLs at INFO. Signed Binance requests carry their HMAC
+    # in the query string, so third-party request logging is kept above INFO.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 class ServiceLogger:

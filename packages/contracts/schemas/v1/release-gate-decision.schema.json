@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/release-gate-decision.schema.json",
+  "title": "ReleaseGateDecisionV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "gate_decision_id", "evidence_bundle_id",
+    "source_revision", "target_environment", "attestation_id",
+    "canary_drill_id", "criteria", "outcome", "testnet_release_authorized",
+    "runtime_configuration_changed", "live_execution_authorized",
+    "decision_sha256", "decided_at", "expires_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "gate_decision_id": { "type": "string", "format": "uuid" },
+    "evidence_bundle_id": { "type": "string", "format": "uuid" },
+    "source_revision": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "target_environment": { "const": "TESTNET" },
+    "attestation_id": { "type": ["string", "null"], "format": "uuid" },
+    "canary_drill_id": { "type": ["string", "null"], "format": "uuid" },
+    "criteria": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "canary_evidence_matches", "canary_evidence_recorded",
+        "exact_source_revision", "external_audit_approved_testnet",
+        "external_audit_current", "external_audit_independent",
+        "external_audit_present", "external_audit_recorded",
+        "live_execution_absent", "local_canary_passed",
+        "no_remote_call_or_real_funds", "rollback_completed",
+        "technical_evidence_passed", "technical_evidence_recorded"
+      ],
+      "properties": {
+        "canary_evidence_matches": { "type": "boolean" },
+        "canary_evidence_recorded": { "type": "boolean" },
+        "exact_source_revision": { "type": "boolean" },
+        "external_audit_approved_testnet": { "type": "boolean" },
+        "external_audit_current": { "type": "boolean" },
+        "external_audit_independent": { "type": "boolean" },
+        "external_audit_present": { "type": "boolean" },
+        "external_audit_recorded": { "type": "boolean" },
+        "live_execution_absent": { "type": "boolean" },
+        "local_canary_passed": { "type": "boolean" },
+        "no_remote_call_or_real_funds": { "type": "boolean" },
+        "rollback_completed": { "type": "boolean" },
+        "technical_evidence_passed": { "type": "boolean" },
+        "technical_evidence_recorded": { "type": "boolean" }
+      }
+    },
+    "outcome": {
+      "enum": ["APPROVED_TESTNET", "BLOCKED_PENDING_EXTERNAL_AUDIT", "BLOCKED_TECHNICAL"]
+    },
+    "testnet_release_authorized": { "type": "boolean" },
+    "runtime_configuration_changed": { "const": false },
+    "live_execution_authorized": { "const": false },
+    "decision_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "decided_at": { "type": "string", "format": "date-time" },
+    "expires_at": { "type": ["string", "null"], "format": "date-time" }
+  }
+}

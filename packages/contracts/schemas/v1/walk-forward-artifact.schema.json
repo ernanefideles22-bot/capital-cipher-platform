@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/walk-forward-artifact.schema.json",
+  "title": "Capital Cipher Walk-Forward Artifact Metadata v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "artifact_version",
+    "experiment_id",
+    "artifact_hash",
+    "protocol_version",
+    "dataset_id",
+    "dataset_hash",
+    "symbol",
+    "timeframe",
+    "candidate_version",
+    "promotion_status",
+    "created_at",
+    "recorded_at"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "artifact_version": {"const": "walk-forward-artifact-v1"},
+    "experiment_id": {
+      "type": "string",
+      "pattern": "^walk-forward:v[12]:[a-f0-9]{64}$"
+    },
+    "artifact_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "protocol_version": {"const": "walk-forward-v1"},
+    "dataset_id": {"type": "string", "minLength": 1},
+    "dataset_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "symbol": {
+      "type": "string",
+      "pattern": "^[A-Z0-9._-]{2,32}$"
+    },
+    "timeframe": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*[mhdw]$"
+    },
+    "candidate_version": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 128
+    },
+    "promotion_status": {"const": "RESEARCH_ONLY"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "recorded_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": false
+}

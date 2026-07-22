@@ -29,6 +29,13 @@ def test_no_private_api_key_settings_exist():
     assert not (field_names & forbidden)
 
 
+def test_required_broker_cannot_start_without_redis_url():
+    from app.core.config import Settings
+
+    with pytest.raises(Exception):
+        Settings(EVENT_BROKER_REQUIRED=True)
+
+
 def test_no_real_order_code_in_backend():
     """No module may reference private exchange order endpoints."""
     forbidden_fragments = [
@@ -55,9 +62,21 @@ def test_no_hardcoded_secrets():
 
 
 def test_logs_sanitize_sensitive_keys():
-    from app.core.logging import _sanitize
+    import logging
 
-    clean = _sanitize({"api_key": "abc", "token": "xyz", "other": 1})
+    from app.core.logging import _sanitize, configure_logging
+
+    clean = _sanitize(
+        {
+            "api_key": "abc",
+            "token": "xyz",
+            "other": 1,
+            "nested": {"signature": "signed-query", "safe": True},
+        }
+    )
     assert clean["api_key"] == "***"
     assert clean["token"] == "***"
+    assert clean["nested"]["signature"] == "***"
     assert clean["other"] == 1
+    configure_logging("INFO")
+    assert logging.getLogger("httpx").level == logging.WARNING

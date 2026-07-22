@@ -8,17 +8,43 @@ services:
       APP_ENV: dev
       SYSTEM_MODE: PAPER
       DATABASE_URL: postgresql+asyncpg://cipher:cipher@db:5432/capital_cipher
+      REDIS_URL: redis://redis:6379/0
+      EVENT_BROKER_REQUIRED: "0"
       ENABLE_MARKET_DATA: "1"
+      BACKFILL_WORKER_ENABLED: "1"
+      DATA_LAKE_ROOT: /var/lib/capital-cipher/data-lake
       LOG_LEVEL: INFO
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - datalake:/var/lib/capital-cipher/data-lake
   db:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: cipher
       POSTGRES_PASSWORD: cipher
       POSTGRES_DB: capital_cipher
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cipher -d capital_cipher"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     volumes:
       - pgdata:/var/lib/postgresql/data
+  redis:
+    image: redis:8.2-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - redisdata:/data
 volumes:
   pgdata:
+  redisdata:
+  datalake:

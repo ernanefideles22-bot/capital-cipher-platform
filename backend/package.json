@@ -1,0 +1,9 @@
+{
+  "name": "@capital-cipher/backend",
+  "version": "0.22.0",
+  "private": true,
+  "scripts": {
+    "build": "python -m compileall -q app",
+    "test": "python -m pytest -q -p no:cacheprovider"
+  }
+}

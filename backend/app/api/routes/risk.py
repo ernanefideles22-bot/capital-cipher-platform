@@ -27,6 +27,11 @@ async def risk_status(context: AppContext = Depends(get_context)) -> dict:
             "blocked_operations": state.blocked_operations,
             "kill_switch_active": context.state_machine.kill_switch_active,
             "kill_switch_reason": context.state_machine.kill_switch_reason,
+            "control_revision": context.risk_manager.control_state.revision,
+            "durable_control_active": context.risk_manager.control_state.active,
+            "portfolio": context.risk_manager.portfolio_status(
+                balance=context.paper_engine.balance
+            ),
         }
     )
 
@@ -40,17 +45,33 @@ async def risk_limits(context: AppContext = Depends(get_context)) -> dict:
 async def kill_switch(
     body: KillSwitchRequest, context: AppContext = Depends(get_context)
 ) -> dict:
-    await context.state_machine.trigger_kill_switch(reason=body.reason, actor="api")
-    await context.audit_service.record(
-        correlation_id="00000000-0000-0000-0000-000000000000",
-        audit_type="KILL_SWITCH_TRIGGERED",
-        entity_type="system",
-        payload={"reason": body.reason, "actor": "api"},
+    await context.risk_manager.trigger_kill_switch(
+        reason=body.reason,
+        actor="api",
     )
     return success_response(
         {
             "kill_switch_active": True,
             "system_state": context.state_machine.state.value,
             "reason": body.reason,
+        }
+    )
+
+
+@router.post("/kill-switch/reset", dependencies=[AdminRequired])
+async def reset_kill_switch(
+    body: KillSwitchRequest,
+    context: AppContext = Depends(get_context),
+) -> dict:
+    await context.risk_manager.reset_kill_switch(
+        reason=body.reason,
+        actor="api",
+    )
+    return success_response(
+        {
+            "kill_switch_active": False,
+            "system_state": context.state_machine.state.value,
+            "reason": body.reason,
+            "control_revision": context.risk_manager.control_state.revision,
         }
     )

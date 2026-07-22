@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.capital-cipher.local/v1/agent-forecast.schema.json",
+  "title": "AgentForecastV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "forecast_id", "correlation_id", "agent_name",
+    "agent_version", "definition_hash", "symbol", "timeframe", "signal",
+    "confidence", "probability_up", "reference_price", "forecast_at",
+    "target_at", "horizon_seconds", "decision_role", "created_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "forecast_id": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "correlation_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36
+    },
+    "agent_name": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 128
+    },
+    "agent_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "definition_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "symbol": {
+      "type": "string",
+      "pattern": "^[A-Z0-9._-]{2,32}$"
+    },
+    "timeframe": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*[mhdw]$"
+    },
+    "signal": {
+      "enum": ["BUY", "SELL", "HOLD", "WAIT", "BLOCK", "NEUTRAL"]
+    },
+    "confidence": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "probability_up": { "type": "number", "minimum": 0, "maximum": 1 },
+    "reference_price": { "type": "number", "exclusiveMinimum": 0 },
+    "forecast_at": { "type": "string", "format": "date-time" },
+    "target_at": { "type": "string", "format": "date-time" },
+    "horizon_seconds": { "type": "integer", "minimum": 1 },
+    "decision_role": { "enum": ["PRIMARY", "SHADOW"] },
+    "created_at": { "type": "string", "format": "date-time" }
+  }
+}
