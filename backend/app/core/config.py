@@ -25,7 +25,7 @@ class Settings(BaseSettings):
 
     app_env: str = Field(default="local", alias="APP_ENV")
     app_name: str = "capital-cipher-api"
-    app_version: str = "0.22.0"
+    app_version: str = "0.23.0"
 
     system_mode: str = Field(default="PAPER", alias="SYSTEM_MODE")
     oms_execution_environment: str = Field(
@@ -104,6 +104,7 @@ class Settings(BaseSettings):
     )
     redis_url: str | None = Field(default=None, alias="REDIS_URL")
     event_broker_required: bool = Field(default=False, alias="EVENT_BROKER_REQUIRED")
+    enable_market_data: bool = Field(default=False, alias="ENABLE_MARKET_DATA")
     redis_stream_prefix: str = Field(
         default="capital-cipher",
         alias="REDIS_STREAM_PREFIX",
@@ -491,6 +492,14 @@ class Settings(BaseSettings):
             )
         return mode
 
+    @field_validator("app_env")
+    @classmethod
+    def normalize_app_environment(cls, value: str) -> str:
+        environment = value.strip().lower()
+        if environment not in {"local", "dev", "test", "ci", "staging"}:
+            raise ValueError("APP_ENV must be local, dev, test, ci or staging")
+        return environment
+
     @field_validator("oms_execution_environment")
     @classmethod
     def validate_oms_environment(cls, value: str) -> str:
@@ -601,6 +610,48 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "TESTNET requires OMS_TESTNET_ACKNOWLEDGEMENT="
                     "TESTNET_ONLY_NO_REAL_FUNDS"
+                )
+        if self.app_env == "staging":
+            violations: list[str] = []
+            database = urlsplit(self.database_url)
+            broker = urlsplit(self.redis_url or "")
+            if self.system_mode != "PAPER":
+                violations.append("SYSTEM_MODE must be PAPER")
+            if self.oms_execution_environment != "PAPER":
+                violations.append("OMS_EXECUTION_ENVIRONMENT must be PAPER")
+            if self.oms_testnet_enabled:
+                violations.append("OMS_TESTNET_ENABLED must be disabled")
+            if self.oms_testnet_acknowledgement:
+                violations.append("OMS_TESTNET_ACKNOWLEDGEMENT must be empty")
+            if self.oms_worker_enabled:
+                violations.append("OMS_WORKER_ENABLED must be disabled")
+            if self.oms_reconciliation_enabled:
+                violations.append("OMS_RECONCILIATION_ENABLED must be disabled")
+            if database.scheme != "postgresql+asyncpg" or not database.hostname:
+                violations.append("DATABASE_URL must use postgresql+asyncpg")
+            if not self.event_broker_required:
+                violations.append("EVENT_BROKER_REQUIRED must be enabled")
+            if broker.scheme not in {"redis", "rediss"} or not broker.hostname:
+                violations.append("REDIS_URL must use redis or rediss")
+            if not self.enable_market_data:
+                violations.append("ENABLE_MARKET_DATA must be enabled")
+            if not self.operations_monitor_enabled:
+                violations.append("OPERATIONS_MONITOR_ENABLED must be enabled")
+            if not self.agent_worker_enabled:
+                violations.append("AGENT_WORKER_ENABLED must be enabled")
+            if not self.backfill_worker_enabled:
+                violations.append("BACKFILL_WORKER_ENABLED must be enabled")
+            if self.admin_api_key is None:
+                violations.append("ADMIN_API_KEY is required")
+            if self.default_leverage != 1 or self.max_leverage_simulated != 1:
+                violations.append("staging leverage must be fixed at 1x")
+            if not self.cors_allowed_origins_list or any(
+                origin == "*" for origin in self.cors_allowed_origins_list
+            ):
+                violations.append("CORS_ALLOWED_ORIGINS must be explicit")
+            if violations:
+                raise ValueError(
+                    "Staging PAPER invariant violation: " + "; ".join(violations)
                 )
         return self
 

@@ -63,7 +63,7 @@ class ApiSecurityMiddleware:
 
         method = scope.get("method", "")
         path = scope.get("path", "")
-        if method != "OPTIONS" and path != "/health":
+        if method != "OPTIONS" and path not in {"/health", "/ready"}:
             client_info = scope.get("client")
             client = client_info[0] if client_info else "unknown"
             allowed, retry_after = await self._limiter.allow(client)

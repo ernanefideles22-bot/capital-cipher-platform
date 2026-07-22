@@ -1,0 +1,183 @@
+name: capital-cipher-staging
+
+x-paper-environment: &paper-environment
+  APP_ENV: staging
+  SYSTEM_MODE: PAPER
+  STAGING_DEPLOYMENT_TARGET: LOCAL_COMPOSE
+  DATABASE_URL: postgresql+asyncpg://capital_cipher:${STAGING_POSTGRES_PASSWORD:?set STAGING_POSTGRES_PASSWORD}@db:5432/capital_cipher_staging
+  REDIS_URL: redis://:${STAGING_REDIS_PASSWORD:?set STAGING_REDIS_PASSWORD}@redis:6379/0
+  EVENT_BROKER_REQUIRED: "1"
+  REDIS_STREAM_PREFIX: capital-cipher-staging
+  ENABLE_MARKET_DATA: "1"
+  DATA_LAKE_ROOT: /var/lib/capital-cipher/data-lake
+  ADMIN_API_KEY: ${ADMIN_API_KEY:?set ADMIN_API_KEY}
+  CORS_ALLOWED_ORIGINS: ${STAGING_CORS_ALLOWED_ORIGINS:-http://127.0.0.1:5173}
+  OMS_EXECUTION_ENVIRONMENT: PAPER
+  OMS_TESTNET_ENABLED: "0"
+  OMS_TESTNET_ACKNOWLEDGEMENT: ""
+  OMS_WORKER_ENABLED: "0"
+  OMS_RECONCILIATION_ENABLED: "0"
+  OMS_HALT_ON_CRITICAL_DRIFT: "1"
+  CAPITAL_CIPHER_BINANCE_TESTNET_KEY_ID: ""
+  CAPITAL_CIPHER_BINANCE_TESTNET_SIGNING_SECRET: ""
+  CAPITAL_CIPHER_BYBIT_TESTNET_KEY_ID: ""
+  CAPITAL_CIPHER_BYBIT_TESTNET_SIGNING_SECRET: ""
+  OPERATIONS_MONITOR_ENABLED: "1"
+  OPERATIONS_MONITOR_INTERVAL_SECONDS: "30"
+  OPERATIONS_DAILY_BUDGET_USD: ${OPERATIONS_DAILY_BUDGET_USD:-10}
+  OPERATIONS_BUDGET_WARNING_PERCENT: "80"
+  AGENT_EXECUTION_UNIT_COST_USD: ${AGENT_EXECUTION_UNIT_COST_USD:-0}
+  AGENT_WORKER_ENABLED: "1"
+  AGENT_MAX_CONCURRENCY: ${AGENT_MAX_CONCURRENCY:-8}
+  BACKFILL_WORKER_ENABLED: "1"
+  REQUIRE_TRUSTED_MARKET_CLOCK: "1"
+  ALLOWED_SYMBOLS: ${ALLOWED_SYMBOLS:-BTCUSDT,ETHUSDT,SOLUSDT}
+  DEFAULT_TIMEFRAME: ${DEFAULT_TIMEFRAME:-15m}
+  DEFAULT_EXCHANGE: BINANCE
+  DEFAULT_LEVERAGE: "1"
+  MAX_LEVERAGE_SIMULATED: "1"
+  RISK_PER_TRADE_PERCENT: ${RISK_PER_TRADE_PERCENT:-0.25}
+  MAX_DAILY_DRAWDOWN_PERCENT: ${MAX_DAILY_DRAWDOWN_PERCENT:-2}
+  MAX_TOTAL_DRAWDOWN_PERCENT: ${MAX_TOTAL_DRAWDOWN_PERCENT:-5}
+  MAX_OPEN_POSITIONS: ${MAX_OPEN_POSITIONS:-3}
+  API_RATE_LIMIT_PER_MINUTE: ${API_RATE_LIMIT_PER_MINUTE:-300}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  STAGING_POSTGRES_PASSWORD: ${STAGING_POSTGRES_PASSWORD:?set STAGING_POSTGRES_PASSWORD}
+  STAGING_REDIS_PASSWORD: ${STAGING_REDIS_PASSWORD:?set STAGING_REDIS_PASSWORD}
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: capital_cipher
+      POSTGRES_PASSWORD: ${STAGING_POSTGRES_PASSWORD:?set STAGING_POSTGRES_PASSWORD}
+      POSTGRES_DB: capital_cipher_staging
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U capital_cipher -d capital_cipher_staging"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    volumes:
+      - staging-postgres:/var/lib/postgresql/data
+      - ../../supabase/migrations:/docker-entrypoint-initdb.d:ro
+    networks: [data]
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+
+  redis:
+    image: redis:8.2-alpine
+    environment:
+      STAGING_REDIS_PASSWORD: ${STAGING_REDIS_PASSWORD:?set STAGING_REDIS_PASSWORD}
+    command:
+      - sh
+      - -c
+      - >-
+        exec redis-server --appendonly yes --appendfsync everysec
+        --requirepass "$$STAGING_REDIS_PASSWORD"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - redis-cli --no-auth-warning -a "$$STAGING_REDIS_PASSWORD" ping | grep PONG
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    volumes:
+      - staging-redis:/data
+    networks: [data]
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+
+  preflight:
+    image: capital-cipher-backend:staging
+    build:
+      context: ../../backend
+    environment: *paper-environment
+    command: ["python", "scripts/validate_staging_paper.py"]
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [data]
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+  backend:
+    image: capital-cipher-backend:staging
+    build:
+      context: ../../backend
+    environment: *paper-environment
+    command: ["python", "scripts/run_staging_backend.py"]
+    depends_on:
+      preflight:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${STAGING_BACKEND_PORT:-8000}:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=5).read()
+      interval: 15s
+      timeout: 7s
+      retries: 5
+      start_period: 60s
+    volumes:
+      - staging-data-lake:/var/lib/capital-cipher/data-lake
+    networks: [data, egress]
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,noexec,nosuid
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 45s
+    security_opt:
+      - no-new-privileges:true
+
+  watchdog:
+    image: capital-cipher-backend:staging
+    environment:
+      STAGING_BACKEND_URL: http://backend:8000
+      ADMIN_API_KEY: ${ADMIN_API_KEY:?set ADMIN_API_KEY}
+      STAGING_WATCHDOG_INTERVAL_SECONDS: ${STAGING_WATCHDOG_INTERVAL_SECONDS:-30}
+      STAGING_WATCHDOG_FAILURE_THRESHOLD: ${STAGING_WATCHDOG_FAILURE_THRESHOLD:-3}
+    command: ["python", "scripts/run_staging_watchdog.py"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [data]
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid
+    init: true
+    restart: on-failure:5
+    stop_grace_period: 15s
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  data:
+    internal: true
+  egress: {}
+
+volumes:
+  staging-postgres:
+  staging-redis:
+  staging-data-lake:
