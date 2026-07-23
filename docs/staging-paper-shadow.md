@@ -66,9 +66,11 @@ docker compose --env-file deploy/staging/.env -f deploy/staging/compose.yml up -
 docker compose --env-file deploy/staging/.env -f deploy/staging/compose.yml ps
 ```
 
-The API is published only on `127.0.0.1`. PostgreSQL and Redis have no host
-ports. The backend receives a separate egress network for public market data;
-the data services remain on an internal network.
+The API and dashboard are published only on `127.0.0.1`. PostgreSQL and Redis
+have no host ports. The backend receives a separate egress network for public
+market data; the data services remain on an internal network. The production-
+shaped hosted image serves the dashboard from `/` and the API under `/api/v1`
+on the same origin.
 
 On the first creation of the PostgreSQL volume, the official image applies all
 ordered files from `supabase/migrations/` through
@@ -93,6 +95,7 @@ Example checks:
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8000/ready
+Invoke-WebRequest http://127.0.0.1:8000/ | Select-Object -ExpandProperty StatusCode
 Invoke-RestMethod http://127.0.0.1:8000/api/v1/status
 $headers = @{ 'X-API-Key' = '<ADMIN_API_KEY>' }
 Invoke-RestMethod -Headers $headers http://127.0.0.1:8000/api/v1/operations/status

@@ -51,12 +51,12 @@ class RedisStreamTransport:
     async def healthcheck(self) -> bool:
         return bool(await self._client.ping())
 
-    async def publish(self, message: BusMessage) -> str:
+    def _encode(self, message: BusMessage) -> tuple[str, dict[str, str]]:
         ensure_payload_has_no_secrets(message.payload)
         encoded = message.model_dump_json()
         if len(encoded.encode("utf-8")) > self._max_message_bytes:
             raise ValueError("Broker message exceeds max_message_bytes")
-        stream_id = await self._client.xadd(
+        return (
             self.stream_key(message.topic),
             {
                 "message": encoded,
@@ -65,10 +65,32 @@ class RedisStreamTransport:
                 "event_type": message.event_type,
                 "schema_version": message.schema_version,
             },
+        )
+
+    async def publish(self, message: BusMessage) -> str:
+        stream_key, fields = self._encode(message)
+        stream_id = await self._client.xadd(
+            stream_key,
+            fields,
             maxlen=self._max_stream_length,
             approximate=True,
         )
         return self._decode(stream_id)
+
+    async def publish_many(self, messages: list[BusMessage]) -> list[str]:
+        if not messages:
+            return []
+        encoded = [self._encode(message) for message in messages]
+        async with self._client.pipeline(transaction=False) as pipeline:
+            for stream_key, fields in encoded:
+                pipeline.xadd(
+                    stream_key,
+                    fields,
+                    maxlen=self._max_stream_length,
+                    approximate=True,
+                )
+            stream_ids = await pipeline.execute()
+        return [self._decode(stream_id) for stream_id in stream_ids]
 
     async def read_after(
         self,

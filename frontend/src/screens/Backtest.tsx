@@ -1,102 +1,16 @@
 import { useState } from "react";
+import { useI18n } from "../i18n";
 import { api } from "../services/api";
 import type { BacktestReport } from "../types";
 import { usePolling } from "../hooks/usePolling";
 
 const SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
 const TIMEFRAMES = ["15m", "1h", "4h"];
-
-function Metric({ label, value }: { label: string; value: string | number }) {
-  return (
-    <div className="bg-slate-900 border border-slate-800 rounded p-3">
-      <div className="text-xs text-slate-500 uppercase">{label}</div>
-      <div className="text-slate-100 font-mono">{value}</div>
-    </div>
-  );
-}
+function Metric({ label, value }: { label: string; value: string | number }) { return <div className="rounded-lg border border-slate-800 bg-slate-900 p-3"><div className="text-xs uppercase text-slate-500">{label}</div><div className="font-mono text-slate-100">{value}</div></div>; }
 
 export default function Backtest() {
-  const [symbol, setSymbol] = useState("BTCUSDT");
-  const [timeframe, setTimeframe] = useState("15m");
-  const [running, setRunning] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [report, setReport] = useState<BacktestReport | null>(null);
-  const history = usePolling(api.backtestReports, 10000);
-
-  const run = async () => {
-    const apiKey = window.prompt("Admin API key:");
-    if (!apiKey) return;
-    setRunning(true);
-    setError(null);
-    const result = await api.runBacktest({ symbol, timeframe, source: "store" }, apiKey);
-    setRunning(false);
-    if (!result.success || !result.data) {
-      setError(result.error?.message ?? "Backtest failed");
-      return;
-    }
-    setReport(result.data.report);
-  };
-
-  return (
-    <div className="space-y-4">
-      <div className="flex gap-2 items-center">
-        <select value={symbol} onChange={(e) => setSymbol(e.target.value)}
-          className="bg-slate-800 text-slate-200 rounded px-2 py-1 text-sm border border-slate-700">
-          {SYMBOLS.map((s) => <option key={s}>{s}</option>)}
-        </select>
-        <select value={timeframe} onChange={(e) => setTimeframe(e.target.value)}
-          className="bg-slate-800 text-slate-200 rounded px-2 py-1 text-sm border border-slate-700">
-          {TIMEFRAMES.map((t) => <option key={t}>{t}</option>)}
-        </select>
-        <button onClick={run} disabled={running}
-          className="px-4 py-1.5 bg-sky-800 hover:bg-sky-700 rounded text-sm font-bold disabled:opacity-50">
-          {running ? "Running…" : "Run backtest (stored candles)"}
-        </button>
-      </div>
-      {error && <div className="text-red-400 text-sm">{error}</div>}
-      {report && (
-        <div className="grid grid-cols-3 md:grid-cols-5 gap-2">
-          <Metric label="Trades" value={report.total_trades} />
-          <Metric label="Win Rate" value={`${report.win_rate}%`} />
-          <Metric label="Profit Factor" value={report.profit_factor ?? "—"} />
-          <Metric label="Expectancy" value={report.expectancy} />
-          <Metric label="Max DD" value={`${report.max_drawdown}%`} />
-          <Metric label="Net PnL" value={report.net_pnl} />
-          <Metric label="Net PnL %" value={`${report.net_pnl_percent}%`} />
-          <Metric label="Fees" value={report.fees} />
-          <Metric label="Slippage" value={report.slippage} />
-          <Metric label="Blocked by risk" value={report.blocked_by_risk} />
-        </div>
-      )}
-      <p className="text-xs text-slate-600">
-        A positive backtest does not authorize live trading — it only authorizes further
-        paper-trading investigation (docs/17).
-      </p>
-      <div>
-        <h3 className="text-slate-400 text-sm uppercase mb-2">Previous runs</h3>
-        <table className="w-full text-sm text-slate-300">
-          <thead>
-            <tr className="text-left text-slate-500 border-b border-slate-800">
-              <th className="py-1">Symbol</th><th>TF</th><th>Period</th><th>Trades</th>
-              <th>Win%</th><th>PF</th><th>Net PnL</th><th>Max DD</th>
-            </tr>
-          </thead>
-          <tbody>
-            {history?.reports.map((r) => (
-              <tr key={r.backtest_id} className="border-b border-slate-900">
-                <td className="py-1">{r.symbol}</td>
-                <td>{r.timeframe}</td>
-                <td className="text-xs">{r.start_date} → {r.end_date}</td>
-                <td>{r.total_trades}</td>
-                <td>{r.win_rate}%</td>
-                <td>{r.profit_factor ?? "—"}</td>
-                <td className={r.net_pnl >= 0 ? "text-emerald-400" : "text-red-400"}>{r.net_pnl}</td>
-                <td>{r.max_drawdown}%</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
+  const { t } = useI18n();
+  const [symbol, setSymbol] = useState("BTCUSDT"); const [timeframe, setTimeframe] = useState("15m"); const [running, setRunning] = useState(false); const [error, setError] = useState<string | null>(null); const [report, setReport] = useState<BacktestReport | null>(null); const history = usePolling(api.backtestReports, 10000);
+  const run = async () => { const apiKey = window.prompt(t("adminApiKey")); if (!apiKey) return; setRunning(true); setError(null); try { const result = await api.runBacktest({ symbol, timeframe, source: "store" }, apiKey); if (!result.success || !result.data) { setError(result.error?.message ?? t("backtestFailed")); return; } setReport(result.data.report); } catch (caught) { setError(caught instanceof Error ? caught.message : t("backtestFailed")); } finally { setRunning(false); } };
+  return <div className="space-y-5"><section><p className="text-xs font-medium uppercase tracking-[0.18em] text-cyan-400">{t("research")}</p><h2 className="mt-2 text-2xl font-semibold text-white">{t("backtest")}</h2></section><div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-800 bg-slate-950/40 p-3"><select aria-label={t("symbol")} value={symbol} onChange={(event) => setSymbol(event.target.value)} className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200">{SYMBOLS.map((value) => <option key={value}>{value}</option>)}</select><select aria-label={t("timeframe")} value={timeframe} onChange={(event) => setTimeframe(event.target.value)} className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200">{TIMEFRAMES.map((value) => <option key={value}>{value}</option>)}</select><button onClick={run} disabled={running} className="rounded-lg bg-sky-800 px-4 py-2 text-sm font-bold hover:bg-sky-700 disabled:opacity-50">{running ? t("running") : t("runBacktest")}</button></div>{error && <div className="text-sm text-red-400">{error}</div>}{report && <div className="grid grid-cols-2 gap-2 md:grid-cols-5"><Metric label={t("trades")} value={report.total_trades} /><Metric label={t("winRate")} value={`${report.win_rate}%`} /><Metric label={t("profitFactor")} value={report.profit_factor ?? "—"} /><Metric label={t("expectancy")} value={report.expectancy} /><Metric label={t("maxDd")} value={`${report.max_drawdown}%`} /><Metric label={t("netPnl")} value={report.net_pnl} /><Metric label={t("netPnlPercent")} value={`${report.net_pnl_percent}%`} /><Metric label={t("feesEstimated")} value={report.fees} /><Metric label={t("slippage")} value={report.slippage} /><Metric label={t("blockedByRisk")} value={report.blocked_by_risk} /></div>}<p className="text-xs leading-5 text-slate-600">{t("backtestSafety")}</p><div className="overflow-auto rounded-xl border border-slate-800 bg-slate-950/40"><h3 className="px-4 pt-4 text-sm font-semibold text-slate-300">{t("previousRuns")}</h3><table className="mt-3 min-w-[760px] w-full text-sm text-slate-300"><thead><tr className="border-b border-slate-800 text-left text-[11px] uppercase tracking-wider text-slate-500"><th className="px-4 py-3">{t("symbol")}</th><th>{t("timeframe")}</th><th>{t("period")}</th><th>{t("trades")}</th><th>{t("winRate")}</th><th>{t("profitFactor")}</th><th>{t("netPnl")}</th><th>{t("maxDd")}</th></tr></thead><tbody>{history?.reports.map((item) => <tr key={item.backtest_id} className="border-b border-slate-900"><td className="px-4 py-3">{item.symbol}</td><td>{item.timeframe}</td><td className="text-xs">{item.start_date} → {item.end_date}</td><td>{item.total_trades}</td><td>{item.win_rate}%</td><td>{item.profit_factor ?? "—"}</td><td className={item.net_pnl >= 0 ? "text-emerald-400" : "text-red-400"}>{item.net_pnl}</td><td>{item.max_drawdown}%</td></tr>)}</tbody></table></div></div>;
 }

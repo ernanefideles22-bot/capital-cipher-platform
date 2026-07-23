@@ -90,3 +90,5 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Build, typecheck, and test all packages
         run: pnpm check
+      - name: Build hosted PAPER image with dashboard
+        run: docker build --file deploy/fly/Dockerfile --tag capital-cipher-paper-image:ci .

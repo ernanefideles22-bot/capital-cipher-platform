@@ -28,9 +28,17 @@ class SystemEvent(BaseModel):
 class BusMessage(BaseModel):
     """Message bus envelope (docs/23-message-bus.md)."""
 
-    message_id: str = Field(default_factory=lambda: str(uuid4()), min_length=1)
-    event_id: str = Field(default_factory=lambda: str(uuid4()), min_length=1)
-    correlation_id: str = Field(min_length=1)
+    message_id: str = Field(
+        default_factory=lambda: str(uuid4()),
+        min_length=1,
+        max_length=36,
+    )
+    event_id: str = Field(
+        default_factory=lambda: str(uuid4()),
+        min_length=1,
+        max_length=36,
+    )
+    correlation_id: str = Field(min_length=1, max_length=36)
     topic: str = Field(pattern=r"^[a-z][a-z0-9_.-]+\.v[1-9][0-9]*$")
     event_type: str = Field(pattern=r"^[A-Z][A-Z0-9_]+$")
     source: str = Field(min_length=1)
