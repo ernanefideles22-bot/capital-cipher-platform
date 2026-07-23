@@ -332,3 +332,38 @@ def test_hosted_compose_uses_only_external_pinned_data_services():
     assert "SUPABASE_CA_CERT_HOST_PATH" in compose
     assert compose.count("- supabase-ca") == 2
     assert compose.count("cap_drop: [ALL]") == 3
+
+
+def test_fly_staging_is_paper_only_fail_closed_and_region_pinned():
+    config = (REPOSITORY_ROOT / "deploy" / "fly" / "fly.toml").read_text()
+    dockerfile = (REPOSITORY_ROOT / "deploy" / "fly" / "Dockerfile").read_text()
+
+    assert 'primary_region = "gru"' in config
+    assert 'release_command = "python scripts/validate_staging_paper.py"' in config
+    assert 'backend = "python scripts/run_staging_backend.py"' in config
+    assert 'watchdog = "python scripts/run_staging_watchdog.py"' in config
+    assert 'SYSTEM_MODE = "PAPER"' in config
+    assert 'OMS_EXECUTION_ENVIRONMENT = "PAPER"' in config
+    assert 'OMS_TESTNET_ENABLED = "0"' in config
+    assert 'OMS_WORKER_ENABLED = "0"' in config
+    assert 'OMS_RECONCILIATION_ENABLED = "0"' in config
+    assert 'auto_stop_machines = "off"' in config
+    assert 'processes = ["backend"]' in config
+    assert 'source = "hosted_data_lake"' in config
+    assert 'destination = "/var/lib/capital-cipher/data-lake"' in config
+    assert 'initial_size = "20gb"' in config
+    assert 'guest_path = "/run/secrets/supabase-ca.crt"' in config
+    assert 'secret_name = "SUPABASE_CA_CERT_B64"' in config
+    assert "DATABASE_URL" not in config
+    assert "REDIS_URL" not in config
+    assert "ADMIN_API_KEY" not in config
+    assert "USER 10001:10001" in dockerfile
+
+
+def test_fly_build_context_does_not_send_local_secrets():
+    ignores = (REPOSITORY_ROOT / ".dockerignore").read_text()
+
+    assert "**/.env" in ignores
+    assert "**/.env.*" in ignores
+    assert "**/node_modules" in ignores
+    assert "**/.venv" in ignores
