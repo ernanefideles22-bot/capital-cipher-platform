@@ -9,18 +9,36 @@ from app.database.models import Base, INTERNAL_SCHEMA
 
 
 class Database:
-    def __init__(self, url: str) -> None:
+    def __init__(
+        self,
+        url: str,
+        *,
+        pool_size: int = 5,
+        max_overflow: int = 0,
+        pool_timeout_seconds: float = 15,
+        pool_recycle_seconds: int = 300,
+    ) -> None:
         execution_options = None
+        engine_options: dict = {}
         if url.startswith("sqlite"):
             # SQLite has no schemas. Keep the production schema boundary in
             # metadata while translating it to the default namespace in tests.
             execution_options = {
                 "schema_translate_map": {INTERNAL_SCHEMA: None},
             }
+        else:
+            engine_options = {
+                "pool_size": pool_size,
+                "max_overflow": max_overflow,
+                "pool_timeout": pool_timeout_seconds,
+                "pool_recycle": pool_recycle_seconds,
+                "pool_pre_ping": True,
+            }
         self.engine = create_async_engine(
             url,
             echo=False,
             execution_options=execution_options,
+            **engine_options,
         )
         self.session_factory = async_sessionmaker(self.engine, expire_on_commit=False)
 

@@ -10,7 +10,8 @@ The repository contains two deployment paths:
 
 - `LOCAL_COMPOSE`: a loopback-only rehearsal using PostgreSQL 17 and Redis;
 - `HOSTED`: the same backend connected server-side to a dedicated hosted
-  Supabase/Postgres staging project and a TLS Redis service.
+  Supabase/Postgres staging project and a TLS Redis service, using
+  `deploy/staging/compose.hosted.yml`.
 
 The Compose path does not automatically create, link or mutate a hosted
 Supabase project.
@@ -127,6 +128,55 @@ Required operator actions:
    `python scripts/validate_staging_paper.py` before boot.
 
 No `service_role` or database credential belongs in the frontend.
+
+### Hosted deployment contract
+
+The hosted Compose file runs only `preflight`, `backend` and `watchdog`.
+PostgreSQL and Redis are external dependencies: it never creates a second
+database or an unencrypted Redis instance. The API remains bound to loopback;
+remote access requires an authenticated HTTPS reverse proxy supplied by the
+chosen host.
+
+Do not put real values in `deploy/staging/.env.hosted.example`. Inject
+`DATABASE_URL`, `REDIS_URL` and `ADMIN_API_KEY` through the deployment
+provider's secret manager. Passwords inside URLs must be URL-encoded.
+
+The database connection must satisfy all of these conditions:
+
+- it targets project `phkligpkcitbbefrrotk`;
+- it authenticates as a dedicated custom LOGIN role that inherits only
+  `capital_cipher_runtime`;
+- it uses port 5432: direct IPv6 when supported, otherwise Supavisor session
+  mode for an IPv4-only persistent host;
+- it uses `sslmode=verify-full` with
+  `sslrootcert=/run/secrets/supabase-ca.crt`;
+- the project CA downloaded from the Supabase dashboard is mounted read-only
+  from `SUPABASE_CA_CERT_HOST_PATH`, never fetched during container startup;
+- its SQLAlchemy pool is bounded to five connections with no overflow by
+  default.
+
+The Redis connection must use `rediss://`, contain a strong runtime credential
+and exactly match `STAGING_EXPECTED_REDIS_HOST`. Use a persistent service that
+supports Redis Streams; a cache-only instance is not sufficient for the event
+broker.
+
+Before the first boot, validate without starting dependencies:
+
+```powershell
+docker compose --env-file <secret-env-path> -f deploy/staging/compose.hosted.yml config --quiet
+docker compose --env-file <secret-env-path> -f deploy/staging/compose.hosted.yml build preflight
+docker compose --env-file <secret-env-path> -f deploy/staging/compose.hosted.yml run --rm --no-deps preflight
+```
+
+Only after those commands pass may the operator start `backend` and `watchdog`.
+The backend then verifies the complete migration-owned schema and RLS before it
+becomes ready. Snapshot the `hosted-data-lake` volume independently; a named
+volume is persistent on one host but is not, by itself, an off-host backup.
+
+Current connection guidance:
+
+- [Supabase database connection modes](https://supabase.com/docs/guides/database/connecting-to-postgres)
+- [Supabase SSL enforcement](https://supabase.com/docs/guides/platform/ssl-enforcement)
 
 ## Real wall-clock campaign
 
