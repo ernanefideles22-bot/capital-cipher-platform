@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from app.market_data.adapters.binance import (
+    BinanceMarketDataAdapter,
     build_raw_kline_event as build_binance_raw,
 )
 from app.market_data.adapters.binance import normalize_kline as binance_normalize
@@ -38,6 +39,49 @@ def test_binance_raw_payload_is_preserved_before_normalization():
     assert event.symbol == "BTCUSDT"
     assert event.schema_version == "1.0.0"
     assert len(event.payload_sha256) == 64
+
+
+def test_binance_combined_payload_is_preserved_and_normalized():
+    payload = {
+        "stream": "btcusdt@kline_15m",
+        "data": {
+            "e": "kline",
+            "E": 1767268800123,
+            "k": {
+                "s": "BTCUSDT",
+                "i": "15m",
+                "x": True,
+                "o": "100000.0",
+                "h": "101000.0",
+                "l": "99500.0",
+                "c": "100700.0",
+                "v": "1234.56",
+                "T": 1767268800000,
+            },
+        },
+    }
+
+    event = build_binance_raw(payload)
+    candle = binance_normalize(payload)
+
+    assert event is not None
+    assert event.payload == payload
+    assert event.symbol == "BTCUSDT"
+    assert candle is not None
+    assert candle.symbol == "BTCUSDT"
+    assert candle.close == 100700.0
+
+
+async def test_binance_multiple_symbols_use_official_combined_stream_url():
+    adapter = BinanceMarketDataAdapter()
+    await adapter.subscribe_candles("SOLUSDT", "15m")
+    await adapter.subscribe_candles("BTCUSDT", "15m")
+    await adapter.subscribe_candles("ETHUSDT", "15m")
+
+    assert adapter._stream_url() == (
+        "wss://stream.binance.com:9443/stream?streams="
+        "btcusdt@kline_15m/ethusdt@kline_15m/solusdt@kline_15m"
+    )
 
 
 def test_binance_open_kline_ignored():
