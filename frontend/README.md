@@ -1,10 +1,16 @@
-# Capital Cipher AI — Dashboard (Phase 1)
+# Capital Cipher AI — Dashboard PAPER
 
 React + Vite + TypeScript + Tailwind dashboard per `docs/14-dashboard-specification.md`.
 
-Screens: Overview, Market (Lightweight Charts), Agents, Decisions (with full
-audit-chain inspection), Risk, Paper Trading, Audit. Kill Switch always
-visible in the header. No real-execution controls exist in Phase 1.
+O idioma padrão é português do Brasil, com seletor Português/Inglês persistido
+no navegador. O painel institucional mostra a coorte real de agentes, saúde,
+cobertura por família, pipeline de governança, mercado, decisões, risco,
+paper trading, backtests, relatórios e auditoria. A coorte de 300 agentes é
+telemetria real do runtime; a interface não inventa desempenho quando ainda
+não existem execuções.
+
+O Kill Switch permanece sempre visível no cabeçalho. Não existem controles de
+execução real nesta fase.
 
 ## Run
 
