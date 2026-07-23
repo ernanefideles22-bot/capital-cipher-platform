@@ -164,14 +164,14 @@ def test_worker_database_concurrency_is_independent_from_agent_compute():
         Settings(
             AGENT_MAX_CONCURRENCY=8,
             AGENT_WORKER_MAX_CONCURRENCY=3,
-            AGENT_WORKER_BATCH_SIZE=8,
+            AGENT_WORKER_BATCH_SIZE=16,
         ),
         with_database=False,
     )
 
     assert context.agent_runtime_worker is not None
     assert context.agent_runtime_worker._max_concurrency == 3
-    assert context.agent_runtime_worker._claim_batch_size == 8
+    assert context.agent_runtime_worker._claim_batch_size == 16
 
 
 async def test_all_300_agents_execute_through_versioned_runtime_contracts():
@@ -541,6 +541,57 @@ async def test_queue_worker_claims_and_finishes_small_cohort_atomically():
         and len(trace.attempts) == 1
         for trace in traces.values()
     )
+
+
+async def test_paper_worker_drains_sixteen_job_batches_without_duplicates():
+    agent = SuccessfulAgent()
+    repository = InMemoryAgentRuntimeRepository()
+    runtime = AgentRuntime(
+        AgentRegistry([agent]),
+        repository=repository,
+    )
+    worker = AgentRuntimeWorker(
+        runtime,
+        worker_id="paper-batch-worker",
+        claim_batch_size=16,
+    )
+    jobs = await runtime.submit_many(
+        [
+            _request(
+                agent,
+                request_id=f"paper-batch-{index}",
+                idempotency_key=f"paper-batch-{index}",
+            )
+            for index in range(17)
+        ]
+    )
+
+    first = await worker.run_once()
+    after_first = await repository.load_agent_execution_traces(
+        [job.execution_id for job in jobs]
+    )
+    second = await worker.run_once()
+    terminal = await repository.load_agent_execution_traces(
+        [job.execution_id for job in jobs]
+    )
+
+    assert first is not None
+    assert second is not None
+    assert sum(
+        trace.job.status == "COMPLETED"
+        for trace in after_first.values()
+    ) == 16
+    assert sum(
+        trace.job.status == "PENDING"
+        for trace in after_first.values()
+    ) == 1
+    assert all(
+        trace.job.status == "COMPLETED"
+        and trace.job.attempt_count == 1
+        and len(trace.attempts) == 1
+        for trace in terminal.values()
+    )
+    assert agent.total_runs == 17
 
 
 async def test_batched_worker_preserves_every_lifecycle_event():

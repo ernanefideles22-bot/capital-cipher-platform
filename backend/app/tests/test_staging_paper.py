@@ -441,7 +441,7 @@ def test_fly_staging_is_paper_only_fail_closed_and_region_pinned():
     assert 'OMS_WORKER_ENABLED = "0"' in config
     assert 'DATABASE_POOL_SIZE = "3"' in config
     assert 'AGENT_WORKER_MAX_CONCURRENCY = "3"' in config
-    assert 'AGENT_WORKER_BATCH_SIZE = "8"' in config
+    assert 'AGENT_WORKER_BATCH_SIZE = "16"' in config
     assert "CAPITAL_CIPHER_BINANCE_TESTNET_KEY_ID" not in config
     assert "CAPITAL_CIPHER_BINANCE_TESTNET_SIGNING_SECRET" not in config
     assert "CAPITAL_CIPHER_BYBIT_TESTNET_KEY_ID" not in config
