@@ -19,3 +19,15 @@ frontend
 packages
 supabase
 work
+
+# The hosted image has a dedicated Node build stage for the PAPER dashboard.
+# Keep its source and workspace manifests available to that stage; generated
+# dependencies and build output remain excluded by the rules above.
+!frontend
+!frontend/**
+!packages
+!packages/**
+frontend/node_modules
+frontend/dist
+packages/*/node_modules
+packages/*/dist

@@ -14,13 +14,19 @@ It does not authorize TESTNET or LIVE and contains no credentials.
   remains serialized across the direct publisher and outbox dispatcher.
 - Data lake: encrypted `hosted_data_lake` volume mounted only by `backend`,
   initialized at 20 GB with 14-day snapshot retention.
-- Ingress: HTTPS terminates at Fly Proxy and routes only to `backend`.
+- Ingress: HTTPS terminates at Fly Proxy and routes to the backend API and the
+  same-origin institutional dashboard.
 - Preflight: every release runs `validate_staging_paper.py`; backend startup repeats
   the same validation before Uvicorn starts.
 
 Both process groups have autostop disabled. The watchdog probes the public HTTPS
 origin so it cannot accidentally resolve itself through an app-wide `.internal`
 address.
+
+The backend image builds the Vite dashboard in a separate Node stage and serves
+the resulting static files from `/` only when the artifact is present. API
+routes remain under `/api/v1`; the dashboard uses the same origin by default,
+so no dashboard CORS origin or frontend secret is required.
 
 ## Secret contract
 

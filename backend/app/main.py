@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.api.context import AppContext, build_context
 from app.api.security import ApiSecurityMiddleware
@@ -388,6 +390,20 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
     app.include_router(backtest.router, prefix=api_prefix)
     app.include_router(strategies.router, prefix=api_prefix)
     app.include_router(reports.router, prefix=api_prefix)
+
+    # The hosted image includes the built dashboard at this path. Keeping the
+    # mount conditional preserves the API-only development/test entrypoint
+    # while allowing the production-shaped PAPER container to serve the UI
+    # from the same origin (and therefore without a new CORS trust boundary).
+    # `main.py` lives in `/app/app`; the image copies the build artifact to
+    # `/app/frontend-dist`, one parent above the package directory.
+    dashboard_dir = Path(__file__).resolve().parents[1] / "frontend-dist"
+    if dashboard_dir.is_dir():
+        app.mount(
+            "/",
+            StaticFiles(directory=dashboard_dir, html=True),
+            name="dashboard",
+        )
     return app
 
 
