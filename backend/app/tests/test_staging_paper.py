@@ -471,7 +471,7 @@ def test_hosted_staging_login_migration_is_disabled_and_least_privilege():
         REPOSITORY_ROOT
         / "supabase"
         / "migrations"
-        / "20260723022000_create_disabled_staging_login.sql"
+        / "20260723022508_create_disabled_staging_login.sql"
     ).read_text()
 
     assert "create role capital_cipher_staging" in migration
