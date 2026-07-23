@@ -70,6 +70,8 @@ def test_bootstrap_migration_is_private_and_least_privilege() -> None:
     assert "create role capital_cipher_runtime" in migration
     assert "nologin nosuperuser" in migration
     assert "nobypassrls" in migration
+    assert "alter role capital_cipher_runtime" not in migration
+    assert "capital_cipher_runtime must be a NOLOGIN least-privilege role" in migration
     assert "grant select, insert on all tables" in migration
     assert "revoke delete, truncate, references, trigger" in migration
     assert "for select to capital_cipher_runtime" in migration

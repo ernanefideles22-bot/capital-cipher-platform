@@ -405,12 +405,30 @@ begin
             'nologin nosuperuser nocreatedb nocreaterole '
             'noreplication nobypassrls';
     end if;
+
+    -- Hosted Supabase runs migrations as an administrative role that can
+    -- create ordinary roles but cannot ALTER the SUPERUSER or BYPASSRLS
+    -- attributes. Fail closed if a pre-existing role is not least privilege
+    -- instead of attempting a privileged role alteration.
+    if exists (
+        select 1
+        from pg_roles
+        where rolname = 'capital_cipher_runtime'
+          and (
+              rolsuper
+              or rolcreatedb
+              or rolcreaterole
+              or rolcanlogin
+              or rolreplication
+              or rolbypassrls
+          )
+    ) then
+        raise exception
+            'capital_cipher_runtime must be a NOLOGIN least-privilege role'
+            using errcode = '42501';
+    end if;
 end;
 $block$;
-
-alter role capital_cipher_runtime
-    nologin nosuperuser nocreatedb nocreaterole
-    noreplication nobypassrls;
 
 revoke all on schema capital_cipher from public;
 revoke all on all tables in schema capital_cipher from public;
