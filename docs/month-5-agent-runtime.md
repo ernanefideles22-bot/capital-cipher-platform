@@ -228,6 +228,26 @@ stable. Operational snapshots now expose fixed-cardinality timings for each
 orchestrator stage so hosted measurements can distinguish database work from
 agent calculation without increasing the connection pool.
 
+Fly version 21 validated that change on the same three-connection PAPER
+boundary. The six most recent cycles completed 1,800 of 1,800 jobs on their
+first attempt, with no failure or dead letter, and each correlation persisted
+exactly one weighted consensus and one portfolio proposal. Two independent
+three-cycle operational windows reported:
+
+- complete-cycle averages of 15.304 and 17.642 seconds, with maxima of 16.086
+  and 18.724 seconds;
+- agent-runtime averages of 11.965 and 13.559 seconds;
+- agent-evaluation averages of 1.573 and 1.470 seconds;
+- consensus averages of 0.954 and 1.511 seconds;
+- portfolio persistence averages of 0.238 and 0.303 seconds;
+- final decision persistence averages of 0.227 and 0.282 seconds.
+
+The previously isolated post-agent path therefore fell from approximately
+18-27 seconds to approximately 3.2-4.0 seconds. The strict five-second
+orchestrator SLO remains intentionally breached: the dominant constraint is
+now the durable 300-agent runtime rather than forecast, drift, consensus, or
+portfolio persistence. No pool expansion was used to obtain this result.
+
 ## PostgreSQL and Supabase lifecycle
 
 The versioned migration is:
