@@ -367,3 +367,19 @@ def test_fly_build_context_does_not_send_local_secrets():
     assert "**/.env.*" in ignores
     assert "**/node_modules" in ignores
     assert "**/.venv" in ignores
+
+
+def test_hosted_staging_login_migration_is_disabled_and_least_privilege():
+    migration = (
+        REPOSITORY_ROOT
+        / "supabase"
+        / "migrations"
+        / "20260723022000_create_disabled_staging_login.sql"
+    ).read_text()
+
+    assert "create role capital_cipher_staging" in migration
+    assert "login password null connection limit 8" in migration
+    assert "nosuperuser nocreatedb nocreaterole noreplication nobypassrls" in migration
+    assert "grant capital_cipher_runtime to capital_cipher_staging" in migration
+    assert "set row_security = on" in migration
+    assert "password '" not in migration.lower()
