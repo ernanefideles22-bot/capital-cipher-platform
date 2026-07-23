@@ -39,6 +39,7 @@ def _uuid() -> str:
 
 class SystemEventModel(Base):
     __tablename__ = "system_events"
+    __table_args__ = {"schema": INTERNAL_SCHEMA}
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     event_type: Mapped[str] = mapped_column(Text, nullable=False, index=True)
@@ -50,6 +51,7 @@ class SystemEventModel(Base):
 
 class EventJournalModel(Base):
     __tablename__ = "event_journal"
+    __table_args__ = {"schema": INTERNAL_SCHEMA}
 
     message_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     event_id: Mapped[str] = mapped_column(String(36), nullable=False, unique=True, index=True)
@@ -70,11 +72,15 @@ class EventOutboxModel(Base):
             "created_at",
             postgresql_where=text("published_at IS NULL"),
         ),
+        {"schema": INTERNAL_SCHEMA},
     )
 
     event_id: Mapped[str] = mapped_column(
         String(36),
-        ForeignKey("event_journal.event_id", ondelete="CASCADE"),
+        ForeignKey(
+            f"{INTERNAL_SCHEMA}.event_journal.event_id",
+            ondelete="CASCADE",
+        ),
         primary_key=True,
     )
     broker_message_id: Mapped[str | None] = mapped_column(Text)
@@ -87,6 +93,7 @@ class EventOutboxModel(Base):
 
 class RawMarketEventModel(Base):
     __tablename__ = "raw_market_events"
+    __table_args__ = {"schema": INTERNAL_SCHEMA}
 
     event_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -596,6 +603,7 @@ class ReplayCheckpointModel(Base):
             "status",
             "updated_at",
         ),
+        {"schema": INTERNAL_SCHEMA},
     )
 
     replay_id: Mapped[str] = mapped_column(String(128), primary_key=True)
@@ -613,6 +621,7 @@ class ReplayCheckpointModel(Base):
 
 class MarketCandleModel(Base):
     __tablename__ = "market_candles"
+    __table_args__ = {"schema": INTERNAL_SCHEMA}
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     exchange: Mapped[str] = mapped_column(Text, nullable=False)
@@ -1672,6 +1681,7 @@ class ReleaseGateDecisionModel(Base):
 
 class AgentOutputModel(Base):
     __tablename__ = "agent_outputs"
+    __table_args__ = {"schema": INTERNAL_SCHEMA}
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     correlation_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
@@ -1688,6 +1698,7 @@ class AgentOutputModel(Base):
 
 class DecisionModel(Base):
     __tablename__ = "decisions"
+    __table_args__ = {"schema": INTERNAL_SCHEMA}
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     correlation_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
@@ -1703,6 +1714,7 @@ class DecisionModel(Base):
 
 class RiskCheckModel(Base):
     __tablename__ = "risk_checks"
+    __table_args__ = {"schema": INTERNAL_SCHEMA}
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     decision_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
@@ -1884,6 +1896,7 @@ class RiskControlEventModel(Base):
 
 class PaperOrderModel(Base):
     __tablename__ = "paper_orders"
+    __table_args__ = {"schema": INTERNAL_SCHEMA}
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     decision_id: Mapped[str] = mapped_column(String(36), nullable=False)
@@ -2413,6 +2426,7 @@ class VenueBalanceSnapshotModel(Base):
 
 class AuditLogModel(Base):
     __tablename__ = "audit_logs"
+    __table_args__ = {"schema": INTERNAL_SCHEMA}
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     correlation_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)

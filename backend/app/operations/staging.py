@@ -18,6 +18,12 @@ FORBIDDEN_TESTNET_CREDENTIALS = (
 )
 STAGING_TARGETS = {"LOCAL_COMPOSE", "HOSTED"}
 SECURE_SSL_MODES = {"require", "verify-ca", "verify-full"}
+FORBIDDEN_HOSTED_DATABASE_USERS = {
+    "postgres",
+    "supabase_admin",
+    "supabase_auth_admin",
+    "supabase_storage_admin",
+}
 
 
 @dataclass(frozen=True)
@@ -103,6 +109,8 @@ def validate_staging_environment(
             violations.append("HOSTED_DATABASE_REQUIRES_TLS")
         if not broker_tls:
             violations.append("HOSTED_REDIS_REQUIRES_TLS")
+        if (database.username or "").lower() in FORBIDDEN_HOSTED_DATABASE_USERS:
+            violations.append("HOSTED_DATABASE_PRIVILEGED_USER_FORBIDDEN")
 
     data_lake_value = values.get("DATA_LAKE_ROOT", "")
     data_lake_is_absolute = any(

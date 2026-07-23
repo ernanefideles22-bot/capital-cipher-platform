@@ -56,7 +56,10 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
         ctx = context or build_context(settings, with_database=bool(settings.database_url))
         app.state.context = ctx
         if ctx.database is not None:
-            await ctx.database.create_all()
+            if settings.app_env == "staging":
+                await ctx.database.verify_schema()
+            else:
+                await ctx.database.create_all()
             if ctx.oms_service.target_environment.value == "TESTNET":
                 await ctx.database.verify_testnet_oms_schema()
         await ctx.risk_manager.initialize()

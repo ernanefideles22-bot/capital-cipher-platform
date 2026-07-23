@@ -120,6 +120,22 @@ def test_hosted_staging_requires_tls_for_postgres_and_redis():
     assert report.broker_tls_required is True
 
 
+def test_hosted_staging_rejects_privileged_database_users():
+    hosted = local_environment(STAGING_DEPLOYMENT_TARGET="HOSTED")
+    settings = staging_settings(
+        DATABASE_URL=(
+            "postgresql+asyncpg://postgres:secret@db.example.invalid:5432/"
+            "capital_cipher?sslmode=verify-full"
+        ),
+        REDIS_URL="rediss://:secret@redis.example.invalid:6380/0",
+    )
+
+    with pytest.raises(RuntimeError) as raised:
+        validate_staging_environment(settings, hosted)
+
+    assert "HOSTED_DATABASE_PRIVILEGED_USER_FORBIDDEN" in str(raised.value)
+
+
 def healthy_watchdog_payloads() -> tuple[dict, dict, dict]:
     readiness = {"status": "ready", "live_execution_available": False}
     status_payload = {

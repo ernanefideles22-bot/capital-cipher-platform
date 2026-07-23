@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.database.models import Base, INTERNAL_SCHEMA
@@ -30,6 +30,70 @@ class Database:
                 return bool(await connection.scalar(text("SELECT 1")))
         except Exception:
             return False
+
+    async def verify_schema(self) -> None:
+        """Fail closed when the migration-owned application schema is incomplete."""
+
+        expected_tables = {table.name for table in Base.metadata.sorted_tables}
+        rls_tables: set[str] = set()
+        runtime_role_exists = True
+
+        async with self.engine.connect() as conn:
+            def inspect_tables(sync_conn) -> tuple[set[str], set[str]]:
+                schema = None
+                if self.engine.dialect.name == "postgresql":
+                    schema = INTERNAL_SCHEMA
+                inspector = inspect(sync_conn)
+                application_tables = set(inspector.get_table_names(schema=schema))
+                public_tables: set[str] = set()
+                if self.engine.dialect.name == "postgresql":
+                    public_tables = set(inspector.get_table_names(schema="public"))
+                return application_tables, public_tables
+
+            actual_tables, public_tables = await conn.run_sync(inspect_tables)
+            if self.engine.dialect.name == "postgresql":
+                rls_rows = await conn.execute(
+                    text(
+                        "SELECT c.relname "
+                        "FROM pg_class c "
+                        "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                        "WHERE n.nspname = :schema "
+                        "AND c.relkind = 'r' "
+                        "AND c.relrowsecurity"
+                    ),
+                    {"schema": INTERNAL_SCHEMA},
+                )
+                rls_tables = set(rls_rows.scalars())
+                runtime_role_exists = bool(
+                    await conn.scalar(
+                        text(
+                            "SELECT EXISTS ("
+                            "SELECT 1 FROM pg_roles "
+                            "WHERE rolname = 'capital_cipher_runtime'"
+                            ")"
+                        )
+                    )
+                )
+
+        missing_tables = sorted(expected_tables - actual_tables)
+        public_collisions = sorted(expected_tables & public_tables)
+        missing_rls = sorted(expected_tables - rls_tables)
+        violations: list[str] = []
+        if missing_tables:
+            violations.append("missing tables: " + ", ".join(missing_tables))
+        if public_collisions:
+            violations.append(
+                "application tables present in public: "
+                + ", ".join(public_collisions)
+            )
+        if self.engine.dialect.name == "postgresql" and missing_rls:
+            violations.append("tables without RLS: " + ", ".join(missing_rls))
+        if not runtime_role_exists:
+            violations.append("capital_cipher_runtime role is missing")
+        if violations:
+            raise RuntimeError(
+                "Database schema is not fully migrated; " + "; ".join(violations)
+            )
 
     async def create_all(self) -> None:
         async with self.engine.begin() as conn:
