@@ -487,6 +487,12 @@ class Settings(BaseSettings):
         gt=0,
         le=60,
     )
+    agent_worker_batch_size: int = Field(
+        default=4,
+        alias="AGENT_WORKER_BATCH_SIZE",
+        ge=1,
+        le=32,
+    )
     agent_lease_seconds: int = Field(
         default=30,
         alias="AGENT_LEASE_SECONDS",

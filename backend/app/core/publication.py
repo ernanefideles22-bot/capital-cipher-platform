@@ -26,23 +26,37 @@ class PublicationCoordinator:
 
     @asynccontextmanager
     async def hold(self, event_id: str) -> AsyncIterator[None]:
-        if not event_id:
-            raise ValueError("event_id is required")
+        async with self.hold_many([event_id]):
+            yield
 
+    @asynccontextmanager
+    async def hold_many(
+        self,
+        event_ids: list[str],
+    ) -> AsyncIterator[None]:
+        unique_event_ids = sorted(set(event_ids))
+        if not unique_event_ids or any(not event_id for event_id in unique_event_ids):
+            raise ValueError("at least one non-empty event_id is required")
+
+        entries: list[_EventLock] = []
         async with self._guard:
-            entry = self._event_locks.setdefault(event_id, _EventLock())
-            entry.users += 1
+            for event_id in unique_event_ids:
+                entry = self._event_locks.setdefault(event_id, _EventLock())
+                entry.users += 1
+                entries.append(entry)
 
-        acquired = False
+        acquired: list[_EventLock] = []
         try:
-            await entry.lock.acquire()
-            acquired = True
+            for entry in entries:
+                await entry.lock.acquire()
+                acquired.append(entry)
             async with self._semaphore:
                 yield
         finally:
-            if acquired:
+            for entry in reversed(acquired):
                 entry.lock.release()
             async with self._guard:
-                entry.users -= 1
-                if entry.users == 0:
-                    self._event_locks.pop(event_id, None)
+                for event_id, entry in zip(unique_event_ids, entries, strict=True):
+                    entry.users -= 1
+                    if entry.users == 0:
+                        self._event_locks.pop(event_id, None)

@@ -345,6 +345,29 @@ async def test_submission_is_idempotent_and_conflicts_fail_closed():
         await runtime.submit(conflicting)
 
 
+async def test_batched_duplicate_submission_publishes_requested_once():
+    agent = SuccessfulAgent()
+    bus = EventBus()
+    received = []
+
+    async def capture(message):
+        received.append(message)
+
+    bus.subscribe(Topics.AGENT_REQUESTS, capture)
+    runtime = AgentRuntime(
+        AgentRegistry([agent]),
+        event_bus=bus,
+    )
+    request = _request(agent)
+
+    jobs = await runtime.submit_many([request, request])
+
+    assert len(jobs) == 2
+    assert jobs[0] == jobs[1]
+    assert len(received) == 1
+    assert received[0].event_type == EventTypes.AGENT_REQUESTED
+
+
 async def test_concurrent_idempotent_execution_records_one_attempt():
     agent = SuccessfulAgent()
     runtime = AgentRuntime(AgentRegistry([agent]))
@@ -452,6 +475,207 @@ async def test_queue_worker_processes_enqueued_job():
     assert trace.job.output is not None
 
 
+async def test_queue_worker_claims_and_finishes_small_cohort_atomically():
+    class CohortRepository(InMemoryAgentRuntimeRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.claim_batch_calls = 0
+            self.finish_batch_calls = 0
+
+        async def claim_next_agent_executions(self, **kwargs):
+            self.claim_batch_calls += 1
+            return await super().claim_next_agent_executions(**kwargs)
+
+        async def finish_agent_executions(self, finishes):
+            self.finish_batch_calls += 1
+            return await super().finish_agent_executions(finishes)
+
+    agent = SuccessfulAgent()
+    repository = CohortRepository()
+    runtime = AgentRuntime(
+        AgentRegistry([agent]),
+        repository=repository,
+    )
+    worker = AgentRuntimeWorker(
+        runtime,
+        worker_id="cohort-worker",
+        claim_batch_size=4,
+    )
+    jobs = await runtime.submit_many(
+        [
+            _request(
+                agent,
+                request_id=f"cohort-worker-{index}",
+                idempotency_key=f"cohort-worker-{index}",
+            )
+            for index in range(4)
+        ]
+    )
+
+    processed = await worker.run_once()
+    traces = await repository.load_agent_execution_traces(
+        [job.execution_id for job in jobs]
+    )
+
+    assert processed is not None
+    assert repository.claim_batch_calls == 1
+    assert repository.finish_batch_calls == 1
+    assert len(traces) == 4
+    assert all(
+        trace.job.status == "COMPLETED"
+        and len(trace.attempts) == 1
+        for trace in traces.values()
+    )
+
+
+async def test_batched_worker_preserves_every_lifecycle_event():
+    agent = SuccessfulAgent()
+    bus = EventBus()
+    received = []
+
+    async def capture(message):
+        received.append(message)
+
+    bus.subscribe(Topics.AGENT_REQUESTS, capture)
+    bus.subscribe(Topics.AGENT_OUTPUTS, capture)
+    runtime = AgentRuntime(
+        AgentRegistry([agent]),
+        event_bus=bus,
+    )
+    worker = AgentRuntimeWorker(
+        runtime,
+        worker_id="event-cohort-worker",
+        claim_batch_size=4,
+    )
+    jobs = await runtime.submit_many(
+        [
+            _request(
+                agent,
+                request_id=f"event-cohort-{index}",
+                idempotency_key=f"event-cohort-{index}",
+            )
+            for index in range(4)
+        ]
+    )
+
+    await worker.run_once()
+
+    assert len(received) == 12
+    assert len({message.event_id for message in received}) == 12
+    by_execution = {
+        job.execution_id: [
+            message.event_type
+            for message in received
+            if message.payload["execution_id"] == job.execution_id
+        ]
+        for job in jobs
+    }
+    assert all(
+        event_types
+        == [
+            EventTypes.AGENT_REQUESTED,
+            EventTypes.AGENT_STARTED,
+            EventTypes.AGENT_COMPLETED,
+        ]
+        for event_types in by_execution.values()
+    )
+
+
+async def test_batched_worker_retries_then_dead_letters_without_duplicates():
+    agent = SlowAgent()
+    repository = InMemoryAgentRuntimeRepository()
+    runtime = AgentRuntime(
+        AgentRegistry([agent]),
+        repository=repository,
+        retry_base_seconds=0,
+        retry_max_seconds=0,
+    )
+    worker = AgentRuntimeWorker(
+        runtime,
+        worker_id="retry-cohort-worker",
+        claim_batch_size=3,
+    )
+    jobs = await runtime.submit_many(
+        [
+            _request(
+                agent,
+                request_id=f"retry-cohort-{index}",
+                idempotency_key=f"retry-cohort-{index}",
+            )
+            for index in range(3)
+        ]
+    )
+
+    await worker.run_once()
+    retrying = await repository.load_agent_execution_traces(
+        [job.execution_id for job in jobs]
+    )
+    await worker.run_once()
+    terminal = await repository.load_agent_execution_traces(
+        [job.execution_id for job in jobs]
+    )
+
+    assert all(
+        trace.job.status == "RETRY"
+        and trace.job.attempt_count == 1
+        for trace in retrying.values()
+    )
+    assert all(
+        trace.job.status == "DEAD_LETTER"
+        and trace.job.attempt_count == 2
+        and [attempt.attempt_number for attempt in trace.attempts]
+        == [1, 2]
+        for trace in terminal.values()
+    )
+
+
+async def test_batched_worker_recovers_expired_leases_without_new_attempts():
+    agent = SuccessfulAgent()
+    repository = InMemoryAgentRuntimeRepository()
+    runtime = AgentRuntime(
+        AgentRegistry([agent]),
+        repository=repository,
+    )
+    jobs = await runtime.submit_many(
+        [
+            _request(
+                agent,
+                request_id=f"lease-cohort-{index}",
+                idempotency_key=f"lease-cohort-{index}",
+            )
+            for index in range(3)
+        ]
+    )
+    crashed = await repository.claim_next_agent_executions(
+        worker_id="crashed-cohort-worker",
+        lease_seconds=30,
+        limit=3,
+    )
+    for job in crashed:
+        repository._jobs[job.execution_id] = job.model_copy(
+            update={
+                "lease_expires_at": utcnow() - timedelta(seconds=1)
+            }
+        )
+    worker = AgentRuntimeWorker(
+        runtime,
+        worker_id="recovery-cohort-worker",
+        claim_batch_size=3,
+    )
+
+    await worker.run_once()
+    traces = await repository.load_agent_execution_traces(
+        [job.execution_id for job in jobs]
+    )
+
+    assert all(
+        trace.job.status == "COMPLETED"
+        and trace.job.attempt_count == 1
+        and len(trace.attempts) == 1
+        for trace in traces.values()
+    )
+
+
 async def test_queue_worker_uses_bounded_parallel_slots():
     class ProbeWorker(AgentRuntimeWorker):
         def __init__(self, stop_event: asyncio.Event) -> None:
@@ -531,6 +755,60 @@ async def test_execute_waits_for_active_background_worker_without_lease_race():
     assert trace.attempts[0].worker_id == "background-worker"
     assert agent.total_runs == 1
     assert repository.trace_reads <= 3
+    assert runtime._completion_waiters == {}
+
+
+async def test_execute_many_uses_cohort_trace_reads_with_background_worker():
+    class CountingRepository(InMemoryAgentRuntimeRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.single_trace_reads = 0
+            self.cohort_trace_reads = 0
+
+        async def load_agent_execution_trace(self, execution_id: str):
+            self.single_trace_reads += 1
+            return await super().load_agent_execution_trace(execution_id)
+
+        async def load_agent_execution_traces(self, execution_ids):
+            self.cohort_trace_reads += 1
+            return await super().load_agent_execution_traces(execution_ids)
+
+    agent = SuccessfulAgent()
+    repository = CountingRepository()
+    runtime = AgentRuntime(
+        AgentRegistry([agent]),
+        repository=repository,
+    )
+    worker = AgentRuntimeWorker(
+        runtime,
+        worker_id="trace-cohort-worker",
+        poll_interval_seconds=0.001,
+        max_concurrency=2,
+        claim_batch_size=4,
+    )
+    stop_event = asyncio.Event()
+    worker_task = asyncio.create_task(worker.run(stop_event))
+    while not runtime.background_worker_active:
+        await asyncio.sleep(0)
+
+    try:
+        outputs = await runtime.execute_many(
+            [
+                _request(
+                    agent,
+                    request_id=f"trace-cohort-{index}",
+                    idempotency_key=f"trace-cohort-{index}",
+                )
+                for index in range(8)
+            ]
+        )
+    finally:
+        stop_event.set()
+        await worker_task
+
+    assert len(outputs) == 8
+    assert repository.single_trace_reads == 0
+    assert repository.cohort_trace_reads <= 3
     assert runtime._completion_waiters == {}
 
 
@@ -653,6 +931,59 @@ async def test_sqlite_runtime_batches_cohort_creation_idempotently():
     assert memory_count == 9
     assert agent.total_runs == 3
     await database.dispose()
+
+
+async def test_sqlite_runtime_claims_finishes_and_loads_cohort():
+    database = Database("sqlite+aiosqlite:///:memory:")
+    await database.create_all()
+    repository = Repository(database)
+    agent = SuccessfulAgent()
+    runtime = AgentRuntime(
+        AgentRegistry([agent]),
+        repository=repository,
+    )
+    jobs = await runtime.submit_many(
+        [
+            _request(
+                agent,
+                request_id=f"sqlite-cohort-{index}",
+                idempotency_key=f"sqlite-cohort-{index}",
+            )
+            for index in range(4)
+        ]
+    )
+    claimed = await repository.claim_next_agent_executions(
+        worker_id="sqlite-cohort-worker",
+        lease_seconds=30,
+        limit=4,
+    )
+
+    updated = await runtime.execute_claimed_many(
+        claimed,
+        worker_id="sqlite-cohort-worker",
+    )
+    traces = await repository.load_agent_execution_traces(
+        [job.execution_id for job in jobs]
+    )
+    async with database.session() as session:
+        attempt_count = await session.scalar(
+            select(func.count()).select_from(
+                AgentExecutionAttemptModel
+            )
+        )
+        memory_count = await session.scalar(
+            select(func.count()).select_from(AgentMemoryEntryModel)
+        )
+        output_count = await session.scalar(
+            select(func.count()).select_from(AgentOutputModel)
+        )
+    await database.dispose()
+
+    assert len(claimed) == len(updated) == len(traces) == 4
+    assert all(job.status == "COMPLETED" for job in updated)
+    assert attempt_count == 4
+    assert memory_count == 12
+    assert output_count == 4
 
 
 async def test_agent_execution_api_is_authenticated_and_traceable():

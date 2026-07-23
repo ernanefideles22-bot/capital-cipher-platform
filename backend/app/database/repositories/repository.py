@@ -77,6 +77,7 @@ from app.database.session import Database
 from app.market_data.identity import candle_event_id
 from app.schemas.agents import (
     AgentExecutionAttempt,
+    AgentExecutionFinish,
     AgentExecutionJob,
     AgentExecutionTrace,
     AgentInput,
@@ -620,6 +621,87 @@ class Repository:
         except Exception as exc:
             raise DatabaseError(f"Failed to journal bus message: {exc}") from exc
 
+    async def save_bus_messages(
+        self,
+        messages: list[BusMessage],
+    ) -> dict[str, Any]:
+        """Append an event cohort in one transaction."""
+
+        from app.core.journal import JournalWriteResult
+
+        if not messages:
+            return {}
+        event_ids = [message.event_id for message in messages]
+        if len(set(event_ids)) != len(event_ids):
+            raise ValueError("Batch event_ids must be unique")
+        values = [
+            {
+                "message_id": message.message_id,
+                "event_id": message.event_id,
+                "correlation_id": message.correlation_id,
+                "topic": message.topic,
+                "event_type": message.event_type,
+                "source": message.source,
+                "schema_version": message.schema_version,
+                "payload": message.payload,
+                "created_at": message.timestamp,
+            }
+            for message in messages
+        ]
+        try:
+            async with self._db.session() as session, session.begin():
+                insert_statement = self._dialect_insert(EventJournalModel)
+                inserted_ids: set[str] = set()
+                if insert_statement is not None:
+                    inserted_ids = set(
+                        await session.scalars(
+                            insert_statement.values(values)
+                            .on_conflict_do_nothing(
+                                index_elements=["event_id"]
+                            )
+                            .returning(EventJournalModel.event_id)
+                        )
+                    )
+                else:
+                    for value in values:
+                        existing = await session.scalar(
+                            select(EventJournalModel.event_id).where(
+                                EventJournalModel.event_id
+                                == value["event_id"]
+                            )
+                        )
+                        if existing is None:
+                            session.add(EventJournalModel(**value))
+                            inserted_ids.add(value["event_id"])
+                    await session.flush()
+
+                existing_ids = [
+                    event_id
+                    for event_id in event_ids
+                    if event_id not in inserted_ids
+                ]
+                published_ids: set[str] = set()
+                if existing_ids:
+                    published_ids = set(
+                        await session.scalars(
+                            select(EventOutboxModel.event_id).where(
+                                EventOutboxModel.event_id.in_(existing_ids),
+                                EventOutboxModel.published_at.is_not(None),
+                            )
+                        )
+                    )
+                return {
+                    event_id: JournalWriteResult(
+                        inserted=event_id in inserted_ids,
+                        broker_published=event_id in published_ids,
+                    )
+                    for event_id in event_ids
+                }
+        except Exception as exc:
+            raise DatabaseError(
+                f"Failed to journal bus message cohort: {exc}"
+            ) from exc
+
     async def mark_bus_message_published(
         self, event_id: str, broker_message_id: str
     ) -> None:
@@ -661,6 +743,70 @@ class Repository:
                         row.updated_at = now
         except Exception as exc:
             raise DatabaseError(f"Failed to mark bus message published: {exc}") from exc
+
+    async def mark_bus_messages_published(
+        self,
+        published: list[tuple[str, str]],
+    ) -> None:
+        if not published:
+            return
+        event_ids = [event_id for event_id, _ in published]
+        if len(set(event_ids)) != len(event_ids):
+            raise ValueError("Published batch event_ids must be unique")
+        now = _now()
+        values = [
+            {
+                "event_id": event_id,
+                "broker_message_id": broker_message_id,
+                "published_at": now,
+                "publish_attempts": 1,
+                "last_error_type": None,
+                "created_at": now,
+                "updated_at": now,
+            }
+            for event_id, broker_message_id in published
+        ]
+        try:
+            async with self._db.session() as session, session.begin():
+                insert_statement = self._dialect_insert(EventOutboxModel)
+                if insert_statement is not None:
+                    excluded = insert_statement.excluded
+                    await session.execute(
+                        insert_statement.values(values).on_conflict_do_update(
+                            index_elements=["event_id"],
+                            set_={
+                                "broker_message_id": (
+                                    excluded.broker_message_id
+                                ),
+                                "published_at": excluded.published_at,
+                                "publish_attempts": (
+                                    EventOutboxModel.publish_attempts + 1
+                                ),
+                                "last_error_type": None,
+                                "updated_at": excluded.updated_at,
+                            },
+                        )
+                    )
+                else:
+                    for value in values:
+                        row = await session.get(
+                            EventOutboxModel,
+                            value["event_id"],
+                        )
+                        if row is None:
+                            session.add(EventOutboxModel(**value))
+                        else:
+                            row.broker_message_id = value[
+                                "broker_message_id"
+                            ]
+                            row.published_at = now
+                            row.publish_attempts += 1
+                            row.last_error_type = None
+                            row.updated_at = now
+        except Exception as exc:
+            raise DatabaseError(
+                f"Failed to mark bus message cohort published: {exc}"
+            ) from exc
 
     async def is_bus_message_published(self, event_id: str) -> bool:
         try:
@@ -711,6 +857,62 @@ class Repository:
                         row.updated_at = now
         except Exception as exc:
             raise DatabaseError(f"Failed to mark bus message failed: {exc}") from exc
+
+    async def mark_bus_messages_failed(
+        self,
+        event_ids: list[str],
+        error_type: str,
+    ) -> None:
+        if not event_ids:
+            return
+        if len(set(event_ids)) != len(event_ids):
+            raise ValueError("Failed batch event_ids must be unique")
+        now = _now()
+        values = [
+            {
+                "event_id": event_id,
+                "broker_message_id": None,
+                "published_at": None,
+                "publish_attempts": 1,
+                "last_error_type": error_type,
+                "created_at": now,
+                "updated_at": now,
+            }
+            for event_id in event_ids
+        ]
+        try:
+            async with self._db.session() as session, session.begin():
+                insert_statement = self._dialect_insert(EventOutboxModel)
+                if insert_statement is not None:
+                    excluded = insert_statement.excluded
+                    await session.execute(
+                        insert_statement.values(values).on_conflict_do_update(
+                            index_elements=["event_id"],
+                            set_={
+                                "publish_attempts": (
+                                    EventOutboxModel.publish_attempts + 1
+                                ),
+                                "last_error_type": excluded.last_error_type,
+                                "updated_at": excluded.updated_at,
+                            },
+                        )
+                    )
+                else:
+                    for value in values:
+                        row = await session.get(
+                            EventOutboxModel,
+                            value["event_id"],
+                        )
+                        if row is None:
+                            session.add(EventOutboxModel(**value))
+                        else:
+                            row.publish_attempts += 1
+                            row.last_error_type = error_type
+                            row.updated_at = now
+        except Exception as exc:
+            raise DatabaseError(
+                f"Failed to mark bus message cohort failed: {exc}"
+            ) from exc
 
     async def list_pending_bus_messages(self, limit: int = 100) -> list[BusMessage]:
         async with self._db.session() as session:
@@ -1953,15 +2155,18 @@ class Repository:
                 f"Failed to create agent execution cohort: {exc}"
             ) from exc
 
-    async def _claim_agent_execution(
+    async def _claim_agent_executions(
         self,
         *,
         worker_id: str,
         lease_seconds: int,
         execution_id: str | None,
-    ) -> AgentExecutionJob | None:
+        limit: int,
+    ) -> list[AgentExecutionJob]:
         if lease_seconds < 1:
             raise ValueError("Agent lease_seconds must be positive")
+        if not 1 <= limit <= 1_000:
+            raise ValueError("Agent claim limit must be 1..1000")
         now = _now()
         ready = and_(
             AgentExecutionJobModel.status.in_(("PENDING", "RETRY")),
@@ -1980,7 +2185,7 @@ class Repository:
                 AgentExecutionJobModel.available_at,
                 AgentExecutionJobModel.created_at,
             )
-            .limit(1)
+            .limit(limit)
         )
         if execution_id is not None:
             statement = statement.where(
@@ -1992,24 +2197,26 @@ class Repository:
             statement = statement.with_for_update()
         try:
             async with self._db.session() as session, session.begin():
-                row = await session.scalar(statement)
-                if row is None:
-                    return None
-                reclaimed = row.status == "LEASED"
-                row.status = "LEASED"
-                if not reclaimed:
-                    row.attempt_count += 1
-                row.leased_by = worker_id
-                row.lease_expires_at = now + timedelta(
-                    seconds=lease_seconds
-                )
-                row.updated_at = now
-                row.completed_at = None
+                rows = list(await session.scalars(statement))
+                for row in rows:
+                    reclaimed = row.status == "LEASED"
+                    row.status = "LEASED"
+                    if not reclaimed:
+                        row.attempt_count += 1
+                    row.leased_by = worker_id
+                    row.lease_expires_at = now + timedelta(
+                        seconds=lease_seconds
+                    )
+                    row.updated_at = now
+                    row.completed_at = None
                 await session.flush()
-                return self._agent_execution_job_from_row(row)
+                return [
+                    self._agent_execution_job_from_row(row)
+                    for row in rows
+                ]
         except Exception as exc:
             raise DatabaseError(
-                f"Failed to claim agent execution: {exc}"
+                f"Failed to claim agent execution cohort: {exc}"
             ) from exc
 
     async def claim_agent_execution(
@@ -2019,11 +2226,13 @@ class Repository:
         worker_id: str,
         lease_seconds: int,
     ) -> AgentExecutionJob | None:
-        return await self._claim_agent_execution(
+        claimed = await self._claim_agent_executions(
             worker_id=worker_id,
             lease_seconds=lease_seconds,
             execution_id=execution_id,
+            limit=1,
         )
+        return claimed[0] if claimed else None
 
     async def claim_next_agent_execution(
         self,
@@ -2031,10 +2240,25 @@ class Repository:
         worker_id: str,
         lease_seconds: int,
     ) -> AgentExecutionJob | None:
-        return await self._claim_agent_execution(
+        claimed = await self.claim_next_agent_executions(
+            worker_id=worker_id,
+            lease_seconds=lease_seconds,
+            limit=1,
+        )
+        return claimed[0] if claimed else None
+
+    async def claim_next_agent_executions(
+        self,
+        *,
+        worker_id: str,
+        lease_seconds: int,
+        limit: int,
+    ) -> list[AgentExecutionJob]:
+        return await self._claim_agent_executions(
             worker_id=worker_id,
             lease_seconds=lease_seconds,
             execution_id=None,
+            limit=limit,
         )
 
     async def finish_agent_execution(
@@ -2050,176 +2274,264 @@ class Repository:
     ) -> AgentExecutionJob:
         """Atomically append evidence and acknowledge/retry/dead-letter."""
 
-        if retry_delay_seconds < 0:
-            raise ValueError("Agent retry delay must not be negative")
-        if (
-            attempt.execution_id != attempt_memory.execution_id
-            or attempt.output != output
-            or attempt.worker_id != worker_id
-            or attempt_memory.sequence != attempt.attempt_number * 2
-            or attempt_memory.entry_type != "ATTEMPT"
-        ):
-            raise ValueError("Agent attempt evidence is inconsistent")
+        finishes = [
+            AgentExecutionFinish(
+                attempt=attempt,
+                attempt_memory=attempt_memory,
+                worker_id=worker_id,
+                output=output,
+                retryable=retryable,
+                retry_delay_seconds=retry_delay_seconds,
+                terminal_memory=terminal_memory,
+            )
+        ]
+        updated = await self.finish_agent_executions(finishes)
+        return updated[0]
+
+    async def finish_agent_executions(
+        self,
+        finishes: list[AgentExecutionFinish],
+    ) -> list[AgentExecutionJob]:
+        """Atomically finish a small cohort of independently leased jobs."""
+
+        if not finishes:
+            return []
+        execution_ids = [
+            finish.attempt.execution_id for finish in finishes
+        ]
+        if len(set(execution_ids)) != len(execution_ids):
+            raise ValueError("Agent finish execution_ids must be unique")
         now = _now()
         try:
             async with self._db.session() as session, session.begin():
-                row = await session.get(
-                    AgentExecutionJobModel,
-                    attempt.execution_id,
-                    with_for_update=True,
-                )
-                if row is None:
-                    raise RuntimeError("Agent execution does not exist")
-                if row.status != "LEASED" or row.leased_by != worker_id:
-                    raise RuntimeError("Agent execution lease ownership lost")
-                if row.attempt_count != attempt.attempt_number:
-                    raise RuntimeError(
-                        "Agent attempt does not match leased attempt"
-                    )
-                prior_attempts = await session.scalar(
-                    select(func.count())
-                    .select_from(AgentExecutionAttemptModel)
+                statement = (
+                    select(AgentExecutionJobModel)
                     .where(
-                        AgentExecutionAttemptModel.execution_id
-                        == attempt.execution_id
+                        AgentExecutionJobModel.execution_id.in_(
+                            execution_ids
+                        )
                     )
+                    .order_by(AgentExecutionJobModel.execution_id)
+                    .with_for_update()
                 )
-                if prior_attempts != attempt.attempt_number - 1:
-                    raise RuntimeError(
-                        "Agent attempts are not append-only"
-                    )
-
-                session.add(
-                    AgentExecutionAttemptModel(
-                        execution_id=attempt.execution_id,
-                        schema_version=attempt.schema_version,
-                        attempt_number=attempt.attempt_number,
-                        worker_id=attempt.worker_id,
-                        status=attempt.status.value,
-                        output_payload=output.model_dump(mode="json"),
-                        retryable=attempt.retryable,
-                        started_at=attempt.started_at,
-                        completed_at=attempt.completed_at,
-                    )
-                )
-                session.add(
-                    AgentMemoryEntryModel(
-                        execution_id=attempt_memory.execution_id,
-                        schema_version=attempt_memory.schema_version,
-                        sequence=attempt_memory.sequence,
-                        entry_type=attempt_memory.entry_type,
-                        payload=attempt_memory.payload,
-                        payload_hash=attempt_memory.payload_hash,
-                        created_at=attempt_memory.created_at,
-                    )
-                )
-
-                successful = output.status not in {
-                    AgentStatus.FAILED,
-                    AgentStatus.TIMEOUT,
+                rows = list(await session.scalars(statement))
+                rows_by_id = {
+                    row.execution_id: row for row in rows
                 }
-                should_retry = (
-                    not successful
-                    and retryable
-                    and row.attempt_count < row.max_attempts
-                )
-                if successful:
-                    row.status = "COMPLETED"
-                    row.completed_at = now
-                elif should_retry:
-                    row.status = "RETRY"
-                    row.available_at = now + timedelta(
-                        seconds=retry_delay_seconds
+                if len(rows_by_id) != len(execution_ids):
+                    raise RuntimeError(
+                        "One or more agent executions do not exist"
                     )
-                    row.completed_at = None
-                else:
-                    row.status = "DEAD_LETTER"
-                    row.completed_at = now
-
-                row.leased_by = None
-                row.lease_expires_at = None
-                row.last_error_code = (
-                    None
-                    if successful
-                    else "AGENT_TIMEOUT"
-                    if output.status == AgentStatus.TIMEOUT
-                    else "AGENT_FAILED"
-                )
-                row.output_payload = output.model_dump(mode="json")
-                row.updated_at = now
-
-                if row.status in {"COMPLETED", "DEAD_LETTER"}:
-                    expected_type = (
-                        "OUTPUT"
-                        if row.status == "COMPLETED"
-                        else "DEAD_LETTER"
+                attempt_count_rows = (
+                    await session.execute(
+                        select(
+                            AgentExecutionAttemptModel.execution_id,
+                            func.count(),
+                        )
+                        .where(
+                            AgentExecutionAttemptModel.execution_id.in_(
+                                execution_ids
+                            )
+                        )
+                        .group_by(
+                            AgentExecutionAttemptModel.execution_id
+                        )
                     )
+                ).all()
+                prior_attempt_counts = {
+                    execution_id: count
+                    for execution_id, count in attempt_count_rows
+                }
+
+                for finish in finishes:
+                    attempt = finish.attempt
+                    row = rows_by_id[attempt.execution_id]
                     if (
-                        terminal_memory is None
-                        or terminal_memory.execution_id != row.execution_id
-                        or terminal_memory.entry_type != expected_type
-                        or terminal_memory.sequence
-                        != attempt.attempt_number * 2 + 1
+                        row.status != "LEASED"
+                        or row.leased_by != finish.worker_id
                     ):
                         raise RuntimeError(
-                            "Terminal agent memory is inconsistent"
+                            "Agent execution lease ownership lost"
                         )
+                    if row.attempt_count != attempt.attempt_number:
+                        raise RuntimeError(
+                            "Agent attempt does not match leased attempt"
+                        )
+                    prior_attempts = prior_attempt_counts.get(
+                        attempt.execution_id,
+                        0,
+                    )
+                    if prior_attempts != attempt.attempt_number - 1:
+                        raise RuntimeError(
+                            "Agent attempts are not append-only"
+                        )
+
+                for finish in finishes:
+                    attempt = finish.attempt
+                    output = finish.output
+                    row = rows_by_id[attempt.execution_id]
+                    attempt_memory = finish.attempt_memory
+                    terminal_memory = finish.terminal_memory
+
+                    session.add(
+                        AgentExecutionAttemptModel(
+                            execution_id=attempt.execution_id,
+                            schema_version=attempt.schema_version,
+                            attempt_number=attempt.attempt_number,
+                            worker_id=attempt.worker_id,
+                            status=attempt.status.value,
+                            output_payload=output.model_dump(mode="json"),
+                            retryable=attempt.retryable,
+                            started_at=attempt.started_at,
+                            completed_at=attempt.completed_at,
+                        )
+                    )
                     session.add(
                         AgentMemoryEntryModel(
-                            execution_id=terminal_memory.execution_id,
-                            schema_version=terminal_memory.schema_version,
-                            sequence=terminal_memory.sequence,
-                            entry_type=terminal_memory.entry_type,
-                            payload=terminal_memory.payload,
-                            payload_hash=terminal_memory.payload_hash,
-                            created_at=terminal_memory.created_at,
+                            execution_id=attempt_memory.execution_id,
+                            schema_version=attempt_memory.schema_version,
+                            sequence=attempt_memory.sequence,
+                            entry_type=attempt_memory.entry_type,
+                            payload=attempt_memory.payload,
+                            payload_hash=attempt_memory.payload_hash,
+                            created_at=attempt_memory.created_at,
                         )
                     )
-                    session.add(
-                        AgentOutputModel(
-                            correlation_id=row.correlation_id,
-                            agent_name=row.agent_name,
-                            status=output.status.value,
-                            signal=output.signal.value,
-                            confidence=output.confidence,
-                            reason=output.reason,
-                            evidence=output.evidence,
-                            warnings=output.warnings,
-                            latency_ms=output.latency_ms,
-                            created_at=output.created_at,
+
+                    successful = output.status not in {
+                        AgentStatus.FAILED,
+                        AgentStatus.TIMEOUT,
+                    }
+                    should_retry = (
+                        not successful
+                        and finish.retryable
+                        and row.attempt_count < row.max_attempts
+                    )
+                    if successful:
+                        row.status = "COMPLETED"
+                        row.completed_at = now
+                    elif should_retry:
+                        row.status = "RETRY"
+                        row.available_at = now + timedelta(
+                            seconds=finish.retry_delay_seconds
                         )
+                        row.completed_at = None
+                    else:
+                        row.status = "DEAD_LETTER"
+                        row.completed_at = now
+
+                    row.leased_by = None
+                    row.lease_expires_at = None
+                    row.last_error_code = (
+                        None
+                        if successful
+                        else "AGENT_TIMEOUT"
+                        if output.status == AgentStatus.TIMEOUT
+                        else "AGENT_FAILED"
                     )
-                elif terminal_memory is not None:
-                    raise RuntimeError(
-                        "Retrying execution cannot append terminal memory"
-                    )
+                    row.output_payload = output.model_dump(mode="json")
+                    row.updated_at = now
+
+                    if row.status in {"COMPLETED", "DEAD_LETTER"}:
+                        expected_type = (
+                            "OUTPUT"
+                            if row.status == "COMPLETED"
+                            else "DEAD_LETTER"
+                        )
+                        if (
+                            terminal_memory is None
+                            or terminal_memory.entry_type != expected_type
+                        ):
+                            raise RuntimeError(
+                                "Terminal agent memory is inconsistent"
+                            )
+                        session.add(
+                            AgentMemoryEntryModel(
+                                execution_id=(
+                                    terminal_memory.execution_id
+                                ),
+                                schema_version=(
+                                    terminal_memory.schema_version
+                                ),
+                                sequence=terminal_memory.sequence,
+                                entry_type=terminal_memory.entry_type,
+                                payload=terminal_memory.payload,
+                                payload_hash=(
+                                    terminal_memory.payload_hash
+                                ),
+                                created_at=terminal_memory.created_at,
+                            )
+                        )
+                        session.add(
+                            AgentOutputModel(
+                                correlation_id=row.correlation_id,
+                                agent_name=row.agent_name,
+                                status=output.status.value,
+                                signal=output.signal.value,
+                                confidence=output.confidence,
+                                reason=output.reason,
+                                evidence=output.evidence,
+                                warnings=output.warnings,
+                                latency_ms=output.latency_ms,
+                                created_at=output.created_at,
+                            )
+                        )
+                    elif terminal_memory is not None:
+                        raise RuntimeError(
+                            "Retrying execution cannot append "
+                            "terminal memory"
+                        )
                 await session.flush()
-                return self._agent_execution_job_from_row(row)
+                return [
+                    self._agent_execution_job_from_row(
+                        rows_by_id[execution_id]
+                    )
+                    for execution_id in execution_ids
+                ]
         except Exception as exc:
             raise DatabaseError(
-                f"Failed to finish agent execution: {exc}"
+                f"Failed to finish agent execution cohort: {exc}"
             ) from exc
 
     async def load_agent_execution_trace(
         self,
         execution_id: str,
     ) -> AgentExecutionTrace | None:
+        traces = await self.load_agent_execution_traces([execution_id])
+        return traces.get(execution_id)
+
+    async def load_agent_execution_traces(
+        self,
+        execution_ids: list[str],
+    ) -> dict[str, AgentExecutionTrace]:
+        if not execution_ids:
+            return {}
+        if len(set(execution_ids)) != len(execution_ids):
+            raise ValueError("Agent trace execution_ids must be unique")
         try:
             async with self._db.session() as session:
-                row = await session.get(
-                    AgentExecutionJobModel,
-                    execution_id,
+                rows = list(
+                    await session.scalars(
+                        select(AgentExecutionJobModel).where(
+                            AgentExecutionJobModel.execution_id.in_(
+                                execution_ids
+                            )
+                        )
+                    )
                 )
-                if row is None:
-                    return None
+                rows_by_id = {
+                    row.execution_id: row for row in rows
+                }
                 attempts = list(
                     await session.scalars(
                         select(AgentExecutionAttemptModel)
                         .where(
-                            AgentExecutionAttemptModel.execution_id
-                            == execution_id
+                            AgentExecutionAttemptModel.execution_id.in_(
+                                execution_ids
+                            )
                         )
                         .order_by(
+                            AgentExecutionAttemptModel.execution_id,
                             AgentExecutionAttemptModel.attempt_number
                         )
                     )
@@ -2228,26 +2540,44 @@ class Repository:
                     await session.scalars(
                         select(AgentMemoryEntryModel)
                         .where(
-                            AgentMemoryEntryModel.execution_id
-                            == execution_id
+                            AgentMemoryEntryModel.execution_id.in_(
+                                execution_ids
+                            )
                         )
-                        .order_by(AgentMemoryEntryModel.sequence)
+                        .order_by(
+                            AgentMemoryEntryModel.execution_id,
+                            AgentMemoryEntryModel.sequence,
+                        )
                     )
                 )
-                return AgentExecutionTrace(
-                    job=self._agent_execution_job_from_row(row),
-                    attempts=[
+                attempts_by_id: dict[
+                    str, list[AgentExecutionAttempt]
+                ] = {execution_id: [] for execution_id in rows_by_id}
+                for item in attempts:
+                    attempts_by_id[item.execution_id].append(
                         self._agent_attempt_from_row(item)
-                        for item in attempts
-                    ],
-                    memory=[
+                    )
+                memory_by_id: dict[
+                    str, list[AgentMemoryEntry]
+                ] = {execution_id: [] for execution_id in rows_by_id}
+                for item in memory:
+                    memory_by_id[item.execution_id].append(
                         self._agent_memory_from_row(item)
-                        for item in memory
-                    ],
-                )
+                    )
+                return {
+                    execution_id: AgentExecutionTrace(
+                        job=self._agent_execution_job_from_row(
+                            rows_by_id[execution_id]
+                        ),
+                        attempts=attempts_by_id[execution_id],
+                        memory=memory_by_id[execution_id],
+                    )
+                    for execution_id in execution_ids
+                    if execution_id in rows_by_id
+                }
         except Exception as exc:
             raise DatabaseError(
-                f"Failed to load agent execution trace: {exc}"
+                f"Failed to load agent execution trace cohort: {exc}"
             ) from exc
 
     async def list_agent_execution_jobs(

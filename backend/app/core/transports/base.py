@@ -19,6 +19,8 @@ class EventTransport(Protocol):
 
     async def publish(self, message: BusMessage) -> str: ...
 
+    async def publish_many(self, messages: list[BusMessage]) -> list[str]: ...
+
     async def read_after(
         self,
         topic: str,

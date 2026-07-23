@@ -213,13 +213,26 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         )
     event_bus = EventBus(
         journal=repository.save_bus_message if repository is not None else None,
+        journal_many=(
+            repository.save_bus_messages if repository is not None else None
+        ),
         transport=event_transport,
         transport_required=settings.event_broker_required,
         mark_published=(
             repository.mark_bus_message_published if repository is not None else None
         ),
+        mark_published_many=(
+            repository.mark_bus_messages_published
+            if repository is not None
+            else None
+        ),
         mark_failed=(
             repository.mark_bus_message_failed if repository is not None else None
+        ),
+        mark_failed_many=(
+            repository.mark_bus_messages_failed
+            if repository is not None
+            else None
         ),
         publication_coordinator=publication_coordinator,
     )
@@ -401,6 +414,7 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         poll_interval_seconds=settings.agent_worker_poll_interval_seconds,
         lease_seconds=settings.agent_lease_seconds,
         max_concurrency=settings.agent_max_concurrency,
+        claim_batch_size=settings.agent_worker_batch_size,
     )
     shadow_validation_service = ShadowValidationService(
         runtime=agent_runtime,
