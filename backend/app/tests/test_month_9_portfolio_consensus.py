@@ -421,6 +421,17 @@ async def test_month9_sqlite_artifacts_are_idempotent_and_append_only(tmp_path):
         observed_at=utcnow(),
     )
     await repository.save_drift_observation(observation)
+    repeated_observation = DriftObservation(
+        **observation.model_dump(
+            mode="python",
+            exclude={"observation_id", "created_at"},
+        ),
+        created_at=observation.created_at + timedelta(seconds=1),
+    )
+    assert repeated_observation.observation_id == observation.observation_id
+    assert await repository.save_drift_observations(
+        [repeated_observation]
+    ) == [observation]
     assert (await repository.list_portfolio_proposals())[0] == proposal
     assert (await repository.list_drift_observations())[0] == observation
 

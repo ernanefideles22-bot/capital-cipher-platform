@@ -4775,7 +4775,18 @@ class Repository:
                         current = DriftObservation.model_validate(
                             existing.payload
                         )
-                        if current != observation:
+                        current_identity_payload = current.model_dump(
+                            mode="json",
+                            exclude={"created_at"},
+                        )
+                        observation_identity_payload = observation.model_dump(
+                            mode="json",
+                            exclude={"created_at"},
+                        )
+                        if (
+                            current_identity_payload
+                            != observation_identity_payload
+                        ):
                             raise ValidationError(
                                 "Immutable drift observation identity conflict"
                             )
