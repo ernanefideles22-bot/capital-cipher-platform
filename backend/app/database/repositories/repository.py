@@ -4323,25 +4323,40 @@ class Repository:
         self,
         forecasts: list[AgentForecast],
     ) -> list[AgentForecast]:
-        """Append an idempotent forecast cohort in one transaction."""
+        """Append an idempotent forecast cohort with one identity lookup."""
 
         if not forecasts:
             return []
         try:
             async with self._db.session() as session:
-                stored: list[AgentForecast] = []
+                unique: dict[str, AgentForecast] = {}
                 for forecast in forecasts:
-                    existing = await session.get(
-                        AgentForecastModel,
-                        forecast.forecast_id,
+                    duplicate = unique.get(forecast.forecast_id)
+                    if duplicate is not None and duplicate != forecast:
+                        raise ValidationError(
+                            "Immutable agent forecast identity conflict"
+                        )
+                    unique[forecast.forecast_id] = forecast
+                existing_rows = list(
+                    await session.scalars(
+                        select(AgentForecastModel).where(
+                            AgentForecastModel.forecast_id.in_(unique)
+                        )
                     )
+                )
+                existing_by_id = {
+                    row.forecast_id: row for row in existing_rows
+                }
+                stored_by_id: dict[str, AgentForecast] = {}
+                for forecast_id, forecast in unique.items():
+                    existing = existing_by_id.get(forecast_id)
                     if existing is not None:
                         current = self._agent_forecast_from_row(existing)
                         if current != forecast:
                             raise ValidationError(
                                 "Immutable agent forecast identity conflict"
                             )
-                        stored.append(current)
+                        stored_by_id[forecast_id] = current
                         continue
                     session.add(
                         AgentForecastModel(
@@ -4364,9 +4379,12 @@ class Repository:
                             created_at=forecast.created_at,
                         )
                     )
-                    stored.append(forecast)
+                    stored_by_id[forecast_id] = forecast
                 await session.commit()
-                return stored
+                return [
+                    stored_by_id[forecast.forecast_id]
+                    for forecast in forecasts
+                ]
         except (DatabaseError, ValidationError):
             raise
         except Exception as exc:
@@ -4398,32 +4416,66 @@ class Repository:
         self,
         outcomes: list[AgentForecastOutcome],
     ) -> list[AgentForecastOutcome]:
-        """Append realized outcomes; an immutable forecast settles once."""
+        """Append outcomes after one lookup; each forecast settles once."""
 
         if not outcomes:
             return []
         try:
             async with self._db.session() as session:
-                stored: list[AgentForecastOutcome] = []
+                unique: dict[str, AgentForecastOutcome] = {}
+                outcome_id_by_forecast: dict[str, str] = {}
                 for outcome in outcomes:
-                    existing = await session.get(
-                        AgentForecastOutcomeModel,
-                        outcome.outcome_id,
+                    duplicate = unique.get(outcome.outcome_id)
+                    if duplicate is not None and duplicate != outcome:
+                        raise ValidationError(
+                            "Forecast already has a different outcome"
+                        )
+                    existing_outcome_id = outcome_id_by_forecast.get(
+                        outcome.forecast_id
                     )
-                    if existing is None:
-                        existing = await session.scalar(
-                            select(AgentForecastOutcomeModel).where(
-                                AgentForecastOutcomeModel.forecast_id
-                                == outcome.forecast_id
+                    if (
+                        existing_outcome_id is not None
+                        and existing_outcome_id != outcome.outcome_id
+                    ):
+                        raise ValidationError(
+                            "Forecast already has a different outcome"
+                        )
+                    unique[outcome.outcome_id] = outcome
+                    outcome_id_by_forecast[
+                        outcome.forecast_id
+                    ] = outcome.outcome_id
+                existing_rows = list(
+                    await session.scalars(
+                        select(AgentForecastOutcomeModel).where(
+                            or_(
+                                AgentForecastOutcomeModel.outcome_id.in_(
+                                    unique
+                                ),
+                                AgentForecastOutcomeModel.forecast_id.in_(
+                                    outcome_id_by_forecast
+                                ),
                             )
                         )
+                    )
+                )
+                existing_by_id = {
+                    row.outcome_id: row for row in existing_rows
+                }
+                existing_by_forecast = {
+                    row.forecast_id: row for row in existing_rows
+                }
+                stored_by_id: dict[str, AgentForecastOutcome] = {}
+                for outcome_id, outcome in unique.items():
+                    existing = existing_by_id.get(
+                        outcome_id
+                    ) or existing_by_forecast.get(outcome.forecast_id)
                     if existing is not None:
                         current = self._agent_forecast_outcome_from_row(existing)
                         if current != outcome:
                             raise ValidationError(
                                 "Forecast already has a different outcome"
                             )
-                        stored.append(current)
+                        stored_by_id[outcome_id] = current
                         continue
                     session.add(
                         AgentForecastOutcomeModel(
@@ -4453,9 +4505,12 @@ class Repository:
                             created_at=outcome.created_at,
                         )
                     )
-                    stored.append(outcome)
+                    stored_by_id[outcome_id] = outcome
                 await session.commit()
-                return stored
+                return [
+                    stored_by_id[outcome.outcome_id]
+                    for outcome in outcomes
+                ]
         except (DatabaseError, ValidationError):
             raise
         except Exception as exc:
@@ -4759,18 +4814,39 @@ class Repository:
         self,
         observations: list[DriftObservation],
     ) -> list[DriftObservation]:
-        """Append one drift cohort atomically to avoid per-agent commits."""
+        """Append one drift cohort atomically after one identity lookup."""
 
         if not observations:
             return []
         try:
-            stored: list[DriftObservation] = []
-            async with self._db.session() as session, session.begin():
-                for observation in observations:
-                    existing = await session.get(
-                        DriftObservationModel,
-                        observation.observation_id,
+            unique: dict[str, DriftObservation] = {}
+            for observation in observations:
+                duplicate = unique.get(observation.observation_id)
+                if duplicate is not None and (
+                    duplicate.model_dump(mode="json", exclude={"created_at"})
+                    != observation.model_dump(
+                        mode="json",
+                        exclude={"created_at"},
                     )
+                ):
+                    raise ValidationError(
+                        "Immutable drift observation identity conflict"
+                    )
+                unique[observation.observation_id] = observation
+            async with self._db.session() as session, session.begin():
+                existing_rows = list(
+                    await session.scalars(
+                        select(DriftObservationModel).where(
+                            DriftObservationModel.observation_id.in_(unique)
+                        )
+                    )
+                )
+                existing_by_id = {
+                    row.observation_id: row for row in existing_rows
+                }
+                stored_by_id: dict[str, DriftObservation] = {}
+                for observation_id, observation in unique.items():
+                    existing = existing_by_id.get(observation_id)
                     if existing is not None:
                         current = DriftObservation.model_validate(
                             existing.payload
@@ -4790,7 +4866,7 @@ class Repository:
                             raise ValidationError(
                                 "Immutable drift observation identity conflict"
                             )
-                        stored.append(current)
+                        stored_by_id[observation_id] = current
                         continue
                     payload = observation.model_dump(mode="json")
                     session.add(
@@ -4806,8 +4882,11 @@ class Repository:
                             created_at=observation.created_at,
                         )
                     )
-                    stored.append(observation)
-            return stored
+                    stored_by_id[observation_id] = observation
+            return [
+                stored_by_id[observation.observation_id]
+                for observation in observations
+            ]
         except (DatabaseError, ValidationError):
             raise
         except Exception as exc:

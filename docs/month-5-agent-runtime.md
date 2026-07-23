@@ -219,6 +219,15 @@ configured database pool. The remaining latency is after agent completion in
 forecast settlement, drift evaluation, consensus, portfolio, audit, and final
 decision persistence; it is not in the 300-agent runtime.
 
+The follow-up persistence optimization keeps those safety boundaries while
+replacing per-row identity reads with one bounded cohort lookup for agent
+forecasts, realized outcomes, and drift observations. Duplicate input
+identities are validated before database mutation, existing immutable
+artifacts are compared with their contracts, and result ordering remains
+stable. Operational snapshots now expose fixed-cardinality timings for each
+orchestrator stage so hosted measurements can distinguish database work from
+agent calculation without increasing the connection pool.
+
 ## PostgreSQL and Supabase lifecycle
 
 The versioned migration is:

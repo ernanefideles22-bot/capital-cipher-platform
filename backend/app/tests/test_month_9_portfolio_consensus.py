@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 from httpx import ASGITransport, AsyncClient
 from jsonschema import Draft202012Validator
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.exc import DatabaseError as SQLAlchemyDatabaseError
 
 from app.agents.month9_specialists import (
@@ -421,6 +421,18 @@ async def test_month9_sqlite_artifacts_are_idempotent_and_append_only(tmp_path):
         observed_at=utcnow(),
     )
     await repository.save_drift_observation(observation)
+    second_observation = DriftObservation(
+        **observation.model_dump(
+            mode="python",
+            exclude={
+                "observation_id",
+                "agent_name",
+                "created_at",
+            },
+        ),
+        agent_name=MONTH9_DIAGNOSTIC_DEFINITIONS[1].name,
+    )
+    await repository.save_drift_observations([second_observation])
     repeated_observation = DriftObservation(
         **observation.model_dump(
             mode="python",
@@ -428,12 +440,54 @@ async def test_month9_sqlite_artifacts_are_idempotent_and_append_only(tmp_path):
         ),
         created_at=observation.created_at + timedelta(seconds=1),
     )
+    repeated_second_observation = DriftObservation(
+        **second_observation.model_dump(
+            mode="python",
+            exclude={"observation_id", "created_at"},
+        ),
+        created_at=second_observation.created_at + timedelta(seconds=1),
+    )
     assert repeated_observation.observation_id == observation.observation_id
-    assert await repository.save_drift_observations(
-        [repeated_observation]
-    ) == [observation]
+    select_statements: list[str] = []
+
+    def capture_selects(
+        _connection,
+        _cursor,
+        statement,
+        _parameters,
+        _context,
+        _executemany,
+    ):
+        if statement.lstrip().upper().startswith("SELECT"):
+            select_statements.append(statement)
+
+    event.listen(
+        database.engine.sync_engine,
+        "before_cursor_execute",
+        capture_selects,
+    )
+    try:
+        assert await repository.save_drift_observations(
+            [repeated_observation, repeated_second_observation]
+        ) == [observation, second_observation]
+        assert sum(
+            "drift_observations" in statement
+            for statement in select_statements
+        ) == 1
+    finally:
+        event.remove(
+            database.engine.sync_engine,
+            "before_cursor_execute",
+            capture_selects,
+        )
     assert (await repository.list_portfolio_proposals())[0] == proposal
-    assert (await repository.list_drift_observations())[0] == observation
+    assert {
+        item.observation_id
+        for item in await repository.list_drift_observations()
+    } == {
+        observation.observation_id,
+        second_observation.observation_id,
+    }
 
     async with database.engine.begin() as connection:
         with pytest.raises(SQLAlchemyDatabaseError, match="append-only"):
