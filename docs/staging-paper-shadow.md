@@ -12,7 +12,20 @@ The repository contains two deployment paths:
 - `HOSTED`: the same backend connected server-side to a dedicated hosted
   Supabase/Postgres staging project and a TLS Redis service.
 
-This change does not create, link or mutate a hosted Supabase project.
+The Compose path does not automatically create, link or mutate a hosted
+Supabase project.
+
+## Provisioned hosted database
+
+The dedicated Supabase project is `capital-cipher-staging`, reference
+`phkligpkcitbbefrrotk`, in `sa-east-1`. It was provisioned on 2026-07-22 on
+the Free plan and contains no production or legacy data.
+
+The backend must not boot against this project until migration
+`20260723001208_bootstrap_private_schema_and_runtime_role.sql` is present in
+remote migration history. The project reference is not a credential; database
+passwords, connection strings and API secrets must remain in the deployment
+secret store.
 
 ## Enforced invariants
 
@@ -103,11 +116,14 @@ Required operator actions:
 4. run Security Advisor and Performance Advisor after migration;
 5. use a direct or session-pooled server connection appropriate for persistent
    workers and include `sslmode=verify-full` where supported;
-6. keep the connection string only in the backend secret store;
-7. keep the `capital_cipher` schema outside the Data API and preserve its RLS,
+6. create a dedicated LOGIN role, grant it membership only in
+   `capital_cipher_runtime`, and never connect the backend as `postgres` or a
+   Supabase administration role;
+7. keep the connection string only in the backend secret store;
+8. keep the `capital_cipher` schema outside the Data API and preserve its RLS,
    revocations and append-only triggers;
-8. use `rediss://` for the external Redis broker;
-9. set `STAGING_DEPLOYMENT_TARGET=HOSTED` and run
+9. use `rediss://` for the external Redis broker;
+10. set `STAGING_DEPLOYMENT_TARGET=HOSTED` and run
    `python scripts/validate_staging_paper.py` before boot.
 
 No `service_role` or database credential belongs in the frontend.
