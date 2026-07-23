@@ -198,6 +198,27 @@ Agent calculation concurrency and durable worker concurrency are independent:
 hosted deployments can keep agent calculation parallelism while matching
 transactional workers to the bounded database pool.
 
+### Hosted PAPER validation
+
+The Fly/Supabase staging validation on 2026-07-23 kept the database pool at
+three connections, ran three durable workers, and claimed eight jobs per
+worker cohort while retaining eight-way agent calculation concurrency.
+
+Across 12 consecutive natural 15-minute market cycles:
+
+- 3,600 of 3,600 agent jobs completed on the first attempt;
+- no job failed or entered dead letter;
+- every cycle persisted 300 requested, started, and completed events;
+- every cycle persisted weighted consensus and portfolio proposal evidence;
+- the 300-agent event window ranged from 6.156 to 9.343 seconds;
+- the complete candle-to-decision window ranged from 24.774 to 36.418 seconds.
+
+A pool-size experiment above the staging role's connection ceiling was rolled
+back immediately. Hosted worker concurrency must remain at or below the
+configured database pool. The remaining latency is after agent completion in
+forecast settlement, drift evaluation, consensus, portfolio, audit, and final
+decision persistence; it is not in the 300-agent runtime.
+
 ## PostgreSQL and Supabase lifecycle
 
 The versioned migration is:
