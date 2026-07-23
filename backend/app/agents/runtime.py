@@ -54,6 +54,11 @@ class AgentRuntimeRepository(Protocol):
         input_memory: AgentMemoryEntry,
     ) -> AgentExecutionJob: ...
 
+    async def create_agent_executions(
+        self,
+        submissions: list[tuple[AgentExecutionJob, AgentMemoryEntry]],
+    ) -> list[AgentExecutionJob]: ...
+
     async def claim_agent_execution(
         self,
         execution_id: str,
@@ -134,22 +139,39 @@ class InMemoryAgentRuntimeRepository:
         job: AgentExecutionJob,
         input_memory: AgentMemoryEntry,
     ) -> AgentExecutionJob:
-        key = (job.agent_name, job.agent_version, job.idempotency_key)
         async with self._lock:
-            existing_id = self._idempotency.get(key)
-            if existing_id is not None:
-                existing = self._jobs[existing_id]
-                if existing.request_fingerprint != job.request_fingerprint:
-                    raise ValidationError(
-                        "Agent execution idempotency key conflicts with "
-                        "different input"
-                    )
-                return existing
-            self._jobs[job.execution_id] = job
-            self._idempotency[key] = job.execution_id
-            self._attempts[job.execution_id] = []
-            self._memory[job.execution_id] = [input_memory]
-            return job
+            return self._create_agent_execution(job, input_memory)
+
+    def _create_agent_execution(
+        self,
+        job: AgentExecutionJob,
+        input_memory: AgentMemoryEntry,
+    ) -> AgentExecutionJob:
+        key = (job.agent_name, job.agent_version, job.idempotency_key)
+        existing_id = self._idempotency.get(key)
+        if existing_id is not None:
+            existing = self._jobs[existing_id]
+            if existing.request_fingerprint != job.request_fingerprint:
+                raise ValidationError(
+                    "Agent execution idempotency key conflicts with "
+                    "different input"
+                )
+            return existing
+        self._jobs[job.execution_id] = job
+        self._idempotency[key] = job.execution_id
+        self._attempts[job.execution_id] = []
+        self._memory[job.execution_id] = [input_memory]
+        return job
+
+    async def create_agent_executions(
+        self,
+        submissions: list[tuple[AgentExecutionJob, AgentMemoryEntry]],
+    ) -> list[AgentExecutionJob]:
+        async with self._lock:
+            return [
+                self._create_agent_execution(job, input_memory)
+                for job, input_memory in submissions
+            ]
 
     async def _claim(
         self,
@@ -417,6 +439,18 @@ class AgentRuntime:
         self,
         request: AgentExecutionRequest,
     ) -> AgentExecutionJob:
+        job, input_memory = self._prepare_submission(request)
+        stored = await self.repository.create_agent_execution(
+            job,
+            input_memory,
+        )
+        await self._publish_requested(stored)
+        return stored
+
+    def _prepare_submission(
+        self,
+        request: AgentExecutionRequest,
+    ) -> tuple[AgentExecutionJob, AgentMemoryEntry]:
         ensure_payload_has_no_secrets(
             request.model_dump(mode="json")
         )
@@ -446,7 +480,7 @@ class AgentRuntime:
             created_at=now,
             updated_at=now,
         )
-        stored = await self.repository.create_agent_execution(
+        return (
             job,
             _memory(
                 execution_id=fingerprint,
@@ -455,16 +489,40 @@ class AgentRuntime:
                 payload=request.model_dump(mode="json"),
             ),
         )
+
+    async def _publish_requested(self, job: AgentExecutionJob) -> None:
         await self._publish(
             EventTypes.AGENT_REQUESTED,
-            stored,
+            job,
             event_id=agent_lifecycle_event_id(
-                fingerprint,
+                job.execution_id,
                 EventTypes.AGENT_REQUESTED,
                 0,
             ),
         )
-        return stored
+
+    async def submit_many(
+        self,
+        requests: list[AgentExecutionRequest],
+    ) -> list[AgentExecutionJob]:
+        submissions = [
+            self._prepare_submission(request) for request in requests
+        ]
+        jobs = await self.repository.create_agent_executions(submissions)
+        await asyncio.gather(
+            *(
+                self._publish_requested_bounded(job)
+                for job in jobs
+            )
+        )
+        return jobs
+
+    async def _publish_requested_bounded(
+        self,
+        job: AgentExecutionJob,
+    ) -> None:
+        async with self._submission_semaphore:
+            await self._publish_requested(job)
 
     async def enqueue(
         self,
@@ -554,9 +612,7 @@ class AgentRuntime:
         self,
         requests: list[AgentExecutionRequest],
     ) -> list[AgentOutput]:
-        jobs = await asyncio.gather(
-            *(self._submit_bounded(request) for request in requests)
-        )
+        jobs = await self.submit_many(requests)
         traces = await asyncio.gather(
             *(self._execute_submitted(job) for job in jobs)
         )

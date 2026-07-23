@@ -10,6 +10,8 @@ It does not authorize TESTNET or LIVE and contains no credentials.
 - `watchdog`: one continuously running `shared-cpu-1x` Machine with 256 MB RAM.
 - Database pool: 3 persistent connections, leaving recovery and rolling-deploy
   headroom inside the staging role's 8-connection limit.
+- Broker publication: up to 16 unrelated event IDs may overlap; each event ID
+  remains serialized across the direct publisher and outbox dispatcher.
 - Data lake: encrypted `hosted_data_lake` volume mounted only by `backend`,
   initialized at 20 GB with 14-day snapshot retention.
 - Ingress: HTTPS terminates at Fly Proxy and routes only to `backend`.

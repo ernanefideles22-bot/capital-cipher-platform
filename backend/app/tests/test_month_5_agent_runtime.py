@@ -25,6 +25,7 @@ from app.core.errors import ConfigurationError, ValidationError
 from app.core.event_bus import EventBus, Topics
 from app.database.models import (
     AgentExecutionAttemptModel,
+    AgentExecutionJobModel,
     AgentMemoryEntryModel,
     AgentOutputModel,
 )
@@ -616,6 +617,41 @@ async def test_sqlite_runtime_persists_trace_and_immutable_evidence():
     with pytest.raises(SQLAlchemyError, match="append-only"):
         async with database.session() as session, session.begin():
             await session.execute(delete(AgentMemoryEntryModel))
+    await database.dispose()
+
+
+async def test_sqlite_runtime_batches_cohort_creation_idempotently():
+    database = Database("sqlite+aiosqlite:///:memory:")
+    await database.create_all()
+    repository = Repository(database)
+    agent = SuccessfulAgent()
+    runtime = AgentRuntime(
+        AgentRegistry([agent]),
+        repository=repository,
+    )
+    requests = [
+        _request(
+            agent,
+            request_id=f"batch-request-{index}",
+            idempotency_key=f"batch-idempotency-{index}",
+        )
+        for index in range(3)
+    ]
+
+    first = await runtime.execute_many(requests)
+    repeated = await runtime.execute_many(requests)
+    async with database.session() as session:
+        job_count = await session.scalar(
+            select(func.count()).select_from(AgentExecutionJobModel)
+        )
+        memory_count = await session.scalar(
+            select(func.count()).select_from(AgentMemoryEntryModel)
+        )
+
+    assert len(first) == len(repeated) == 3
+    assert job_count == 3
+    assert memory_count == 9
+    assert agent.total_runs == 3
     await database.dispose()
 
 

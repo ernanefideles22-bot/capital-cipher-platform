@@ -7,7 +7,6 @@ Redis Streams / RabbitMQ / NATS / Kafka can replace it in later phases.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections import OrderedDict, defaultdict
 from typing import Any, Awaitable, Callable
@@ -16,6 +15,7 @@ from uuid import uuid4
 from app.core.journal import JournalWriteResult
 from app.core.logging import ServiceLogger
 from app.core.payload_security import ensure_payload_has_no_secrets
+from app.core.publication import PublicationCoordinator
 from app.core.transports.base import EventTransport
 from app.schemas.events import BusMessage
 
@@ -58,7 +58,7 @@ class EventBus:
         transport_required: bool = False,
         mark_published: EventPublishMarker | None = None,
         mark_failed: EventFailureMarker | None = None,
-        publication_lock: asyncio.Lock | None = None,
+        publication_coordinator: PublicationCoordinator | None = None,
         max_processed_event_ids: int = 100_000,
     ) -> None:
         if max_processed_event_ids < 1:
@@ -69,7 +69,9 @@ class EventBus:
         self._transport_required = transport_required
         self._mark_published = mark_published
         self._mark_failed = mark_failed
-        self._publication_lock = publication_lock or asyncio.Lock()
+        self._publication_coordinator = (
+            publication_coordinator or PublicationCoordinator()
+        )
         self._max_processed_event_ids = max_processed_event_ids
         self._processed_event_ids: OrderedDict[str, None] = OrderedDict()
 
@@ -120,9 +122,17 @@ class EventBus:
             )
             return message
 
-        # The shared lock keeps the direct publisher and the single-process
-        # outbox dispatcher from racing on the same journal row.
-        async with self._publication_lock:
+        # Direct publication and the outbox share a per-event lock. This keeps
+        # one event idempotent without serializing unrelated agent events.
+        async with self._publication_coordinator.hold(message.event_id):
+            if message.event_id in self._processed_event_ids:
+                logger.warning(
+                    "Duplicate event ignored",
+                    event_type="DUPLICATE_EVENT",
+                    correlation_id=correlation_id,
+                    metadata={"event_id": message.event_id, "topic": topic},
+                )
+                return message
             # Durable journal is written before in-process delivery. A journal
             # failure stops the event so downstream consumers never act on an
             # event that cannot be replayed or audited.
@@ -175,7 +185,7 @@ class EventBus:
                             "error_type": type(exc).__name__,
                         },
                     )
-        self._remember(message.event_id)
+            self._remember(message.event_id)
 
         for handler in self._subscribers.get(topic, []):
             try:

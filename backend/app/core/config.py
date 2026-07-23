@@ -152,6 +152,12 @@ class Settings(BaseSettings):
         ge=0.1,
         le=60.0,
     )
+    event_publication_max_concurrency: int = Field(
+        default=16,
+        alias="EVENT_PUBLICATION_MAX_CONCURRENCY",
+        ge=1,
+        le=1_000,
+    )
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     operations_monitor_enabled: bool = Field(
         default=False,

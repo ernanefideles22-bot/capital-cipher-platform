@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, func, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -661,6 +661,20 @@ class Repository:
                         row.updated_at = now
         except Exception as exc:
             raise DatabaseError(f"Failed to mark bus message published: {exc}") from exc
+
+    async def is_bus_message_published(self, event_id: str) -> bool:
+        try:
+            async with self._db.session() as session:
+                published_at = await session.scalar(
+                    select(EventOutboxModel.published_at).where(
+                        EventOutboxModel.event_id == event_id
+                    )
+                )
+                return published_at is not None
+        except Exception as exc:
+            raise DatabaseError(
+                f"Failed to inspect bus message publication: {exc}"
+            ) from exc
 
     async def mark_bus_message_failed(self, event_id: str, error_type: str) -> None:
         now = _now()
@@ -1763,6 +1777,180 @@ class Repository:
                 raise
             raise DatabaseError(
                 f"Failed to create agent execution: {exc}"
+            ) from exc
+
+    async def create_agent_executions(
+        self,
+        submissions: list[tuple[AgentExecutionJob, AgentMemoryEntry]],
+    ) -> list[AgentExecutionJob]:
+        """Create a cohort and its input memories in one transaction."""
+
+        if not submissions:
+            return []
+        for job, input_memory in submissions:
+            if (
+                input_memory.execution_id != job.execution_id
+                or input_memory.sequence != 1
+                or input_memory.entry_type != "INPUT"
+            ):
+                raise ValueError("Initial agent memory does not match the job")
+
+        def job_values(job: AgentExecutionJob) -> dict:
+            return {
+                "execution_id": job.execution_id,
+                "request_fingerprint": job.request_fingerprint,
+                "schema_version": job.schema_version,
+                "runtime_version": job.runtime_version,
+                "idempotency_key": job.idempotency_key,
+                "correlation_id": job.correlation_id,
+                "agent_name": job.agent_name,
+                "agent_version": job.agent_version,
+                "agent_definition_hash": job.agent_definition_hash,
+                "execution_mode": job.execution_mode,
+                "decision_role": job.decision_role,
+                "critical": job.critical,
+                "input_payload": job.input.model_dump(mode="json"),
+                "status": job.status,
+                "attempt_count": job.attempt_count,
+                "max_attempts": job.max_attempts,
+                "available_at": job.available_at,
+                "leased_by": job.leased_by,
+                "lease_expires_at": job.lease_expires_at,
+                "last_error_code": job.last_error_code,
+                "output_payload": (
+                    job.output.model_dump(mode="json")
+                    if job.output is not None
+                    else None
+                ),
+                "created_at": job.created_at,
+                "updated_at": job.updated_at,
+                "completed_at": job.completed_at,
+            }
+
+        try:
+            async with self._db.session() as session, session.begin():
+                insert_statement = self._dialect_insert(
+                    AgentExecutionJobModel
+                )
+                inserted_ids: set[str] = set()
+                if insert_statement is not None:
+                    inserted_ids = set(
+                        await session.scalars(
+                            insert_statement.values(
+                                [
+                                    job_values(job)
+                                    for job, _ in submissions
+                                ]
+                            )
+                            .on_conflict_do_nothing()
+                            .returning(
+                                AgentExecutionJobModel.execution_id
+                            )
+                        )
+                    )
+                else:
+                    for job, _ in submissions:
+                        if (
+                            await session.get(
+                                AgentExecutionJobModel,
+                                job.execution_id,
+                            )
+                            is None
+                        ):
+                            session.add(
+                                AgentExecutionJobModel(
+                                    **job_values(job)
+                                )
+                            )
+                            inserted_ids.add(job.execution_id)
+                    await session.flush()
+
+                memories = {
+                    job.execution_id: input_memory
+                    for job, input_memory in submissions
+                    if job.execution_id in inserted_ids
+                }
+                session.add_all(
+                    [
+                        AgentMemoryEntryModel(
+                            execution_id=memory.execution_id,
+                            schema_version=memory.schema_version,
+                            sequence=memory.sequence,
+                            entry_type=memory.entry_type,
+                            payload=memory.payload,
+                            payload_hash=memory.payload_hash,
+                            created_at=memory.created_at,
+                        )
+                        for memory in memories.values()
+                    ]
+                )
+
+                if len(inserted_ids) == len(submissions):
+                    return [job for job, _ in submissions]
+
+                execution_ids = [
+                    job.execution_id for job, _ in submissions
+                ]
+                idempotency_keys = [
+                    (
+                        job.agent_name,
+                        job.agent_version,
+                        job.idempotency_key,
+                    )
+                    for job, _ in submissions
+                ]
+                rows = list(
+                    await session.scalars(
+                        select(AgentExecutionJobModel).where(
+                            or_(
+                                AgentExecutionJobModel.execution_id.in_(
+                                    execution_ids
+                                ),
+                                tuple_(
+                                    AgentExecutionJobModel.agent_name,
+                                    AgentExecutionJobModel.agent_version,
+                                    AgentExecutionJobModel.idempotency_key,
+                                ).in_(idempotency_keys),
+                            )
+                        )
+                    )
+                )
+                by_id = {row.execution_id: row for row in rows}
+                by_key = {
+                    (
+                        row.agent_name,
+                        row.agent_version,
+                        row.idempotency_key,
+                    ): row
+                    for row in rows
+                }
+                stored_jobs = []
+                for job, _ in submissions:
+                    row = by_key.get(
+                        (
+                            job.agent_name,
+                            job.agent_version,
+                            job.idempotency_key,
+                        )
+                    ) or by_id.get(job.execution_id)
+                    if row is None:
+                        raise RuntimeError(
+                            "Agent execution conflict has no stored job"
+                        )
+                    if row.request_fingerprint != job.request_fingerprint:
+                        raise ValidationError(
+                            "Agent execution idempotency key conflicts "
+                            "with different input"
+                        )
+                    stored_jobs.append(
+                        self._agent_execution_job_from_row(row)
+                    )
+                return stored_jobs
+        except Exception as exc:
+            if isinstance(exc, (DatabaseError, ValidationError)):
+                raise
+            raise DatabaseError(
+                f"Failed to create agent execution cohort: {exc}"
             ) from exc
 
     async def _claim_agent_execution(

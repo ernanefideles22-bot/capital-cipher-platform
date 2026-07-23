@@ -28,6 +28,7 @@ from app.backtesting.walk_forward import WalkForwardEngine
 from app.core.config import Settings
 from app.core.event_bus import EventBus
 from app.core.outbox import OutboxDispatcher
+from app.core.publication import PublicationCoordinator
 from app.core.state_machine import SystemStateMachine
 from app.core.transports.base import EventTransport
 from app.core.transports.redis_streams import RedisStreamTransport
@@ -192,7 +193,9 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         )
     event_transport: EventTransport | None = None
     outbox_dispatcher: OutboxDispatcher | None = None
-    publication_lock = asyncio.Lock()
+    publication_coordinator = PublicationCoordinator(
+        max_concurrency=settings.event_publication_max_concurrency
+    )
     if settings.redis_url:
         if repository is None:
             raise ValueError("Redis Streams requires durable database journaling")
@@ -206,7 +209,7 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
             repository,
             event_transport,
             poll_interval_seconds=settings.outbox_poll_interval_seconds,
-            publication_lock=publication_lock,
+            publication_coordinator=publication_coordinator,
         )
     event_bus = EventBus(
         journal=repository.save_bus_message if repository is not None else None,
@@ -218,7 +221,7 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         mark_failed=(
             repository.mark_bus_message_failed if repository is not None else None
         ),
-        publication_lock=publication_lock,
+        publication_coordinator=publication_coordinator,
     )
 
     audit_service = AuditService(repository=repository)

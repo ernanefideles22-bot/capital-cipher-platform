@@ -9,6 +9,7 @@ import pytest
 from app.core.event_bus import EventBus, Topics
 from app.core.journal import JournalWriteResult
 from app.core.outbox import OutboxDispatcher
+from app.core.publication import PublicationCoordinator
 from app.core.transports.redis_streams import RedisStreamTransport
 from app.schemas.events import BusMessage
 
@@ -216,6 +217,9 @@ async def test_outbox_retries_pending_messages():
         async def list_pending_bus_messages(self, limit=100):
             return self.pending[:limit]
 
+        async def is_bus_message_published(self, event_id):
+            return any(item[0] == event_id for item in self.published)
+
         async def mark_bus_message_published(self, event_id, broker_id):
             self.published.append((event_id, broker_id))
             self.pending = []
@@ -237,7 +241,7 @@ async def test_outbox_retries_pending_messages():
 
 
 async def test_direct_publish_and_outbox_do_not_race_in_one_process():
-    shared_lock = asyncio.Lock()
+    coordinator = PublicationCoordinator(max_concurrency=4)
     journal_written = asyncio.Event()
     pending: list[BusMessage] = []
     published: list[tuple[str, str]] = []
@@ -251,6 +255,9 @@ async def test_direct_publish_and_outbox_do_not_race_in_one_process():
 
         async def list_pending_bus_messages(self, limit=100):
             return pending[:limit]
+
+        async def is_bus_message_published(self, event_id):
+            return any(item[0] == event_id for item in published)
 
         async def mark_bus_message_published(self, event_id, broker_id):
             published.append((event_id, broker_id))
@@ -275,12 +282,12 @@ async def test_direct_publish_and_outbox_do_not_race_in_one_process():
         journal=repository.save_bus_message,
         transport=transport,
         mark_published=repository.mark_bus_message_published,
-        publication_lock=shared_lock,
+        publication_coordinator=coordinator,
     )
     dispatcher = OutboxDispatcher(
         repository,
         transport,
-        publication_lock=shared_lock,
+        publication_coordinator=coordinator,
     )
 
     direct_task = asyncio.create_task(
@@ -299,4 +306,74 @@ async def test_direct_publish_and_outbox_do_not_race_in_one_process():
 
     assert transport.calls == 1
     assert published == [("event-race", "4000-1")]
-    assert drain_result.attempted == 0
+    assert drain_result.attempted == 1
+    assert drain_result.published == 0
+    assert drain_result.failed == 0
+
+
+async def test_event_publication_is_bounded_but_not_globally_serialized():
+    active = 0
+    max_active = 0
+
+    async def journal(message):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return JournalWriteResult(inserted=True, broker_published=False)
+
+    coordinator = PublicationCoordinator(max_concurrency=3)
+    bus = EventBus(
+        journal=journal,
+        publication_coordinator=coordinator,
+    )
+
+    await asyncio.gather(
+        *(
+            bus.publish(
+                Topics.SYSTEM_EVENTS,
+                "SYSTEM_STARTED",
+                {},
+                source="test",
+                correlation_id=f"correlation-{index}",
+                event_id=f"event-{index}",
+            )
+            for index in range(9)
+        )
+    )
+
+    assert max_active == 3
+
+
+async def test_concurrent_duplicate_event_is_published_once_without_journal():
+    class Transport:
+        def __init__(self):
+            self.calls = 0
+
+        async def publish(self, message):
+            self.calls += 1
+            await asyncio.sleep(0.01)
+            return f"5000-{self.calls}"
+
+    transport = Transport()
+    bus = EventBus(
+        transport=transport,
+        publication_coordinator=PublicationCoordinator(max_concurrency=4),
+    )
+
+    await asyncio.gather(
+        *(
+            bus.publish(
+                Topics.SYSTEM_EVENTS,
+                "SYSTEM_STARTED",
+                {},
+                source="test",
+                correlation_id="correlation-duplicate",
+                event_id="event-duplicate",
+            )
+            for _ in range(4)
+        )
+    )
+
+    assert transport.calls == 1
