@@ -159,6 +159,21 @@ async def test_default_registry_contains_exactly_300_paper_agents():
     assert "PaperTradingAgent" not in names
 
 
+def test_worker_database_concurrency_is_independent_from_agent_compute():
+    context = build_context(
+        Settings(
+            AGENT_MAX_CONCURRENCY=8,
+            AGENT_WORKER_MAX_CONCURRENCY=3,
+            AGENT_WORKER_BATCH_SIZE=8,
+        ),
+        with_database=False,
+    )
+
+    assert context.agent_runtime_worker is not None
+    assert context.agent_runtime_worker._max_concurrency == 3
+    assert context.agent_runtime_worker._claim_batch_size == 8
+
+
 async def test_all_300_agents_execute_through_versioned_runtime_contracts():
     context = build_context(Settings(), with_database=False)
     assert context.agent_runtime is not None

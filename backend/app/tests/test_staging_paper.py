@@ -115,6 +115,7 @@ def test_staging_preflight_accepts_only_complete_paper_boundary():
         {"ADMIN_API_KEY": ""},
         {"CORS_ALLOWED_ORIGINS": "*"},
         {"DATABASE_POOL_SIZE": 10, "DATABASE_MAX_OVERFLOW": 1},
+        {"AGENT_WORKER_MAX_CONCURRENCY": 6},
     ],
 )
 def test_staging_settings_fail_closed(override):
@@ -405,6 +406,7 @@ def test_hosted_compose_uses_only_external_pinned_data_services():
     assert "STAGING_REDIS_PRIVATE_NETWORK" in compose
     assert "DATABASE_POOL_SIZE" in compose
     assert "DATABASE_MAX_OVERFLOW" in compose
+    assert "AGENT_WORKER_MAX_CONCURRENCY" in compose
     assert "STAGING_POSTGRES_PASSWORD" not in compose
     assert "STAGING_REDIS_PASSWORD" not in compose
     assert "  db:" not in compose
@@ -438,6 +440,8 @@ def test_fly_staging_is_paper_only_fail_closed_and_region_pinned():
     assert 'OMS_TESTNET_ENABLED = "0"' in config
     assert 'OMS_WORKER_ENABLED = "0"' in config
     assert 'DATABASE_POOL_SIZE = "3"' in config
+    assert 'AGENT_WORKER_MAX_CONCURRENCY = "3"' in config
+    assert 'AGENT_WORKER_BATCH_SIZE = "8"' in config
     assert "CAPITAL_CIPHER_BINANCE_TESTNET_KEY_ID" not in config
     assert "CAPITAL_CIPHER_BINANCE_TESTNET_SIGNING_SECRET" not in config
     assert "CAPITAL_CIPHER_BYBIT_TESTNET_KEY_ID" not in config

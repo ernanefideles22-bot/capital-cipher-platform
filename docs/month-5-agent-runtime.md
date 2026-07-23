@@ -184,6 +184,7 @@ AGENT_TIMEOUT_MS=5000
 AGENT_MAX_ATTEMPTS=3
 AGENT_MAX_CONCURRENCY=8
 AGENT_WORKER_ENABLED=1
+AGENT_WORKER_MAX_CONCURRENCY=4
 AGENT_WORKER_POLL_INTERVAL_SECONDS=0.25
 AGENT_WORKER_BATCH_SIZE=4
 AGENT_LEASE_SECONDS=30
@@ -193,6 +194,9 @@ AGENT_RETRY_MAX_SECONDS=0.2
 
 Validation constrains timeouts, concurrency, attempts, leases, polling, and
 retry delays. Inconsistent retry bounds prevent application startup.
+Agent calculation concurrency and durable worker concurrency are independent:
+hosted deployments can keep agent calculation parallelism while matching
+transactional workers to the bounded database pool.
 
 ## PostgreSQL and Supabase lifecycle
 

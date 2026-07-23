@@ -481,6 +481,12 @@ class Settings(BaseSettings):
         default=True,
         alias="AGENT_WORKER_ENABLED",
     )
+    agent_worker_max_concurrency: int = Field(
+        default=4,
+        alias="AGENT_WORKER_MAX_CONCURRENCY",
+        ge=1,
+        le=100,
+    )
     agent_worker_poll_interval_seconds: float = Field(
         default=0.25,
         alias="AGENT_WORKER_POLL_INTERVAL_SECONDS",
@@ -668,6 +674,10 @@ class Settings(BaseSettings):
             if self.database_pool_size + self.database_max_overflow > 10:
                 violations.append(
                     "staging database connections must be bounded to 10"
+                )
+            if self.agent_worker_max_concurrency > self.database_pool_size:
+                violations.append(
+                    "staging agent workers cannot exceed the database pool"
                 )
             if not self.event_broker_required:
                 violations.append("EVENT_BROKER_REQUIRED must be enabled")

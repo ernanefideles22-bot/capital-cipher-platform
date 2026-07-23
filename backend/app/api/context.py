@@ -413,7 +413,7 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         agent_runtime,
         poll_interval_seconds=settings.agent_worker_poll_interval_seconds,
         lease_seconds=settings.agent_lease_seconds,
-        max_concurrency=settings.agent_max_concurrency,
+        max_concurrency=settings.agent_worker_max_concurrency,
         claim_batch_size=settings.agent_worker_batch_size,
     )
     shadow_validation_service = ShadowValidationService(
