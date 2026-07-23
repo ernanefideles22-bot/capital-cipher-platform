@@ -26,7 +26,7 @@ Central risk         portfolio limits, VaR, single-use approvals, kill switch
 OMS                  PAPER mirror, Binance Spot/Bybit linear TESTNET outbox
 turbo.json           monorepo task graph
 docker-compose.yml   backend + PostgreSQL (development)
-deploy/staging/      isolated PostgreSQL 17 + Redis PAPER shadow staging
+deploy/staging/      local and hosted fail-closed PAPER shadow staging
 ```
 
 Install the JavaScript workspace with `pnpm install`, install the backend with
@@ -55,6 +55,7 @@ architecture and completion evidence:
 - [Month 11 prolonged shadow validation](docs/month-11-shadow-validation.md)
 - [Month 12 independent audit and release readiness](docs/month-12-release-readiness.md)
 - [Staging PAPER and real-time shadow operations](docs/staging-paper-shadow.md)
+- [Hosted staging provider gate](docs/hosted-staging-provider-gate.md)
 
 The specification repository remains the authoritative product and
 architecture specification. This repository is the executable platform.

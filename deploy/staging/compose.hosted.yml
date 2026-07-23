@@ -1,21 +1,22 @@
-name: capital-cipher-staging
+name: capital-cipher-staging-hosted
 
-x-paper-environment: &paper-environment
+x-hosted-paper-environment: &hosted-paper-environment
   APP_ENV: staging
   SYSTEM_MODE: PAPER
-  STAGING_DEPLOYMENT_TARGET: LOCAL_COMPOSE
-  DATABASE_URL: postgresql+asyncpg://capital_cipher:${STAGING_POSTGRES_PASSWORD:?set STAGING_POSTGRES_PASSWORD}@db:5432/capital_cipher_staging
+  STAGING_DEPLOYMENT_TARGET: HOSTED
+  DATABASE_URL: ${DATABASE_URL:?store DATABASE_URL in the deployment secret store}
   DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-5}
   DATABASE_MAX_OVERFLOW: ${DATABASE_MAX_OVERFLOW:-0}
   DATABASE_POOL_TIMEOUT_SECONDS: ${DATABASE_POOL_TIMEOUT_SECONDS:-15}
   DATABASE_POOL_RECYCLE_SECONDS: ${DATABASE_POOL_RECYCLE_SECONDS:-300}
-  REDIS_URL: redis://:${STAGING_REDIS_PASSWORD:?set STAGING_REDIS_PASSWORD}@redis:6379/0
+  REDIS_URL: ${REDIS_URL:?store REDIS_URL in the deployment secret store}
+  STAGING_EXPECTED_REDIS_HOST: ${STAGING_EXPECTED_REDIS_HOST:?pin the Redis hostname}
   EVENT_BROKER_REQUIRED: "1"
   REDIS_STREAM_PREFIX: capital-cipher-staging
   ENABLE_MARKET_DATA: "1"
   DATA_LAKE_ROOT: /var/lib/capital-cipher/data-lake
-  ADMIN_API_KEY: ${ADMIN_API_KEY:?set ADMIN_API_KEY}
-  CORS_ALLOWED_ORIGINS: ${STAGING_CORS_ALLOWED_ORIGINS:-http://127.0.0.1:5173}
+  ADMIN_API_KEY: ${ADMIN_API_KEY:?store ADMIN_API_KEY in the deployment secret store}
+  CORS_ALLOWED_ORIGINS: ${STAGING_CORS_ALLOWED_ORIGINS:?set an explicit HTTPS origin}
   OMS_EXECUTION_ENVIRONMENT: PAPER
   OMS_TESTNET_ENABLED: "0"
   OMS_TESTNET_ACKNOWLEDGEMENT: ""
@@ -46,89 +47,36 @@ x-paper-environment: &paper-environment
   MAX_OPEN_POSITIONS: ${MAX_OPEN_POSITIONS:-3}
   API_RATE_LIMIT_PER_MINUTE: ${API_RATE_LIMIT_PER_MINUTE:-300}
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
-  STAGING_POSTGRES_PASSWORD: ${STAGING_POSTGRES_PASSWORD:?set STAGING_POSTGRES_PASSWORD}
-  STAGING_REDIS_PASSWORD: ${STAGING_REDIS_PASSWORD:?set STAGING_REDIS_PASSWORD}
 
 services:
-  db:
-    image: postgres:17-alpine
-    environment:
-      POSTGRES_USER: capital_cipher
-      POSTGRES_PASSWORD: ${STAGING_POSTGRES_PASSWORD:?set STAGING_POSTGRES_PASSWORD}
-      POSTGRES_DB: capital_cipher_staging
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U capital_cipher -d capital_cipher_staging"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-      start_period: 10s
-    volumes:
-      - staging-postgres:/var/lib/postgresql/data
-      - ../../supabase/migrations:/docker-entrypoint-initdb.d:ro
-    networks: [data]
-    restart: unless-stopped
-    stop_grace_period: 30s
-    security_opt:
-      - no-new-privileges:true
-
-  redis:
-    image: redis:8.2-alpine
-    environment:
-      STAGING_REDIS_PASSWORD: ${STAGING_REDIS_PASSWORD:?set STAGING_REDIS_PASSWORD}
-    command:
-      - sh
-      - -c
-      - >-
-        exec redis-server --appendonly yes --appendfsync everysec
-        --requirepass "$$STAGING_REDIS_PASSWORD"
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - redis-cli --no-auth-warning -a "$$STAGING_REDIS_PASSWORD" ping | grep PONG
-      interval: 5s
-      timeout: 3s
-      retries: 20
-      start_period: 5s
-    volumes:
-      - staging-redis:/data
-    networks: [data]
-    restart: unless-stopped
-    stop_grace_period: 30s
-    security_opt:
-      - no-new-privileges:true
-
   preflight:
-    image: capital-cipher-backend:staging
+    image: ${STAGING_BACKEND_IMAGE:-capital-cipher-backend:staging-hosted}
     build:
       context: ../../backend
-    environment: *paper-environment
+    environment: *hosted-paper-environment
     command: ["python", "scripts/validate_staging_paper.py"]
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    networks: [data]
+    secrets:
+      - supabase-ca
+    network_mode: none
     read_only: true
     tmpfs:
       - /tmp:size=64m,noexec,nosuid
+    cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
     restart: "no"
 
   backend:
-    image: capital-cipher-backend:staging
+    image: ${STAGING_BACKEND_IMAGE:-capital-cipher-backend:staging-hosted}
     build:
       context: ../../backend
-    environment: *paper-environment
+    environment: *hosted-paper-environment
     command: ["python", "scripts/run_staging_backend.py"]
+    secrets:
+      - supabase-ca
     depends_on:
       preflight:
         condition: service_completed_successfully
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
     ports:
       - "127.0.0.1:${STAGING_BACKEND_PORT:-8000}:8000"
     healthcheck:
@@ -142,46 +90,50 @@ services:
       interval: 15s
       timeout: 7s
       retries: 5
-      start_period: 60s
+      start_period: 90s
     volumes:
-      - staging-data-lake:/var/lib/capital-cipher/data-lake
-    networks: [data, egress]
+      - hosted-data-lake:/var/lib/capital-cipher/data-lake
+    networks: [control, egress]
     read_only: true
     tmpfs:
       - /tmp:size=128m,noexec,nosuid
     init: true
+    cap_drop: [ALL]
     restart: unless-stopped
     stop_grace_period: 45s
     security_opt:
       - no-new-privileges:true
 
   watchdog:
-    image: capital-cipher-backend:staging
+    image: ${STAGING_BACKEND_IMAGE:-capital-cipher-backend:staging-hosted}
     environment:
       STAGING_BACKEND_URL: http://backend:8000
-      ADMIN_API_KEY: ${ADMIN_API_KEY:?set ADMIN_API_KEY}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:?store ADMIN_API_KEY in the deployment secret store}
       STAGING_WATCHDOG_INTERVAL_SECONDS: ${STAGING_WATCHDOG_INTERVAL_SECONDS:-30}
       STAGING_WATCHDOG_FAILURE_THRESHOLD: ${STAGING_WATCHDOG_FAILURE_THRESHOLD:-3}
     command: ["python", "scripts/run_staging_watchdog.py"]
     depends_on:
       backend:
         condition: service_healthy
-    networks: [data]
+    networks: [control]
     read_only: true
     tmpfs:
       - /tmp:size=64m,noexec,nosuid
     init: true
+    cap_drop: [ALL]
     restart: on-failure:5
     stop_grace_period: 15s
     security_opt:
       - no-new-privileges:true
 
 networks:
-  data:
+  control:
     internal: true
   egress: {}
 
 volumes:
-  staging-postgres:
-  staging-redis:
-  staging-data-lake:
+  hosted-data-lake:
+
+secrets:
+  supabase-ca:
+    file: ${SUPABASE_CA_CERT_HOST_PATH:?mount the Supabase database CA certificate}

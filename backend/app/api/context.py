@@ -128,7 +128,13 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
     database: Database | None = None
     repository: Repository | None = None
     if with_database:
-        database = Database(settings.database_url)
+        database = Database(
+            settings.database_url,
+            pool_size=settings.database_pool_size,
+            max_overflow=settings.database_max_overflow,
+            pool_timeout_seconds=settings.database_pool_timeout_seconds,
+            pool_recycle_seconds=settings.database_pool_recycle_seconds,
+        )
         repository = Repository(database)
     data_catalog = DataCatalog(repository) if repository is not None else None
     gap_service = GapService(repository) if repository is not None else None

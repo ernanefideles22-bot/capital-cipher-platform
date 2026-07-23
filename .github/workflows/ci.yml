@@ -74,6 +74,18 @@ jobs:
         run: |
           docker compose -f deploy/staging/compose.yml build preflight
           docker compose -f deploy/staging/compose.yml run --rm --no-deps preflight
+      - name: Validate hosted staging contract
+        env:
+          DATABASE_URL: "postgresql+asyncpg://capital_cipher_staging.phkligpkcitbbefrrotk:ci-database-abcdefghijklmnopqrstuvwxyz-012345@aws-0-sa-east-1.pooler.supabase.com:5432/postgres?sslmode=verify-full&sslrootcert=/run/secrets/supabase-ca.crt"
+          REDIS_URL: "rediss://default:ci-redis-abcdefghijklmnopqrstuvwxyz-0123456789@redis-staging.example.invalid:6379/0"
+          SUPABASE_CA_CERT_HOST_PATH: /etc/ssl/certs/ca-certificates.crt
+          STAGING_EXPECTED_REDIS_HOST: redis-staging.example.invalid
+          ADMIN_API_KEY: ci-admin-abcdefghijklmnopqrstuvwxyz-0123456789
+          STAGING_CORS_ALLOWED_ORIGINS: https://staging.example.invalid
+          STAGING_BACKEND_IMAGE: capital-cipher-backend:staging
+        run: |
+          docker compose -f deploy/staging/compose.hosted.yml config --quiet
+          docker compose -f deploy/staging/compose.hosted.yml run --rm --no-deps preflight
       - name: Install workspace dependencies
         run: pnpm install --frozen-lockfile
       - name: Build, typecheck, and test all packages

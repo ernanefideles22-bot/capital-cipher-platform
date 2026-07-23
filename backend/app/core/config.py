@@ -25,7 +25,7 @@ class Settings(BaseSettings):
 
     app_env: str = Field(default="local", alias="APP_ENV")
     app_name: str = "capital-cipher-api"
-    app_version: str = "0.23.0"
+    app_version: str = "0.25.0"
 
     system_mode: str = Field(default="PAPER", alias="SYSTEM_MODE")
     oms_execution_environment: str = Field(
@@ -101,6 +101,30 @@ class Settings(BaseSettings):
 
     database_url: str = Field(
         default="sqlite+aiosqlite:///./capital_cipher.db", alias="DATABASE_URL"
+    )
+    database_pool_size: int = Field(
+        default=5,
+        alias="DATABASE_POOL_SIZE",
+        ge=1,
+        le=50,
+    )
+    database_max_overflow: int = Field(
+        default=0,
+        alias="DATABASE_MAX_OVERFLOW",
+        ge=0,
+        le=50,
+    )
+    database_pool_timeout_seconds: float = Field(
+        default=15,
+        alias="DATABASE_POOL_TIMEOUT_SECONDS",
+        ge=1,
+        le=300,
+    )
+    database_pool_recycle_seconds: int = Field(
+        default=300,
+        alias="DATABASE_POOL_RECYCLE_SECONDS",
+        ge=30,
+        le=86_400,
     )
     redis_url: str | None = Field(default=None, alias="REDIS_URL")
     event_broker_required: bool = Field(default=False, alias="EVENT_BROKER_REQUIRED")
@@ -629,6 +653,10 @@ class Settings(BaseSettings):
                 violations.append("OMS_RECONCILIATION_ENABLED must be disabled")
             if database.scheme != "postgresql+asyncpg" or not database.hostname:
                 violations.append("DATABASE_URL must use postgresql+asyncpg")
+            if self.database_pool_size + self.database_max_overflow > 10:
+                violations.append(
+                    "staging database connections must be bounded to 10"
+                )
             if not self.event_broker_required:
                 violations.append("EVENT_BROKER_REQUIRED must be enabled")
             if broker.scheme not in {"redis", "rediss"} or not broker.hostname:
