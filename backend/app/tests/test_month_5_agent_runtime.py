@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from datetime import timedelta
 from pathlib import Path
 
@@ -403,6 +404,12 @@ async def test_agent_runtime_publishes_correlated_lifecycle_events():
     assert {
         message.correlation_id for message in received
     } == {"runtime-correlation-1"}
+    assert len({message.event_id for message in received}) == len(received)
+    assert all(
+        len(message.event_id) == 36
+        and str(uuid.UUID(message.event_id)) == message.event_id
+        for message in received
+    )
     assert received[-1].payload["output"]["agent_name"] == agent.name
     assert received[-1].payload["output"]["status"] == "COMPLETED"
 
@@ -442,6 +449,105 @@ async def test_queue_worker_processes_enqueued_job():
     assert processed.status == "COMPLETED"
     assert trace is not None
     assert trace.job.output is not None
+
+
+async def test_queue_worker_uses_bounded_parallel_slots():
+    class ProbeWorker(AgentRuntimeWorker):
+        def __init__(self, stop_event: asyncio.Event) -> None:
+            runtime = AgentRuntime(AgentRegistry([SuccessfulAgent()]))
+            super().__init__(
+                runtime,
+                worker_id="probe-worker",
+                poll_interval_seconds=0.01,
+                max_concurrency=4,
+            )
+            self.stop_event = stop_event
+            self.active = 0
+            self.max_active = 0
+            self.completed = 0
+
+        async def run_once(self):
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            await asyncio.sleep(0.02)
+            self.active -= 1
+            self.completed += 1
+            if self.completed >= 4:
+                self.stop_event.set()
+            return None
+
+    stop_event = asyncio.Event()
+    worker = ProbeWorker(stop_event)
+
+    await worker.run(stop_event)
+
+    assert worker.max_active == 4
+
+
+async def test_execute_waits_for_active_background_worker_without_lease_race():
+    class DelayedAgent(SuccessfulAgent):
+        name = "DelayedAgent"
+
+        async def _analyze(self, agent_input: AgentInput) -> AgentOutput:
+            await asyncio.sleep(0.05)
+            return await super()._analyze(agent_input)
+
+    class CountingRepository(InMemoryAgentRuntimeRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.trace_reads = 0
+
+        async def load_agent_execution_trace(self, execution_id: str):
+            self.trace_reads += 1
+            return await super().load_agent_execution_trace(execution_id)
+
+    agent = DelayedAgent()
+    repository = CountingRepository()
+    runtime = AgentRuntime(
+        AgentRegistry([agent]),
+        repository=repository,
+    )
+    worker = AgentRuntimeWorker(
+        runtime,
+        worker_id="background-worker",
+        poll_interval_seconds=0.001,
+        max_concurrency=2,
+    )
+    stop_event = asyncio.Event()
+    worker_task = asyncio.create_task(worker.run(stop_event))
+    while not runtime.background_worker_active:
+        await asyncio.sleep(0)
+
+    try:
+        trace = await runtime.execute(_request(agent))
+    finally:
+        stop_event.set()
+        await worker_task
+
+    assert trace.job.status == "COMPLETED"
+    assert trace.job.attempt_count == 1
+    assert len(trace.attempts) == 1
+    assert trace.attempts[0].worker_id == "background-worker"
+    assert agent.total_runs == 1
+    assert repository.trace_reads <= 3
+    assert runtime._completion_waiters == {}
+
+
+async def test_background_worker_stop_wakes_inline_fallback_immediately():
+    agent = SuccessfulAgent()
+    runtime = AgentRuntime(AgentRegistry([agent]), lease_seconds=30)
+    runtime._background_worker_started()
+    execution_task = asyncio.create_task(runtime.execute(_request(agent)))
+    while not runtime._completion_waiters:
+        await asyncio.sleep(0)
+
+    runtime._background_worker_stopped()
+    trace = await asyncio.wait_for(execution_task, timeout=1)
+
+    assert trace.job.status == "COMPLETED"
+    assert trace.attempts[0].worker_id.startswith("inline-agent-")
+    assert agent.total_runs == 1
+    assert runtime._completion_waiters == {}
 
 
 async def test_expired_lease_is_recovered_without_consuming_new_attempt():

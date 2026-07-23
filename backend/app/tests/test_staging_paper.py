@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from ssl import CERT_REQUIRED, VERIFY_X509_STRICT
 
 import pytest
 
 from app.core.config import Settings
+from app.database.session import _prepare_asyncpg_connection
 from app.operations.staging import (
     evaluate_watchdog_snapshot,
     validate_staging_environment,
@@ -143,8 +145,91 @@ def test_hosted_staging_requires_tls_for_postgres_and_redis():
     report = validate_staging_environment(hosted_settings(), hosted)
     assert report.database_tls_required is True
     assert report.broker_tls_required is True
+    assert report.broker_private_network_required is False
+    assert report.broker_transport_encrypted is True
     assert report.hosted_database_project_pinned is True
     assert report.hosted_broker_host_pinned is True
+
+
+def test_fly_upstash_requires_explicit_private_6pn_boundary():
+    private_host = "fly-capital-cipher-staging.upstash.io"
+    settings = hosted_settings(
+        REDIS_URL=(
+            "redis://default:"
+            "redis-password-abcdefghijklmnopqrstuvwxyz-0123456789@"
+            f"{private_host}:6379/0"
+        ),
+    )
+    environment = hosted_environment(
+        STAGING_EXPECTED_REDIS_HOST=private_host,
+        STAGING_REDIS_PRIVATE_NETWORK="FLY_6PN",
+    )
+
+    report = validate_staging_environment(settings, environment)
+
+    assert report.broker_tls_required is False
+    assert report.broker_private_network_required is True
+    assert report.broker_transport_encrypted is True
+
+
+def test_fly_6pn_attestation_rejects_non_private_upstash_host():
+    with pytest.raises(RuntimeError) as raised:
+        validate_staging_environment(
+            hosted_settings(
+                REDIS_URL=(
+                    "redis://default:"
+                    "redis-password-abcdefghijklmnopqrstuvwxyz-0123456789@"
+                    "public.example.invalid:6379/0"
+                )
+            ),
+            hosted_environment(
+                STAGING_EXPECTED_REDIS_HOST="public.example.invalid",
+                STAGING_REDIS_PRIVATE_NETWORK="FLY_6PN",
+            ),
+        )
+
+    assert "HOSTED_REDIS_PRIVATE_NETWORK_INVALID" in str(raised.value)
+    assert "HOSTED_REDIS_REQUIRES_TLS" in str(raised.value)
+
+
+def test_asyncpg_tls_query_is_converted_to_verified_connect_args(
+    monkeypatch,
+):
+    observed: dict[str, str | None] = {}
+
+    class FakeContext:
+        check_hostname = True
+        verify_mode = CERT_REQUIRED
+        verify_flags = VERIFY_X509_STRICT
+
+    def fake_create_default_context(*, cafile=None):
+        observed["cafile"] = cafile
+        return FakeContext()
+
+    monkeypatch.setattr(
+        "app.database.session.ssl.create_default_context",
+        fake_create_default_context,
+    )
+
+    engine_url, connect_args = _prepare_asyncpg_connection(
+        hosted_settings().database_url
+    )
+
+    assert "sslmode=" not in engine_url
+    assert "sslrootcert=" not in engine_url
+    assert observed["cafile"] == "/run/secrets/supabase-ca.crt"
+    assert connect_args["ssl"].check_hostname is True
+    assert connect_args["ssl"].verify_mode == CERT_REQUIRED
+    assert connect_args["ssl"].verify_flags & VERIFY_X509_STRICT == 0
+
+
+@pytest.mark.parametrize("ssl_mode", ["disable", "allow", "prefer"])
+def test_asyncpg_connection_rejects_weak_tls_modes(ssl_mode):
+    with pytest.raises(ValueError, match="must require certificate encryption"):
+        _prepare_asyncpg_connection(
+            "postgresql+asyncpg://runtime:secret@db.example.invalid/postgres"
+            f"?sslmode={ssl_mode}"
+        )
 
 
 def test_hosted_staging_rejects_privileged_database_users():
@@ -317,6 +402,7 @@ def test_hosted_compose_uses_only_external_pinned_data_services():
 
     assert "STAGING_DEPLOYMENT_TARGET: HOSTED" in compose
     assert "STAGING_EXPECTED_REDIS_HOST" in compose
+    assert "STAGING_REDIS_PRIVATE_NETWORK" in compose
     assert "DATABASE_POOL_SIZE" in compose
     assert "DATABASE_MAX_OVERFLOW" in compose
     assert "STAGING_POSTGRES_PASSWORD" not in compose
@@ -337,8 +423,13 @@ def test_hosted_compose_uses_only_external_pinned_data_services():
 def test_fly_staging_is_paper_only_fail_closed_and_region_pinned():
     config = (REPOSITORY_ROOT / "deploy" / "fly" / "fly.toml").read_text()
     dockerfile = (REPOSITORY_ROOT / "deploy" / "fly" / "Dockerfile").read_text()
+    application_config = (
+        REPOSITORY_ROOT / "backend" / "app" / "core" / "config.py"
+    ).read_text()
 
     assert 'primary_region = "gru"' in config
+    assert 'app_version: str = "0.26.0"' in application_config
+    assert 'dockerfile = "Dockerfile"' in config
     assert 'release_command = "python scripts/validate_staging_paper.py"' in config
     assert 'backend = "python scripts/run_staging_backend.py"' in config
     assert 'watchdog = "python scripts/run_staging_watchdog.py"' in config
@@ -346,6 +437,11 @@ def test_fly_staging_is_paper_only_fail_closed_and_region_pinned():
     assert 'OMS_EXECUTION_ENVIRONMENT = "PAPER"' in config
     assert 'OMS_TESTNET_ENABLED = "0"' in config
     assert 'OMS_WORKER_ENABLED = "0"' in config
+    assert 'DATABASE_POOL_SIZE = "3"' in config
+    assert "CAPITAL_CIPHER_BINANCE_TESTNET_KEY_ID" not in config
+    assert "CAPITAL_CIPHER_BINANCE_TESTNET_SIGNING_SECRET" not in config
+    assert "CAPITAL_CIPHER_BYBIT_TESTNET_KEY_ID" not in config
+    assert "CAPITAL_CIPHER_BYBIT_TESTNET_SIGNING_SECRET" not in config
     assert 'OMS_RECONCILIATION_ENABLED = "0"' in config
     assert 'auto_stop_machines = "off"' in config
     assert 'processes = ["backend"]' in config
@@ -354,6 +450,7 @@ def test_fly_staging_is_paper_only_fail_closed_and_region_pinned():
     assert 'initial_size = "20gb"' in config
     assert 'guest_path = "/run/secrets/supabase-ca.crt"' in config
     assert 'secret_name = "SUPABASE_CA_CERT_B64"' in config
+    assert 'STAGING_REDIS_PRIVATE_NETWORK = "FLY_6PN"' in config
     assert "DATABASE_URL" not in config
     assert "REDIS_URL" not in config
     assert "ADMIN_API_KEY" not in config
