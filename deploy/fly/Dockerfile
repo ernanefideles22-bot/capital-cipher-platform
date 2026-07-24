@@ -1,5 +1,6 @@
-# Capital Cipher hosted PAPER backend, dashboard, and watchdog.
-# The build context is the repository root (see fly.toml).
+# Capital Cipher hosted safe-mode backend and dashboard image.
+# The Fly process command selects PAPER staging or isolated TESTNET; the image
+# itself never contains credentials. The build context is the repository root.
 FROM node:22-slim AS dashboard-build
 
 WORKDIR /workspace

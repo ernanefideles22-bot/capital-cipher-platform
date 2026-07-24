@@ -60,6 +60,10 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
         if ctx.database is not None:
             if settings.app_env == "staging":
                 await ctx.database.verify_schema()
+            elif ctx.oms_service.target_environment.value == "TESTNET":
+                # TESTNET is a hosted, migration-owned database boundary. It
+                # must never create or mutate schema objects at boot.
+                await ctx.database.verify_schema()
             else:
                 await ctx.database.create_all()
             if ctx.oms_service.target_environment.value == "TESTNET":

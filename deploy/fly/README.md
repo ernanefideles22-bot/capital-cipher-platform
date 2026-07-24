@@ -3,6 +3,10 @@
 This directory binds the provider-neutral hosted staging contract to Fly.io.
 It does not authorize TESTNET or LIVE and contains no credentials.
 
+The separate Bybit TESTNET contract is in `deploy/testnet/` and uses
+`fly-testnet.toml`. Do not copy the PAPER secrets or the PAPER database/Redis
+URLs into that app; its preflight requires a distinct resource namespace.
+
 ## Fixed topology
 
 - Region: `gru` (Sao Paulo).
