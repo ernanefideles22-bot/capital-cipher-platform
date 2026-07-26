@@ -334,6 +334,7 @@ class Orchestrator:
                 source="MarketDataAdapter",
                 correlation_id=correlation_id,
             )
+            self._observe_stage("pre_agent", started)
             operational_cycle_attempted = True
             decision = await self._evaluate(candle, correlation_id, quality)
             operational_cycle_succeeded = decision is not None
@@ -407,6 +408,13 @@ class Orchestrator:
                 },
             )
 
+    def _observe_stage(self, stage: str, started: float) -> None:
+        if self._operations is not None:
+            self._operations.observe_orchestrator_stage(
+                stage,
+                duration_ms=(time.monotonic() - started) * 1_000,
+            )
+
     async def _evaluate(
         self,
         candle: Candle,
@@ -444,6 +452,7 @@ class Orchestrator:
             )
         agent_batch_started = time.monotonic()
         agent_outputs = await self._agent_runtime.execute_many(requests)
+        self._observe_stage("agent_runtime", agent_batch_started)
         if self._operations is not None:
             try:
                 await self._operations.observe_agent_batch(
@@ -462,6 +471,7 @@ class Orchestrator:
                     metadata={"error_type": type(exc).__name__},
                 )
         if self._agent_evaluation is not None:
+            agent_evaluation_started = time.monotonic()
             try:
                 await self._agent_evaluation.observe(
                     candle=candle,
@@ -481,8 +491,14 @@ class Orchestrator:
                     correlation_id=correlation_id,
                     metadata={"error_type": type(exc).__name__},
                 )
+            finally:
+                self._observe_stage(
+                    "agent_evaluation",
+                    agent_evaluation_started,
+                )
 
         # Strategy selection and regime rules (docs/26).
+        decision_engine_started = time.monotonic()
         trend_output = next((o for o in agent_outputs if o.agent_name == "TrendAgent"), None)
         regime_value = (
             trend_output.evidence.get("market_regime") if trend_output else None
@@ -525,9 +541,11 @@ class Orchestrator:
                     else decision.warnings,
                 }
             )
+        self._observe_stage("decision_engine", decision_engine_started)
 
         consensus = None
         if self._weighted_consensus is not None:
+            consensus_started = time.monotonic()
             try:
                 consensus = await self._weighted_consensus.evaluate(
                     baseline=decision,
@@ -582,12 +600,15 @@ class Orchestrator:
                     correlation_id=correlation_id,
                     metadata={"error_type": type(exc).__name__},
                 )
+            finally:
+                self._observe_stage("consensus", consensus_started)
 
         portfolio_proposal = None
         if (
             consensus is not None
             and self._portfolio_construction is not None
         ):
+            portfolio_started = time.monotonic()
             try:
                 portfolio_proposal = (
                     await self._portfolio_construction.propose(
@@ -620,10 +641,13 @@ class Orchestrator:
                     correlation_id=correlation_id,
                     metadata={"error_type": type(exc).__name__},
                 )
+            finally:
+                self._observe_stage("portfolio", portfolio_started)
         self.last_decision = decision
         self.recent_decisions.append(decision)
 
         # Audit the candidate BEFORE risk (docs/04: no decision without evidence).
+        decision_persistence_started = time.monotonic()
         await self._audit.record(
             correlation_id=correlation_id,
             audit_type="DECISION_CANDIDATE",
@@ -640,6 +664,10 @@ class Orchestrator:
             source="Orchestrator",
             correlation_id=correlation_id,
         )
+        self._observe_stage(
+            "decision_persistence",
+            decision_persistence_started,
+        )
 
         # Non-actionable decisions stop here.
         if decision.candidate_action not in (CandidateAction.BUY, CandidateAction.SELL):
@@ -648,6 +676,7 @@ class Orchestrator:
         # Risk validation — mandatory, cannot be skipped (ADR-001).
         quant_output = next((o for o in agent_outputs if o.agent_name == "QuantAgent"), None)
         atr = quant_output.evidence.get("atr") if quant_output else None
+        risk_started = time.monotonic()
         risk_check = await self._risk.check(
             decision,
             entry_price=candle.close,
@@ -678,6 +707,7 @@ class Orchestrator:
                 else None
             ),
         )
+        self._observe_stage("risk", risk_started)
         decision_after_risk = decision.model_copy(update={"risk_status": risk_check.risk_status})
         self.last_decision = decision_after_risk
         self.recent_decisions[-1] = decision_after_risk
@@ -702,6 +732,7 @@ class Orchestrator:
             return decision_after_risk
 
         if self._oms is not None:
+            execution_started = time.monotonic()
             order = await self._oms.submit_approved(
                 decision_after_risk,
                 risk_check,
@@ -716,9 +747,11 @@ class Orchestrator:
                 source="OMSService",
                 correlation_id=correlation_id,
             )
+            self._observe_stage("execution", execution_started)
         else:
             # Compatibility path for isolated unit construction. Production
             # composition always injects the OMS boundary.
+            execution_started = time.monotonic()
             order = await self._paper.create_order(
                 decision_after_risk,
                 risk_check,
@@ -733,4 +766,5 @@ class Orchestrator:
                 source="PaperTradingEngine",
                 correlation_id=correlation_id,
             )
+            self._observe_stage("execution", execution_started)
         return decision_after_risk

@@ -184,7 +184,9 @@ AGENT_TIMEOUT_MS=5000
 AGENT_MAX_ATTEMPTS=3
 AGENT_MAX_CONCURRENCY=8
 AGENT_WORKER_ENABLED=1
+AGENT_WORKER_MAX_CONCURRENCY=4
 AGENT_WORKER_POLL_INTERVAL_SECONDS=0.25
+AGENT_WORKER_BATCH_SIZE=4
 AGENT_LEASE_SECONDS=30
 AGENT_RETRY_BASE_SECONDS=0.05
 AGENT_RETRY_MAX_SECONDS=0.2
@@ -192,6 +194,59 @@ AGENT_RETRY_MAX_SECONDS=0.2
 
 Validation constrains timeouts, concurrency, attempts, leases, polling, and
 retry delays. Inconsistent retry bounds prevent application startup.
+Agent calculation concurrency and durable worker concurrency are independent:
+hosted deployments can keep agent calculation parallelism while matching
+transactional workers to the bounded database pool.
+
+### Hosted PAPER validation
+
+The Fly/Supabase staging validation on 2026-07-23 kept the database pool at
+three connections, ran three durable workers, and claimed eight jobs per
+worker cohort while retaining eight-way agent calculation concurrency.
+
+Across 12 consecutive natural 15-minute market cycles:
+
+- 3,600 of 3,600 agent jobs completed on the first attempt;
+- no job failed or entered dead letter;
+- every cycle persisted 300 requested, started, and completed events;
+- every cycle persisted weighted consensus and portfolio proposal evidence;
+- the 300-agent event window ranged from 6.156 to 9.343 seconds;
+- the complete candle-to-decision window ranged from 24.774 to 36.418 seconds.
+
+A pool-size experiment above the staging role's connection ceiling was rolled
+back immediately. Hosted worker concurrency must remain at or below the
+configured database pool. The remaining latency is after agent completion in
+forecast settlement, drift evaluation, consensus, portfolio, audit, and final
+decision persistence; it is not in the 300-agent runtime.
+
+The follow-up persistence optimization keeps those safety boundaries while
+replacing per-row identity reads with one bounded cohort lookup for agent
+forecasts, realized outcomes, and drift observations. Duplicate input
+identities are validated before database mutation, existing immutable
+artifacts are compared with their contracts, and result ordering remains
+stable. Operational snapshots now expose fixed-cardinality timings for each
+orchestrator stage so hosted measurements can distinguish database work from
+agent calculation without increasing the connection pool.
+
+Fly version 21 validated that change on the same three-connection PAPER
+boundary. The six most recent cycles completed 1,800 of 1,800 jobs on their
+first attempt, with no failure or dead letter, and each correlation persisted
+exactly one weighted consensus and one portfolio proposal. Two independent
+three-cycle operational windows reported:
+
+- complete-cycle averages of 15.304 and 17.642 seconds, with maxima of 16.086
+  and 18.724 seconds;
+- agent-runtime averages of 11.965 and 13.559 seconds;
+- agent-evaluation averages of 1.573 and 1.470 seconds;
+- consensus averages of 0.954 and 1.511 seconds;
+- portfolio persistence averages of 0.238 and 0.303 seconds;
+- final decision persistence averages of 0.227 and 0.282 seconds.
+
+The previously isolated post-agent path therefore fell from approximately
+18-27 seconds to approximately 3.2-4.0 seconds. The strict five-second
+orchestrator SLO remains intentionally breached: the dominant constraint is
+now the durable 300-agent runtime rather than forecast, drift, consensus, or
+portfolio persistence. No pool expansion was used to obtain this result.
 
 ## PostgreSQL and Supabase lifecycle
 

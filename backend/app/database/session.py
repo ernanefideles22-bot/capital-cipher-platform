@@ -2,10 +2,54 @@
 
 from __future__ import annotations
 
+import ssl
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
 from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.database.models import Base, INTERNAL_SCHEMA
+
+
+def _prepare_asyncpg_connection(url: str) -> tuple[str, dict[str, object]]:
+    """Translate libpq-style TLS query options into asyncpg connect args."""
+
+    parsed = urlsplit(url)
+    if parsed.scheme != "postgresql+asyncpg":
+        return url, {}
+
+    retained_query: list[tuple[str, str]] = []
+    tls_query: dict[str, str] = {}
+    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        normalized_key = key.lower()
+        if normalized_key in {"sslmode", "sslrootcert"}:
+            if normalized_key in tls_query:
+                raise ValueError(f"duplicate PostgreSQL TLS option: {normalized_key}")
+            tls_query[normalized_key] = value
+        else:
+            retained_query.append((key, value))
+
+    if not tls_query:
+        return url, {}
+
+    ssl_mode = tls_query.get("sslmode", "verify-full").lower()
+    root_certificate = tls_query.get("sslrootcert") or None
+    if ssl_mode not in {"require", "verify-ca", "verify-full"}:
+        raise ValueError("PostgreSQL TLS mode must require certificate encryption")
+
+    tls_context = ssl.create_default_context(cafile=root_certificate)
+    if root_certificate and hasattr(ssl, "VERIFY_X509_STRICT"):
+        # Supabase's published 2021 CA predates the key-usage extension that
+        # OpenSSL strict verification now requires. Keep chain and hostname
+        # verification enabled while accepting that legacy CA encoding.
+        tls_context.verify_flags &= ~ssl.VERIFY_X509_STRICT
+    if ssl_mode == "verify-ca":
+        tls_context.check_hostname = False
+
+    engine_url = urlunsplit(
+        parsed._replace(query=urlencode(retained_query, doseq=True))
+    )
+    return engine_url, {"ssl": tls_context}
 
 
 class Database:
@@ -27,6 +71,7 @@ class Database:
                 "schema_translate_map": {INTERNAL_SCHEMA: None},
             }
         else:
+            engine_url, connect_args = _prepare_asyncpg_connection(url)
             engine_options = {
                 "pool_size": pool_size,
                 "max_overflow": max_overflow,
@@ -34,6 +79,9 @@ class Database:
                 "pool_recycle": pool_recycle_seconds,
                 "pool_pre_ping": True,
             }
+            if connect_args:
+                engine_options["connect_args"] = connect_args
+            url = engine_url
         self.engine = create_async_engine(
             url,
             echo=False,

@@ -27,6 +27,7 @@ OMS                  PAPER mirror, Binance Spot/Bybit linear TESTNET outbox
 turbo.json           monorepo task graph
 docker-compose.yml   backend + PostgreSQL (development)
 deploy/staging/      local and hosted fail-closed PAPER shadow staging
+deploy/fly/          Fly.io Sao Paulo binding for hosted PAPER staging
 ```
 
 Install the JavaScript workspace with `pnpm install`, install the backend with
@@ -56,6 +57,7 @@ architecture and completion evidence:
 - [Month 12 independent audit and release readiness](docs/month-12-release-readiness.md)
 - [Staging PAPER and real-time shadow operations](docs/staging-paper-shadow.md)
 - [Hosted staging provider gate](docs/hosted-staging-provider-gate.md)
+- [Fly.io hosted PAPER deployment](deploy/fly/README.md)
 
 The specification repository remains the authoritative product and
 architecture specification. This repository is the executable platform.

@@ -25,7 +25,7 @@ class Settings(BaseSettings):
 
     app_env: str = Field(default="local", alias="APP_ENV")
     app_name: str = "capital-cipher-api"
-    app_version: str = "0.25.0"
+    app_version: str = "0.26.0"
 
     system_mode: str = Field(default="PAPER", alias="SYSTEM_MODE")
     oms_execution_environment: str = Field(
@@ -151,6 +151,12 @@ class Settings(BaseSettings):
         alias="OUTBOX_POLL_INTERVAL_SECONDS",
         ge=0.1,
         le=60.0,
+    )
+    event_publication_max_concurrency: int = Field(
+        default=16,
+        alias="EVENT_PUBLICATION_MAX_CONCURRENCY",
+        ge=1,
+        le=1_000,
     )
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     operations_monitor_enabled: bool = Field(
@@ -475,11 +481,23 @@ class Settings(BaseSettings):
         default=True,
         alias="AGENT_WORKER_ENABLED",
     )
+    agent_worker_max_concurrency: int = Field(
+        default=4,
+        alias="AGENT_WORKER_MAX_CONCURRENCY",
+        ge=1,
+        le=100,
+    )
     agent_worker_poll_interval_seconds: float = Field(
         default=0.25,
         alias="AGENT_WORKER_POLL_INTERVAL_SECONDS",
         gt=0,
         le=60,
+    )
+    agent_worker_batch_size: int = Field(
+        default=4,
+        alias="AGENT_WORKER_BATCH_SIZE",
+        ge=1,
+        le=32,
     )
     agent_lease_seconds: int = Field(
         default=30,
@@ -656,6 +674,10 @@ class Settings(BaseSettings):
             if self.database_pool_size + self.database_max_overflow > 10:
                 violations.append(
                     "staging database connections must be bounded to 10"
+                )
+            if self.agent_worker_max_concurrency > self.database_pool_size:
+                violations.append(
+                    "staging agent workers cannot exceed the database pool"
                 )
             if not self.event_broker_required:
                 violations.append("EVENT_BROKER_REQUIRED must be enabled")

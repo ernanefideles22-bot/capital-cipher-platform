@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from app.core.event_bus import EventBus, Topics
 
 
@@ -27,6 +30,20 @@ async def test_journal_happens_before_delivery():
     )
 
     assert call_order == ["journal", "handler"]
+
+
+async def test_event_identity_must_fit_durable_journal_width():
+    bus = EventBus()
+
+    with pytest.raises(ValidationError, match="at most 36 characters"):
+        await bus.publish(
+            Topics.SYSTEM_EVENTS,
+            "SYSTEM_STARTED",
+            {},
+            source="test",
+            correlation_id="correlation-1",
+            event_id="x" * 37,
+        )
 
 
 async def test_duplicate_event_is_delivered_only_once():

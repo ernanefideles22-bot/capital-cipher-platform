@@ -3,13 +3,16 @@ import type {
   Decision, PaperOrder, PaperPerformance, PerformanceReport, RiskStatus, SystemStatus,
 } from "../types";
 
-const BASE = "/api/v1";
+// Keep the default same-origin for a dashboard served by the backend. A
+// separate static host may provide an explicit HTTPS API origin at build time;
+// credentials are never read from Vite environment variables.
+const BASE = (import.meta.env.VITE_API_BASE_URL ?? "/api/v1").replace(/\/$/, "");
 
 async function get<T>(path: string): Promise<T> {
   const response = await fetch(`${BASE}${path}`);
-  const body = (await response.json()) as ApiResponse<T>;
-  if (!body.success || body.data === null) {
-    throw new Error(body.error?.message ?? "Request failed");
+  const body = (await response.json().catch(() => null)) as ApiResponse<T> | null;
+  if (!response.ok || !body?.success || body.data === null) {
+    throw new Error(body?.error?.message ?? `Request failed (${response.status})`);
   }
   return body.data;
 }
@@ -22,8 +25,10 @@ export const api = {
   riskLimits: () => get<Record<string, number>>("/risk/limits"),
   paperOrders: () => get<{ orders: PaperOrder[] }>("/paper/orders"),
   paperPerformance: () => get<PaperPerformance>("/paper/performance"),
-  candles: (symbol: string, timeframe: string) =>
-    get<{ candles: Candle[] }>(`/market/candles?symbol=${symbol}&timeframe=${timeframe}&limit=200`),
+  candles: (symbol: string, timeframe: string) => {
+    const params = new URLSearchParams({ symbol, timeframe, limit: "200" });
+    return get<{ candles: Candle[] }>(`/market/candles?${params.toString()}`);
+  },
   auditEvents: () => get<{ events: AuditEvent[] }>("/audit/events"),
   auditChain: (correlationId: string) =>
     get<{ chain: AuditEvent[] }>(`/audit/correlation/${correlationId}`),

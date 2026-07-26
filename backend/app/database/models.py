@@ -2432,6 +2432,6 @@ class AuditLogModel(Base):
     correlation_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
     audit_type: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     entity_type: Mapped[str] = mapped_column(Text, nullable=False)
-    entity_id: Mapped[str | None] = mapped_column(String(36))
+    entity_id: Mapped[str | None] = mapped_column(Text)
     payload: Mapped[dict] = mapped_column(JsonType, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
