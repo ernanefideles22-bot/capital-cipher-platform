@@ -51,7 +51,7 @@ class ReleaseReadinessRepository(Protocol):
 
 
 class ReleaseReadinessService:
-    """Stores evidence and evaluates TESTNET only; it cannot alter runtime."""
+    """Stores TESTNET evidence and provides a fresh runtime authorization check."""
 
     def __init__(
         self, repository: ReleaseReadinessRepository | None = None
@@ -77,6 +77,24 @@ class ReleaseReadinessService:
         self._attestations.extend(reversed(attestations))
         self._drills.extend(reversed(drills))
         self._decisions.extend(reversed(decisions))
+
+    async def runtime_authorized(self, source_revision: str) -> bool:
+        """No cached approval: a newer blocked decision or DB failure stops entries."""
+        if self._repository is None or len(source_revision) != 40:
+            return False
+        decisions = await self._repository.list_release_gate_decisions(limit=1)
+        if not decisions:
+            return False
+        latest = decisions[0]
+        now = utcnow()
+        return (
+            latest.source_revision == source_revision
+            and latest.outcome == "APPROVED_TESTNET"
+            and latest.testnet_release_authorized
+            and latest.decided_at <= now
+            and latest.expires_at is not None
+            and latest.expires_at > now
+        )
 
     async def record_evidence(
         self, evidence: ReleaseEvidenceBundle

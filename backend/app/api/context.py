@@ -328,6 +328,7 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         execution_adapters[
             (target_exchange, ExecutionEnvironment.TESTNET)
         ] = testnet_adapter
+    release_readiness_service = ReleaseReadinessService(repository)
     oms_service = OMSService(
         target_environment=target_environment,
         target_exchange=target_exchange,
@@ -338,6 +339,9 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         repository=repository,
         lease_seconds=settings.oms_command_lease_seconds,
         poll_interval_seconds=settings.oms_worker_poll_interval_seconds,
+        release_guard=lambda: release_readiness_service.runtime_authorized(
+            settings.app_source_revision
+        ),
     )
     reconciliation_service = ReconciliationService(
         adapter=oms_service.adapter,
@@ -425,7 +429,6 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         paper_engine=paper_engine,
         repository=repository,
     )
-    release_readiness_service = ReleaseReadinessService(repository)
     decision_engine = DecisionEngine(
         minimum_candidate_confidence=settings.minimum_candidate_confidence
     )

@@ -2978,6 +2978,29 @@ class Repository:
         except Exception as exc:
             raise DatabaseError(f"Failed to persist paper order: {exc}") from exc
 
+    async def load_paper_orders(self) -> list[PaperOrder]:
+        """Restore the durable account, including its complete realized history."""
+        try:
+            async with self._db.session() as session:
+                rows = list(await session.scalars(select(PaperOrderModel)))
+                orders = []
+                for row in rows:
+                    values = {
+                        field: getattr(row, field)
+                        for field in PaperOrder.model_fields
+                        if hasattr(row, field)
+                    }
+                    values["paper_order_id"] = row.id
+                    for field in ("created_at", "opened_at", "closed_at"):
+                        if values.get(field) is not None:
+                            values[field] = _as_utc(values[field])
+                    for field in ("fees_estimated", "slippage_estimated"):
+                        values[field] = values.get(field) or 0
+                    orders.append(PaperOrder.model_validate(values))
+                return orders
+        except Exception as exc:
+            raise DatabaseError("Failed to restore durable PAPER account") from exc
+
     async def load_open_position_exposures(self) -> list[PositionExposure]:
         try:
             async with self._db.session() as session:

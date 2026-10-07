@@ -69,6 +69,7 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
             if ctx.oms_service.target_environment.value == "TESTNET":
                 await ctx.database.verify_testnet_oms_schema()
         await ctx.risk_manager.initialize()
+        await ctx.paper_engine.initialize()
         await ctx.oms_service.initialize()
         if ctx.agent_runtime is not None:
             await ctx.agent_runtime.initialize()

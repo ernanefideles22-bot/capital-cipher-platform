@@ -54,7 +54,7 @@ export default function Overview() {
         <MetricCard label={t("systemMode")} value={status ? <StatusBadge value={status.mode} /> : "…"} detail={t("executionEnvironment")} />
         <MetricCard label={t("marketData")} value={status?.market_data ? <StatusBadge value={status.market_data} /> : "…"} detail={t("publicDataAdapter")} />
         <MetricCard label={t("database")} value={status?.database ? <StatusBadge value={status.database} /> : "…"} detail={t("persistenceHealth")} />
-        <MetricCard label={t("killSwitch")} value={risk?.kill_switch_active ? <span className="text-red-400">{t("active")}</span> : <span className="text-emerald-400">{t("clear")}</span>} detail={risk?.kill_switch_active ? risk.kill_switch_reason ?? t("requestFailed") : t("riskControlsAllow")} tone={risk?.kill_switch_active ? "negative" : "positive"} />
+        <MetricCard label={t("killSwitch")} value={!risk ? t("waitingTelemetry") : risk.kill_switch_active ? <span className="text-red-400">{t("active")}</span> : <span className="text-emerald-400">{t("clear")}</span>} detail={!risk ? t("waitingTelemetry") : risk.kill_switch_active ? risk.kill_switch_reason ?? t("requestFailed") : t("riskControlsAllow")} tone={!risk ? "warning" : risk.kill_switch_active ? "negative" : "positive"} />
       </div></section>
 
       <section><h2 className="mb-3 text-sm font-semibold text-slate-300">{t("researchRisk")}</h2><div className="grid grid-cols-2 gap-3 lg:grid-cols-4">

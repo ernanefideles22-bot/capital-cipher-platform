@@ -51,6 +51,55 @@ async def test_stop_loss_triggers(paper_engine, risk_manager):
     assert paper_engine.balance < paper_engine.initial_balance
 
 
+@pytest.mark.parametrize("action,open_price", [(CandidateAction.BUY, 80), (CandidateAction.SELL, 120)])
+async def test_stop_gap_executes_at_adverse_open(paper_engine, risk_manager, action, open_price):
+    decision = make_decision(action=action)
+    check = await approved_check(risk_manager, decision)
+    await paper_engine.create_order(decision, check, current_price=100)
+    candle = make_candle(open_price, open_=open_price, high=open_price+1, low=open_price-1)
+    closed = await paper_engine.on_candle(candle)
+    assert closed[0].exit_price == open_price
+    assert closed[0].exit_reason == "STOP_LOSS"
+
+
+async def test_restart_restores_balance_open_positions_and_daily_risk(paper_engine, risk_manager):
+    from app.paper_trading.engine import PaperTradingEngine
+    from app.risk.manager import RiskManager
+    from app.audit.service import AuditService
+    from app.schemas.risk import RiskLimits
+    first = make_decision()
+    opened = await paper_engine.create_order(first, await approved_check(risk_manager, first), current_price=100)
+    closed = await paper_engine.close_order(opened.paper_order_id, 98, "STOP_LOSS")
+    second = make_decision()
+    remaining = await paper_engine.create_order(second, await approved_check(risk_manager, second), current_price=100)
+    class DurableOrders:
+        async def load_paper_orders(self):
+            return [remaining, closed]
+    audit = AuditService()
+    restored_risk = RiskManager(RiskLimits(), risk_manager._sm, audit)
+    restored = PaperTradingEngine(audit, restored_risk, repository=DurableOrders())
+    await restored.initialize()
+    assert restored.balance == paper_engine.balance
+    assert remaining.paper_order_id in restored.open_orders
+    assert restored.performance().net_pnl == paper_engine.performance().net_pnl
+    assert restored_risk.state.daily_pnl_percent == risk_manager.state.daily_pnl_percent
+    assert restored_risk.state.consecutive_losses == 1
+    assert restored_risk.state.total_drawdown_percent == risk_manager.state.total_drawdown_percent
+    await restored.initialize()
+    assert restored.balance == paper_engine.balance
+
+
+async def test_restart_rejects_incomplete_closed_trade(paper_engine, risk_manager):
+    decision = make_decision()
+    order = await paper_engine.create_order(decision, await approved_check(risk_manager, decision), current_price=100)
+    broken = order.model_copy(update={"status": PaperOrderStatus.CLOSED, "pnl": None})
+    class DurableOrders:
+        async def load_paper_orders(self): return [broken]
+    paper_engine._repository = DurableOrders()
+    with pytest.raises(ValidationError, match="Incomplete durable"):
+        await paper_engine.initialize()
+
+
 async def test_take_profit_triggers(paper_engine, risk_manager):
     decision = make_decision()
     check = await approved_check(risk_manager, decision)

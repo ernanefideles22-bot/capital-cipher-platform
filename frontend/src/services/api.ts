@@ -9,7 +9,7 @@ import type {
 const BASE = (import.meta.env.VITE_API_BASE_URL ?? "/api/v1").replace(/\/$/, "");
 
 async function get<T>(path: string): Promise<T> {
-  const response = await fetch(`${BASE}${path}`);
+  const response = await fetch(`${BASE}${path}`, { signal: AbortSignal.timeout(10000) });
   const body = (await response.json().catch(() => null)) as ApiResponse<T> | null;
   if (!response.ok || !body?.success || body.data === null) {
     throw new Error(body?.error?.message ?? `Request failed (${response.status})`);
@@ -49,7 +49,12 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
       body: JSON.stringify({ reason }),
+      signal: AbortSignal.timeout(10000),
     });
-    return response.json();
+    const body = await response.json().catch(() => null);
+    if (!response.ok || !body?.success || body.data?.kill_switch_active !== true) {
+      throw new Error(body?.error?.message ?? `Kill switch not confirmed (${response.status})`);
+    }
+    return body;
   },
 };

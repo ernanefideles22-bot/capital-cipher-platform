@@ -87,6 +87,7 @@ function AppShell() {
         </header>
         <div className="mx-auto max-w-[1800px] px-4 pb-8 sm:px-6 xl:px-8">
           <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-cyan-900/60 bg-cyan-950/25 px-4 py-3 text-xs text-cyan-100 shadow-[0_12px_40px_rgba(8,145,178,0.06)]"><span><span className="font-semibold tracking-wide text-cyan-200">{t("paperOnly")}</span><span className="mx-2 text-cyan-700">/</span>{t("noLiveExecution")}</span><span className="text-cyan-400/80">{t("auditedWorkflow")}</span></div>
+          {!systemStatus && <p role="status" className="mt-4 rounded border border-amber-600 p-3 text-sm text-amber-300">{t("waitingTelemetry")}</p>}
           <main className="py-7">{tab === "Overview" && <Overview />}{tab === "Market" && <Market />}{tab === "Agents" && <Agents />}{tab === "Decisions" && <Decisions />}{tab === "Risk" && <Risk />}{tab === "Paper" && <Paper />}{tab === "Backtest" && <Backtest />}{tab === "Reports" && <Reports />}{tab === "Audit" && <Audit />}</main>
         </div>
       </div>

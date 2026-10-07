@@ -96,7 +96,7 @@ class ReconciliationService:
         mismatches, reconciled = _compare_orders(local_orders, snapshot)
         if (
             snapshot.environment == ExecutionEnvironment.TESTNET
-            and snapshot.positions
+            and snapshot.exchange.value == "BYBIT"
         ):
             reconciled_by_id = {
                 order.oms_order_id: order for order in reconciled
