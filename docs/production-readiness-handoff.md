@@ -24,6 +24,8 @@ Auditoria original: main `4af5904842cebc623ecd1c66e7a0cefeb3557e09`. Esta branch
 - Build e TypeScript do frontend passaram (53 módulos); contratos Node passaram.
 - Python 3.12 isolado em `work/audit312`; SQLAlchemy 2.0.44 sem extensão C contorna restrição local. Não alteramos pin do projeto para isso.
 - PostgreSQL, Redis e migrações completas precisam de CI Linux. CI histórico de main não valida estas mudanças. Consultar o novo CI no PR desta branch.
+- CI Linux do commit `a69b0353a4b5a9f9c094476ca8f94c3a791ffa13` passou integralmente, incluindo migrações PostgreSQL, integração Redis, build e preflight de containers: https://github.com/ernanefideles22-bot/capital-cipher-platform/actions/runs/37702769629 . PR salvo: https://github.com/ernanefideles22-bot/capital-cipher-platform/pull/24 .
+- Verificação posterior no navegador encontrou contadores de agentes exibindo zero sem telemetria; foram corrigidos para estado desconhecido, sem destaque verde. Build/TypeScript e leitura da interface confirmaram a correção. Conferir também o CI do último commit do PR.
 - Sem deploy, teste ponta a ponta hospedado ou ordens enviadas à corretora nesta etapa.
 
 ## Infraestrutura e bloqueios observados
