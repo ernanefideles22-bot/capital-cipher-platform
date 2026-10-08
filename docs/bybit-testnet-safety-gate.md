@@ -1,8 +1,14 @@
 # Bybit Futures TESTNET safety gate
 
-Status: implementation gate. This document does not authorize TESTNET and does not introduce LIVE execution.
+Status: implementation controls complete; release authorization still requires final exact-SHA evidence, genuine independent external attestation, local no-network canary, and a short-lived `APPROVED_TESTNET` decision. This document does not authorize TESTNET and does not introduce LIVE execution.
 
 Frozen baseline revision: `e967c234220c673084ad3a9e618603b4ad3d52af`.
+
+## Implementation status
+
+The implementation branch now contains the mandatory technical controls defined below, including durable protected entries, explicit 1x leverage configuration, internal reduce-only flattening, monotonic partial-fill reconciliation, venue-derived Bybit TESTNET equity/risk state, and Bybit TESTNET market-data validation. Dedicated tests cover these boundaries. Hosted Railway staging remains PAPER, TESTNET credentials remain absent, and LIVE execution remains unavailable.
+
+The next formal step is not another execution feature: CI must pass on the exact final SHA, the Month 11 / Month 12 evidence must be regenerated for that SHA, and an independent external reviewer must attest the exact evidence bundle before the local canary and `APPROVED_TESTNET` gate can succeed.
 
 ## Release rule
 
@@ -45,7 +51,7 @@ The configured leverage may never exceed the central-risk approval.
 
 Any explicit close/exit command must be represented as an exit, persisted as such, and submitted with `reduceOnly=true`. A reduce-only command must never increase exposure. Entry and exit intent may not be inferred from side alone.
 
-Until this flow exists and is covered by tests, attached exchange TP/SL is the only accepted automatic protection and discretionary TESTNET exit submission remains blocked.
+The implemented emergency/canary flatten service is internal-only, requires the central kill switch, makes at most one write attempt per reconciled position, and verifies flat state through read-only reconciliation. It is not exposed by a public API route.
 
 ### 5. Partial-fill semantics
 
@@ -53,11 +59,11 @@ The OMS must prove all of the following under tests:
 
 - `PARTIALLY_FILLED` is non-terminal;
 - cumulative filled quantity is monotonic and cannot exceed requested quantity;
-- reconciliation updates the persisted cumulative fill exactly once;
+- reconciliation updates the persisted cumulative fill without allowing regression;
 - remaining reserved notional is based on unfilled quantity;
 - duplicate venue fills are idempotent;
 - cancel after partial fill does not erase the filled exposure;
-- a venue position inconsistent with cumulative fills triggers drift and the central kill switch when critical.
+- a venue position inconsistent with cumulative fills triggers critical drift and the central kill switch.
 
 ### 6. Exchange accounting and equity
 
