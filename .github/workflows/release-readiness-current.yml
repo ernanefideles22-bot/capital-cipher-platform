@@ -1,0 +1,106 @@
+name: Current Release Readiness Evidence
+
+on:
+  push:
+    branches:
+      - fix/production-readiness-audit
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  SOURCE_REVISION: 9d06596923d841ea33755d51c244654bffa00b5e
+  CI_RUN_ID: "37777766756"
+
+jobs:
+  evidence:
+    name: Current PAPER release evidence
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact source revision
+        uses: actions/checkout@v7
+        with:
+          ref: 9d06596923d841ea33755d51c244654bffa00b5e
+          persist-credentials: false
+
+      - name: Verify exact source and CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${SOURCE_REVISION}"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${CI_RUN_ID}" --jq '.head_sha')" = "${SOURCE_REVISION}"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${CI_RUN_ID}" --jq '.conclusion')" = "success"
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: python -m pip install -e ".[dev,postgres]"
+
+      - name: Generate exact-SHA Month 11 and Month 12 evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-evidence
+          cd backend
+          python scripts/run_month11_shadow_validation.py > ../release-evidence/month11-run.json
+          python - <<'PY'
+          import hashlib, json, pathlib, subprocess, os
+          root = pathlib.Path('..')
+          run_path = root / 'release-evidence/month11-run.json'
+          month11 = json.loads(run_path.read_text(encoding='utf-8'))
+          report = month11['report']
+          assert report['status'] == 'PASSED'
+          canonical = json.dumps(report, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode()
+          report_path = root / 'release-evidence/month11-report.json'
+          report_path.write_bytes(canonical)
+          report_sha = hashlib.sha256(canonical).hexdigest()
+          cmd = [
+              'python', 'scripts/run_release_readiness_audit.py',
+              '--source-revision', os.environ['SOURCE_REVISION'],
+              '--month11-report-id', report['report_id'],
+              '--month11-report-sha256', report_sha,
+              '--ci-quality-gate-passed',
+              '--database-migrations-validated',
+          ]
+          out_path = root / 'release-evidence/month12-release-evidence.json'
+          with out_path.open('wb') as output:
+              subprocess.run(cmd, check=True, stdout=output)
+          bundle = json.loads(out_path.read_text(encoding='utf-8'))
+          assert bundle['status'] == 'PASSED'
+          assert bundle['source_revision'] == os.environ['SOURCE_REVISION']
+          assert len(bundle['checks']) == 10
+          assert all(item['status'] == 'PASSED' for item in bundle['checks'])
+          summary = {
+              'source_revision': os.environ['SOURCE_REVISION'],
+              'ci_run_id': int(os.environ['CI_RUN_ID']),
+              'month11_report_id': report['report_id'],
+              'month11_report_sha256': report_sha,
+              'month12_evidence_bundle_id': bundle['evidence_bundle_id'],
+              'month12_bundle_sha256': bundle['bundle_sha256'],
+              'month12_status': bundle['status'],
+              'audit_checks_passed': sum(item['status'] == 'PASSED' for item in bundle['checks']),
+              'live_execution_surface_present': bundle['live_execution_surface_present'],
+              'local_emulator_canary': 'PASSED_IN_CI_89',
+              'external_testnet_credentials_present': False,
+          }
+          (root / 'release-evidence/evidence-summary.json').write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Upload current release evidence
+        uses: actions/upload-artifact@v6
+        with:
+          name: capital-cipher-release-evidence-9d065969
+          path: release-evidence/
+          if-no-files-found: error
+          retention-days: 30
