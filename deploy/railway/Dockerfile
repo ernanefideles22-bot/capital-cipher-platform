@@ -19,6 +19,7 @@ WORKDIR /app
 COPY backend/pyproject.toml backend/README.md ./
 COPY backend/app ./app
 COPY backend/scripts ./scripts
+COPY supabase/migrations ./migrations
 COPY --from=dashboard-build /workspace/frontend/dist ./frontend-dist
 RUN pip install --no-cache-dir ".[postgres]" \
     && apt-get update \
