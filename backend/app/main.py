@@ -39,6 +39,7 @@ from app.core.errors import CapitalCipherError
 from app.core.event_bus import Topics
 from app.core.logging import ServiceLogger, configure_logging
 from app.core.state_machine import SystemState
+from app.market_data.continuity import LiveCandleContinuityProcessor
 from app.market_data.runtime import (
     build_runtime_market_adapter,
     market_data_exchange,
@@ -304,9 +305,23 @@ def create_app(
                     ctx.settings.default_timeframe,
                 )
 
+            continuity_processor = (
+                LiveCandleContinuityProcessor(
+                    store=ctx.candle_store,
+                    repository=ctx.repository,
+                    backfill_service=ctx.backfill_service,
+                    orchestrator=ctx.orchestrator,
+                )
+                if ctx.repository is not None and ctx.backfill_service is not None
+                else None
+            )
+
             async def on_candle(candle):
                 ctx.market_connected = True
-                await ctx.orchestrator.on_candle_closed(candle)
+                if continuity_processor is not None:
+                    await continuity_processor.handle(candle)
+                else:
+                    await ctx.orchestrator.on_candle_closed(candle)
 
             async def on_raw_event(event):
                 # Store public source data before normalization or analysis.
