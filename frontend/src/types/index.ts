@@ -189,6 +189,32 @@ export interface SpecialistCandidate {
   };
 }
 
+export interface RegimeShadowRow {
+  agent_name: string;
+  agent_version: string;
+  market_regime: "BULL_TREND" | "BEAR_TREND" | "RANGE" | "HIGH_VOLATILITY" | "LOW_VOLATILITY" | "UNDEFINED";
+  sample_count: number;
+  directional_sample_count: number;
+  accuracy: number | null;
+  mean_brier_loss: number;
+  mean_marginal_contribution: number;
+  sample_sufficient: boolean;
+  minimum_samples: number;
+  decision_authority: false;
+  automatic_weight_adjustment: false;
+}
+
+export interface RegimeShadowReport {
+  rows: RegimeShadowRow[];
+  unavailable_historical_forecasts: number;
+  decision_authority: false;
+  automatic_weight_adjustment: false;
+  lookahead_protection: string;
+  classifier: string;
+  candidate_count: number;
+  candidate_names: string[];
+}
+
 export interface PerformanceReport {
   overall: PaperPerformance;
   breakdown_by: string;
