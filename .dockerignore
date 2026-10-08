@@ -31,3 +31,11 @@ frontend/node_modules
 frontend/dist
 packages/*/node_modules
 packages/*/dist
+
+# Railway staging applies the repository's versioned SQL migrations in a
+# fail-closed pre-deploy step. Include only those SQL files, not the rest of
+# the Supabase workspace.
+!supabase
+supabase/*
+!supabase/migrations
+!supabase/migrations/**
