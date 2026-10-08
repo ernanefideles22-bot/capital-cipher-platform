@@ -1,4 +1,4 @@
-name: Generate Release Evidence cd35514d
+name: Generate Release Evidence 2ea98b2f
 
 on:
   push:
@@ -11,8 +11,8 @@ permissions:
   actions: read
 
 env:
-  SOURCE_REVISION: cd35514d13258d47389e633887b82a098a490049
-  CI_RUN_ID: "37797247839"
+  SOURCE_REVISION: 2ea98b2fa23a797a0e96b815d2158a8ab5cf0eb9
+  CI_RUN_ID: "37800829070"
 
 jobs:
   evidence:
@@ -22,7 +22,7 @@ jobs:
       - name: Checkout exact audited revision
         uses: actions/checkout@v7
         with:
-          ref: cd35514d13258d47389e633887b82a098a490049
+          ref: 2ea98b2fa23a797a0e96b815d2158a8ab5cf0eb9
           persist-credentials: false
 
       - name: Verify exact source and CI
@@ -88,7 +88,7 @@ jobs:
               'month12_status': bundle['status'],
               'audit_checks_passed': sum(item['status'] == 'PASSED' for item in bundle['checks']),
               'live_execution_surface_present': bundle['live_execution_surface_present'],
-              'local_emulator_canary': 'PASSED_IN_CI_117',
+              'local_emulator_canary': 'PASSED_IN_CI_118',
               'external_testnet_credentials_present': False,
           }
           (root / 'release-evidence/evidence-summary.json').write_text(
@@ -100,7 +100,7 @@ jobs:
       - name: Upload release evidence
         uses: actions/upload-artifact@v6
         with:
-          name: capital-cipher-release-evidence-cd35514d
+          name: capital-cipher-release-evidence-2ea98b2f
           path: release-evidence/
           if-no-files-found: error
           retention-days: 30
