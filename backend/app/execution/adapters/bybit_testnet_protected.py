@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.core.errors import ExecutionRejectedError, SecurityError
+from app.core.errors import ExecutionRejectedError, ExternalServiceError, SecurityError
 from app.execution.adapters.bybit_testnet import (
     BYBIT_TESTNET_BASE_URL,
     BybitTestnetExecutionAdapter as LegacyBybitTestnetExecutionAdapter,
@@ -21,13 +21,14 @@ from app.schemas.oms import (
     OMSOrderStatus,
     OMSOrderType,
     VenueOrderSnapshot,
+    VenuePositionSnapshot,
 )
 
 
 class ProtectedBybitTestnetExecutionAdapter(
     LegacyBybitTestnetExecutionAdapter
 ):
-    """Require durable risk protection before any Bybit entry write."""
+    """Require durable risk protection before any Bybit TESTNET write."""
 
     def __init__(
         self,
@@ -103,6 +104,97 @@ class ProtectedBybitTestnetExecutionAdapter(
             order_type=order.order_type,
             status=OMSOrderStatus.SUBMITTED,
             quantity=order.quantity,
+        )
+
+    async def fetch_account_equity(self, asset: str = "USDT") -> float:
+        """Return venue equity for sizing; fail closed on missing/invalid data."""
+
+        normalized_asset = asset.strip().upper()
+        if normalized_asset != "USDT":
+            raise SecurityError(
+                "Bybit TESTNET risk accounting currently supports only USDT equity"
+            )
+        payload = await self._request(
+            "GET",
+            "/v5/account/wallet-balance",
+            params={"accountType": "UNIFIED", "coin": normalized_asset},
+            write=False,
+        )
+        matching: list[dict] = []
+        for account in payload.get("result", {}).get("list", []):
+            for coin in account.get("coin", []):
+                if str(coin.get("coin", "")).upper() == normalized_asset:
+                    matching.append(coin)
+        if len(matching) != 1:
+            raise ExternalServiceError(
+                "Bybit TESTNET returned ambiguous USDT equity"
+            )
+        try:
+            equity = float(matching[0].get("equity"))
+        except (TypeError, ValueError) as exc:
+            raise ExternalServiceError(
+                "Bybit TESTNET returned invalid USDT equity"
+            ) from exc
+        if equity <= 0:
+            raise SecurityError(
+                "Bybit TESTNET equity must be positive before risk sizing"
+            )
+        return equity
+
+    async def submit_reduce_only_exit(
+        self,
+        position: VenuePositionSnapshot,
+        *,
+        client_order_id: str,
+    ) -> VenueOrderSnapshot:
+        """Close one reconciled one-way position without increasing exposure."""
+
+        if (
+            position.exchange != self.exchange
+            or position.environment != ExecutionEnvironment.TESTNET
+        ):
+            raise SecurityError("Reduce-only exit is not for Bybit TESTNET")
+        if position.quantity <= 0:
+            raise SecurityError("Reduce-only exit requires positive position quantity")
+        normalized_client_id = client_order_id.strip()
+        if not 8 <= len(normalized_client_id) <= 36:
+            raise SecurityError("Reduce-only exit requires a bounded client order id")
+
+        close_side = (
+            OrderSide.SELL
+            if position.side == OrderSide.BUY
+            else OrderSide.BUY
+        )
+        body: dict[str, object] = {
+            "category": self._category,
+            "symbol": position.symbol.upper(),
+            "side": "Buy" if close_side == OrderSide.BUY else "Sell",
+            "orderType": "Market",
+            "qty": _number(position.quantity),
+            "timeInForce": "IOC",
+            "positionIdx": 0,
+            "orderLinkId": normalized_client_id,
+            "reduceOnly": True,
+        }
+        payload = await self._request(
+            "POST",
+            "/v5/order/create",
+            body=body,
+            write=True,
+        )
+        result = payload["result"]
+        return VenueOrderSnapshot(
+            exchange=self.exchange,
+            environment=ExecutionEnvironment.TESTNET,
+            venue_order_id=result["orderId"],
+            client_order_id=(
+                result.get("orderLinkId") or normalized_client_id
+            ),
+            symbol=position.symbol,
+            side=close_side,
+            order_type=OMSOrderType.MARKET,
+            status=OMSOrderStatus.SUBMITTED,
+            quantity=position.quantity,
         )
 
     async def _load_protection(

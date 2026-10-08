@@ -7,14 +7,18 @@ import json
 import httpx
 import pytest
 
-from app.core.errors import SecurityError
+from app.core.errors import ExternalServiceError, SecurityError
 from app.execution.adapters.bybit_testnet_protected import (
     ProtectedBybitTestnetExecutionAdapter,
 )
 from app.execution.bybit_protection import BybitOrderProtection
 from app.execution.credentials import TestnetCredentials
 from app.schemas.common import Exchange, OrderSide
-from app.schemas.oms import ExecutionEnvironment, OMSOrder
+from app.schemas.oms import (
+    ExecutionEnvironment,
+    OMSOrder,
+    VenuePositionSnapshot,
+)
 
 
 class _ProtectionStore:
@@ -192,4 +196,128 @@ async def test_bybit_existing_leverage_code_110043_is_idempotent():
 
     assert snapshot.venue_order_id == "venue-order-2"
     assert paths == ["/v5/position/set-leverage", "/v5/order/create"]
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_bybit_account_equity_is_read_from_testnet_wallet():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v5/account/wallet-balance"
+        assert request.url.params["accountType"] == "UNIFIED"
+        assert request.url.params["coin"] == "USDT"
+        return httpx.Response(
+            200,
+            json={
+                "retCode": 0,
+                "result": {
+                    "list": [
+                        {
+                            "coin": [
+                                {
+                                    "coin": "USDT",
+                                    "equity": "12543.21",
+                                }
+                            ]
+                        }
+                    ]
+                },
+            },
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://api-testnet.bybit.com",
+        transport=httpx.MockTransport(handler),
+    )
+    adapter = ProtectedBybitTestnetExecutionAdapter(
+        _credentials(),
+        client=client,
+        protection_store=_ProtectionStore(None),
+    )
+
+    equity = await adapter.fetch_account_equity()
+
+    assert equity == pytest.approx(12_543.21)
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_bybit_account_equity_fails_closed_when_wallet_is_ambiguous():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "retCode": 0,
+                "result": {"list": []},
+            },
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://api-testnet.bybit.com",
+        transport=httpx.MockTransport(handler),
+    )
+    adapter = ProtectedBybitTestnetExecutionAdapter(
+        _credentials(),
+        client=client,
+        protection_store=_ProtectionStore(None),
+    )
+
+    with pytest.raises(ExternalServiceError, match="ambiguous USDT equity"):
+        await adapter.fetch_account_equity()
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_bybit_reduce_only_exit_cannot_increase_exposure():
+    captured: list[dict] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v5/order/create"
+        body = json.loads(request.content.decode())
+        captured.append(body)
+        return httpx.Response(
+            200,
+            json={
+                "retCode": 0,
+                "result": {
+                    "orderId": "reduce-order-1",
+                    "orderLinkId": body["orderLinkId"],
+                },
+            },
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://api-testnet.bybit.com",
+        transport=httpx.MockTransport(handler),
+    )
+    adapter = ProtectedBybitTestnetExecutionAdapter(
+        _credentials(),
+        client=client,
+        protection_store=_ProtectionStore(None),
+    )
+    position = VenuePositionSnapshot(
+        exchange=Exchange.BYBIT,
+        environment=ExecutionEnvironment.TESTNET,
+        symbol="BTCUSDT",
+        side=OrderSide.BUY,
+        quantity=0.003,
+        entry_price=100_000.0,
+        mark_price=101_000.0,
+    )
+
+    snapshot = await adapter.submit_reduce_only_exit(
+        position,
+        client_order_id="cc-exit-123456",
+    )
+
+    assert snapshot.side == OrderSide.SELL
+    assert snapshot.quantity == pytest.approx(0.003)
+    assert len(captured) == 1
+    body = captured[0]
+    assert body["side"] == "Sell"
+    assert body["qty"] == "0.003"
+    assert body["reduceOnly"] is True
+    assert body["orderType"] == "Market"
+    assert body["timeInForce"] == "IOC"
+    assert "takeProfit" not in body
+    assert "stopLoss" not in body
     await client.aclose()
