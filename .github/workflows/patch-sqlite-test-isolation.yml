@@ -1,0 +1,47 @@
+name: Apply SQLite test isolation patch
+
+on:
+  push:
+    branches: [fix/bybit-testnet-safety]
+    paths:
+      - .github/workflows/patch-sqlite-test-isolation.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: fix/bybit-testnet-safety
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Isolate SQLite runtime tests
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('backend/app/tests/test_month_5_agent_runtime.py')
+          text = path.read_text(encoding='utf-8')
+          first_old = 'async def test_sqlite_runtime_persists_trace_and_immutable_evidence():\n    database = Database("sqlite+aiosqlite:///:memory:")'
+          first_new = 'async def test_sqlite_runtime_persists_trace_and_immutable_evidence(tmp_path):\n    database = Database(f"sqlite+aiosqlite:///{tmp_path / \'trace.db\'}")'
+          second_old = 'async def test_sqlite_runtime_batches_cohort_creation_idempotently():\n    database = Database("sqlite+aiosqlite:///:memory:")'
+          second_new = 'async def test_sqlite_runtime_batches_cohort_creation_idempotently(tmp_path):\n    database = Database(f"sqlite+aiosqlite:///{tmp_path / \'cohort.db\'}")'
+          if first_old not in text or second_old not in text:
+              raise SystemExit('SQLite test anchors not found')
+          text = text.replace(first_old, first_new, 1)
+          text = text.replace(second_old, second_new, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+      - name: Commit isolation fix
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add backend/app/tests/test_month_5_agent_runtime.py
+          git diff --cached --check
+          git commit -m "test: isolate SQLite agent runtime databases"
+          git push origin HEAD:fix/bybit-testnet-safety
