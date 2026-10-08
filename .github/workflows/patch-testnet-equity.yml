@@ -1,0 +1,63 @@
+name: Apply TESTNET equity safety patch
+
+on:
+  push:
+    branches: [fix/bybit-testnet-safety]
+    paths:
+      - .github/workflows/patch-testnet-equity.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: fix/bybit-testnet-safety
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Patch orchestrator equity source and add tests
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('backend/app/orchestrator/service.py')
+          text = path.read_text(encoding='utf-8')
+
+          old = 'import time\nfrom collections import deque\n'
+          new = 'import time\nfrom collections import deque\nfrom datetime import datetime, timezone\n'
+          if old not in text:
+              raise SystemExit('service import anchor not found')
+          text = text.replace(old, new, 1)
+
+          marker = '    async def _mark_operational_dependency_unhealthy(\n'
+          if marker not in text:
+              raise SystemExit('service method anchor not found')
+          method = '''    async def _execution_balance(self) -> float:\n        \"\"\"Return the authoritative capital base for the active execution mode.\n\n        PAPER remains isolated on the simulator balance. TESTNET must use a\n        fresh durable venue reconciliation so sizing and portfolio limits can\n        never silently fall back to PAPER capital.\n        \"\"\"\n\n        if (\n            self._oms is None\n            or self._oms.target_environment.value != \"TESTNET\"\n        ):\n            return self._paper.balance\n        if self._repository is None:\n            raise RiskError(\n                \"TESTNET risk sizing requires durable venue reconciliation\"\n            )\n        if self._oms.target_exchange.value != \"BYBIT\":\n            raise RiskError(\n                \"TESTNET equity source is not approved for this exchange\"\n            )\n\n        latest = await self._repository.load_latest_reconciliation(\n            exchange=self._oms.target_exchange,\n            environment=self._oms.target_environment,\n        )\n        if latest is None:\n            raise RiskError(\n                \"Bybit TESTNET equity is unavailable: no reconciliation\"\n            )\n        run, _mismatches, _positions, balances = latest\n        if run.status.value == \"FAILED\":\n            raise RiskError(\n                \"Bybit TESTNET equity is unavailable: reconciliation failed\"\n            )\n        usdt_balances = [\n            item for item in balances if item.asset.upper() == \"USDT\"\n        ]\n        if not usdt_balances:\n            raise RiskError(\n                \"Bybit TESTNET equity is unavailable: USDT balance missing\"\n            )\n        balance = max(usdt_balances, key=lambda item: item.observed_at)\n        observed_at = balance.observed_at\n        if observed_at.tzinfo is None or observed_at.utcoffset() is None:\n            observed_at = observed_at.replace(tzinfo=timezone.utc)\n        age_seconds = (\n            datetime.now(timezone.utc) - observed_at.astimezone(timezone.utc)\n        ).total_seconds()\n        if age_seconds < -5 or age_seconds > 120:\n            raise RiskError(\n                \"Bybit TESTNET equity is stale; execution remains blocked\"\n            )\n        equity = float(balance.equity)\n        if equity <= 0:\n            raise RiskError(\n                \"Bybit TESTNET equity must be positive before execution\"\n            )\n        self._risk.update_equity(equity)\n        return equity\n\n'''
+          text = text.replace(marker, method + marker, 1)
+
+          count = text.count('balance=self._paper.balance,')
+          if count != 2:
+              raise SystemExit(f'expected 2 PAPER balance call sites, found {count}')
+          text = text.replace(
+              'balance=self._paper.balance,',
+              'balance=await self._execution_balance(),',
+          )
+          path.write_text(text, encoding='utf-8')
+
+          test = Path('backend/app/tests/test_testnet_equity_source.py')
+          test.write_text('''from datetime import datetime, timedelta, timezone\nfrom types import SimpleNamespace\n\nimport pytest\n\nfrom app.core.errors import RiskError\nfrom app.orchestrator.service import Orchestrator\nfrom app.schemas.common import Exchange\nfrom app.schemas.oms import ExecutionEnvironment\n\n\nclass FakeRisk:\n    def __init__(self):\n        self.equity = None\n\n    def update_equity(self, value: float) -> None:\n        self.equity = value\n\n\nclass FakeRepository:\n    def __init__(self, latest):\n        self.latest = latest\n\n    async def load_latest_reconciliation(self, **_kwargs):\n        return self.latest\n\n\ndef _orchestrator(*, latest=None, paper_balance=999.0, testnet=True):\n    instance = Orchestrator.__new__(Orchestrator)\n    instance._paper = SimpleNamespace(balance=paper_balance)\n    instance._risk = FakeRisk()\n    instance._repository = FakeRepository(latest) if latest is not None else None\n    instance._oms = SimpleNamespace(\n        target_environment=(\n            ExecutionEnvironment.TESTNET\n            if testnet\n            else ExecutionEnvironment.PAPER\n        ),\n        target_exchange=Exchange.BYBIT,\n    )\n    return instance\n\n\ndef _latest(*, equity=1234.5, age_seconds=0, status='MATCHED'):\n    observed_at = datetime.now(timezone.utc) - timedelta(seconds=age_seconds)\n    run = SimpleNamespace(status=SimpleNamespace(value=status))\n    balance = SimpleNamespace(\n        asset='USDT', equity=equity, observed_at=observed_at\n    )\n    return run, [], [], [balance]\n\n\n@pytest.mark.asyncio\nasync def test_paper_balance_remains_isolated_from_venue_reconciliation():\n    orchestrator = _orchestrator(testnet=False, paper_balance=777.0)\n    assert await orchestrator._execution_balance() == 777.0\n\n\n@pytest.mark.asyncio\nasync def test_testnet_uses_fresh_bybit_usdt_equity_and_updates_drawdown():\n    orchestrator = _orchestrator(latest=_latest(equity=4321.0))\n    assert await orchestrator._execution_balance() == 4321.0\n    assert orchestrator._risk.equity == 4321.0\n\n\n@pytest.mark.asyncio\nasync def test_testnet_blocks_without_durable_reconciliation():\n    orchestrator = _orchestrator(latest=None)\n    with pytest.raises(RiskError, match='durable venue reconciliation'):\n        await orchestrator._execution_balance()\n\n\n@pytest.mark.asyncio\nasync def test_testnet_blocks_stale_equity():\n    orchestrator = _orchestrator(latest=_latest(age_seconds=121))\n    with pytest.raises(RiskError, match='stale'):\n        await orchestrator._execution_balance()\n\n\n@pytest.mark.asyncio\nasync def test_testnet_blocks_failed_reconciliation_or_missing_usdt():\n    failed = _orchestrator(latest=_latest(status='FAILED'))\n    with pytest.raises(RiskError, match='reconciliation failed'):\n        await failed._execution_balance()\n\n    run = SimpleNamespace(status=SimpleNamespace(value='MATCHED'))\n    missing = _orchestrator(\n        latest=(run, [], [], [SimpleNamespace(\n            asset='BTC', equity=1.0, observed_at=datetime.now(timezone.utc)\n        )])\n    )\n    with pytest.raises(RiskError, match='USDT balance missing'):\n        await missing._execution_balance()\n''', encoding='utf-8')
+          PY
+      - name: Commit safety patch
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add backend/app/orchestrator/service.py backend/app/tests/test_testnet_equity_source.py
+          git diff --cached --check
+          git commit -m "fix: source TESTNET risk capital from Bybit equity"
+          git push origin HEAD:fix/bybit-testnet-safety
