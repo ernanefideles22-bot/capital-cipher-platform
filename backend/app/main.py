@@ -40,6 +40,7 @@ from app.core.event_bus import Topics
 from app.core.logging import ServiceLogger, configure_logging
 from app.core.state_machine import SystemState
 from app.market_data.continuity import LiveCandleContinuityProcessor
+from app.market_data.raw_batch import RawMarketEventBatchPersister
 from app.market_data.runtime import (
     build_runtime_market_adapter,
     market_data_exchange,
@@ -315,6 +316,11 @@ def create_app(
                 if ctx.repository is not None and ctx.backfill_service is not None
                 else None
             )
+            raw_batch_persister = (
+                RawMarketEventBatchPersister(ctx.database, ctx.event_bus)
+                if ctx.database is not None
+                else None
+            )
 
             async def on_candle(candle):
                 ctx.market_connected = True
@@ -336,11 +342,20 @@ def create_app(
                     event_id=event.event_id,
                 )
 
+            async def on_raw_events(events):
+                if raw_batch_persister is not None:
+                    await raw_batch_persister.persist(events)
+                    return
+                # In-memory/dev fallback preserves the same ordering contract.
+                for event in events:
+                    await on_raw_event(event)
+
             async def on_status(event_type: str, payload: dict):
                 ctx.market_connected = event_type == "MARKET_CONNECTED"
 
             adapter.on_candle = on_candle
             adapter.on_raw_event = on_raw_event
+            adapter.on_raw_events = on_raw_events
             adapter.on_status = on_status
             await adapter.connect()
 
@@ -439,10 +454,6 @@ def create_app(
     app.include_router(strategies.router, prefix=api_prefix)
     app.include_router(reports.router, prefix=api_prefix)
 
-    # The hosted image includes the built dashboard at this path. Keeping the
-    # mount conditional preserves the API-only development/test entrypoint
-    # while allowing the production-shaped PAPER container to serve the UI
-    # from the same origin (and therefore without a new CORS trust boundary).
     dashboard_dir = Path(__file__).resolve().parents[1] / "frontend-dist"
     if dashboard_dir.is_dir():
         app.mount(
