@@ -169,6 +169,26 @@ export interface SpecialistScorecard {
   evaluated_at: string;
 }
 
+export interface SpecialistCandidate {
+  agent_name: string;
+  agent_version: string;
+  status: "CANDIDATE_FOR_REGIME_SHADOW" | "OBSERVING" | "EVALUATED_NOT_QUALIFIED";
+  eligible_for_regime_shadow_test: boolean;
+  decision_authority: false;
+  automatic_weight_adjustment: false;
+  sample_count: number;
+  minimum_samples: number;
+  accuracy: number | null;
+  mean_brier_loss: number | null;
+  mean_marginal_contribution: number | null;
+  criteria: {
+    minimum_sample_reached: boolean;
+    accuracy_above_50_percent: boolean;
+    brier_below_random_baseline: boolean;
+    positive_marginal_contribution: boolean;
+  };
+}
+
 export interface PerformanceReport {
   overall: PaperPerformance;
   breakdown_by: string;
