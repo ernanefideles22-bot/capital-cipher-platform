@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import time
 from collections import deque
+from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
@@ -381,6 +382,67 @@ class Orchestrator:
                     duration_ms=(time.monotonic() - started) * 1_000,
                 )
 
+    async def _execution_balance(self) -> float:
+        """Return the authoritative capital base for the active execution mode.
+
+        PAPER remains isolated on the simulator balance. TESTNET must use a
+        fresh durable venue reconciliation so sizing and portfolio limits can
+        never silently fall back to PAPER capital.
+        """
+
+        if (
+            self._oms is None
+            or self._oms.target_environment.value != "TESTNET"
+        ):
+            return self._paper.balance
+        if self._repository is None:
+            raise RiskError(
+                "TESTNET risk sizing requires durable venue reconciliation"
+            )
+        if self._oms.target_exchange.value != "BYBIT":
+            raise RiskError(
+                "TESTNET equity source is not approved for this exchange"
+            )
+
+        latest = await self._repository.load_latest_reconciliation(
+            exchange=self._oms.target_exchange,
+            environment=self._oms.target_environment,
+        )
+        if latest is None:
+            raise RiskError(
+                "Bybit TESTNET equity is unavailable: no reconciliation"
+            )
+        run, _mismatches, _positions, balances = latest
+        if run.status.value == "FAILED":
+            raise RiskError(
+                "Bybit TESTNET equity is unavailable: reconciliation failed"
+            )
+        usdt_balances = [
+            item for item in balances if item.asset.upper() == "USDT"
+        ]
+        if not usdt_balances:
+            raise RiskError(
+                "Bybit TESTNET equity is unavailable: USDT balance missing"
+            )
+        balance = max(usdt_balances, key=lambda item: item.observed_at)
+        observed_at = balance.observed_at
+        if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+            observed_at = observed_at.replace(tzinfo=timezone.utc)
+        age_seconds = (
+            datetime.now(timezone.utc) - observed_at.astimezone(timezone.utc)
+        ).total_seconds()
+        if age_seconds < -5 or age_seconds > 120:
+            raise RiskError(
+                "Bybit TESTNET equity is stale; execution remains blocked"
+            )
+        equity = float(balance.equity)
+        if equity <= 0:
+            raise RiskError(
+                "Bybit TESTNET equity must be positive before execution"
+            )
+        self._risk.update_equity(equity)
+        return equity
+
     async def _mark_operational_dependency_unhealthy(
         self,
         dependency: DependencyName,
@@ -614,7 +676,7 @@ class Orchestrator:
                     await self._portfolio_construction.propose(
                         decision=decision,
                         consensus=consensus,
-                        balance=self._paper.balance,
+                        balance=await self._execution_balance(),
                     )
                 )
                 await self._audit.record(
@@ -682,7 +744,7 @@ class Orchestrator:
             entry_price=candle.close,
             atr=atr,
             data_quality_score=quality.data_quality_score,
-            balance=self._paper.balance,
+            balance=await self._execution_balance(),
             leverage=self._paper.simulated_leverage,
             risk_per_trade_percent_override=(
                 risk_profile.risk_per_trade_percent if risk_profile else None

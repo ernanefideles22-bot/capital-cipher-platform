@@ -155,6 +155,66 @@ export interface AgentRankingRow {
   note: string;
 }
 
+export interface SpecialistScorecard {
+  schema_version: string;
+  agent_name: string;
+  agent_version: string;
+  sample_count: number;
+  directional_sample_count: number;
+  accuracy: number | null;
+  mean_brier_loss: number | null;
+  mean_marginal_contribution: number | null;
+  status: "INSUFFICIENT_SAMPLE" | "EVALUATED";
+  minimum_samples: number;
+  evaluated_at: string;
+}
+
+export interface SpecialistCandidate {
+  agent_name: string;
+  agent_version: string;
+  status: "CANDIDATE_FOR_REGIME_SHADOW" | "OBSERVING" | "EVALUATED_NOT_QUALIFIED";
+  eligible_for_regime_shadow_test: boolean;
+  decision_authority: false;
+  automatic_weight_adjustment: false;
+  sample_count: number;
+  minimum_samples: number;
+  accuracy: number | null;
+  mean_brier_loss: number | null;
+  mean_marginal_contribution: number | null;
+  criteria: {
+    minimum_sample_reached: boolean;
+    accuracy_above_50_percent: boolean;
+    brier_below_random_baseline: boolean;
+    positive_marginal_contribution: boolean;
+  };
+}
+
+export interface RegimeShadowRow {
+  agent_name: string;
+  agent_version: string;
+  market_regime: "BULL_TREND" | "BEAR_TREND" | "RANGE" | "HIGH_VOLATILITY" | "LOW_VOLATILITY" | "UNDEFINED";
+  sample_count: number;
+  directional_sample_count: number;
+  accuracy: number | null;
+  mean_brier_loss: number;
+  mean_marginal_contribution: number;
+  sample_sufficient: boolean;
+  minimum_samples: number;
+  decision_authority: false;
+  automatic_weight_adjustment: false;
+}
+
+export interface RegimeShadowReport {
+  rows: RegimeShadowRow[];
+  unavailable_historical_forecasts: number;
+  decision_authority: false;
+  automatic_weight_adjustment: false;
+  lookahead_protection: string;
+  classifier: string;
+  candidate_count: number;
+  candidate_names: string[];
+}
+
 export interface PerformanceReport {
   overall: PaperPerformance;
   breakdown_by: string;

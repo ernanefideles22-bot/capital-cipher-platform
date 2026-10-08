@@ -39,15 +39,21 @@ from app.core.errors import CapitalCipherError
 from app.core.event_bus import Topics
 from app.core.logging import ServiceLogger, configure_logging
 from app.core.state_machine import SystemState
-from app.market_data.adapters.binance import BinanceMarketDataAdapter
-from app.schemas.common import Exchange
+from app.market_data.runtime import (
+    build_runtime_market_adapter,
+    market_data_exchange,
+)
 from app.schemas.api import error_response
 from app.schemas.events import EventTypes
 
 logger = ServiceLogger("main")
 
 
-def create_app(context: AppContext | None = None, *, with_market_data: bool | None = None) -> FastAPI:
+def create_app(
+    context: AppContext | None = None,
+    *,
+    with_market_data: bool | None = None,
+) -> FastAPI:
     settings = context.settings if context is not None else get_settings()
     configure_logging(settings.log_level)
     if with_market_data is None:
@@ -55,7 +61,10 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        ctx = context or build_context(settings, with_database=bool(settings.database_url))
+        ctx = context or build_context(
+            settings,
+            with_database=bool(settings.database_url),
+        )
         app.state.context = ctx
         if ctx.database is not None:
             if settings.app_env == "staging":
@@ -131,7 +140,9 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
                 )
         # State machine boot: OFFLINE -> INITIALIZING -> PAPER (docs/30).
         await ctx.state_machine.transition(
-            SystemState.INITIALIZING, reason="System boot", actor="main"
+            SystemState.INITIALIZING,
+            reason="System boot",
+            actor="main",
         )
         if ctx.risk_manager.control_state.active:
             await ctx.state_machine.transition(
@@ -270,19 +281,28 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
         clock_stop = asyncio.Event()
         clock_task = None
         if with_market_data:
+            feed_exchange = market_data_exchange(ctx.oms_service)
             if ctx.clock_monitor is not None:
                 try:
-                    await ctx.clock_monitor.probe(Exchange.BINANCE)
+                    await ctx.clock_monitor.probe(feed_exchange)
                 except Exception as exc:
                     logger.error(
-                        "Initial Binance clock probe failed; normalized ingestion remains blocked",
+                        "Initial market clock probe failed; normalized ingestion remains blocked",
                         event_type="CLOCK_PROBE_FAILED",
-                        metadata={"error_type": type(exc).__name__},
+                        metadata={
+                            "exchange": feed_exchange.value,
+                            "error_type": type(exc).__name__,
+                        },
                     )
-                clock_task = asyncio.create_task(ctx.clock_monitor.run(clock_stop))
-            adapter = BinanceMarketDataAdapter()
+                clock_task = asyncio.create_task(
+                    ctx.clock_monitor.run(clock_stop)
+                )
+            adapter = build_runtime_market_adapter(ctx.oms_service)
             for symbol in ctx.settings.allowed_symbols_list:
-                await adapter.subscribe_candles(symbol, ctx.settings.default_timeframe)
+                await adapter.subscribe_candles(
+                    symbol,
+                    ctx.settings.default_timeframe,
+                )
 
             async def on_candle(candle):
                 ctx.market_connected = True
@@ -372,9 +392,17 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
     )
 
     @app.exception_handler(CapitalCipherError)
-    async def domain_error_handler(request: Request, exc: CapitalCipherError) -> JSONResponse:
+    async def domain_error_handler(
+        request: Request,
+        exc: CapitalCipherError,
+    ) -> JSONResponse:
         return JSONResponse(
-            status_code=400, content=error_response(exc.error_code, exc.message, exc.metadata)
+            status_code=400,
+            content=error_response(
+                exc.error_code,
+                exc.message,
+                exc.metadata,
+            ),
         )
 
     # Root-level health (docs/13).
@@ -400,8 +428,6 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
     # mount conditional preserves the API-only development/test entrypoint
     # while allowing the production-shaped PAPER container to serve the UI
     # from the same origin (and therefore without a new CORS trust boundary).
-    # `main.py` lives in `/app/app`; the image copies the build artifact to
-    # `/app/frontend-dist`, one parent above the package directory.
     dashboard_dir = Path(__file__).resolve().parents[1] / "frontend-dist"
     if dashboard_dir.is_dir():
         app.mount(
