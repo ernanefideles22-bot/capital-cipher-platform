@@ -54,3 +54,28 @@ async def specialist_evaluation_report(
             "automatic_weight_adjustment": False,
         }
     )
+
+
+@router.get("/agents/specialist-candidates")
+async def specialist_candidate_report(
+    context: AppContext = Depends(get_context),
+) -> dict:
+    """Identify agents eligible for the next regime-specific SHADOW test only."""
+    from app.agents.candidacy import SpecialistCandidacyService
+
+    service = context.agent_evaluation_service
+    if service is None:
+        return error_response(
+            "AGENT_EVALUATION_UNAVAILABLE",
+            "Agent evaluation service is not configured",
+        )
+    cards = await service.scorecards()
+    candidates = SpecialistCandidacyService.classify(cards)
+    return success_response(
+        {
+            "candidates": candidates,
+            "decision_authority": False,
+            "automatic_weight_adjustment": False,
+            "next_phase": "REGIME_SHADOW_OBSERVATION",
+        }
+    )
