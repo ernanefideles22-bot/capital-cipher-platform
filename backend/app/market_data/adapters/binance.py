@@ -33,12 +33,13 @@ DEFAULT_CANDLE_QUEUE_SIZE = 64
 # Kline updates arrive much more frequently than closed candles. Persisting one
 # raw frame touches PostgreSQL and the durable event bus, so it must never run
 # inline in the WebSocket receive loop. Sharded bounded queues preserve symbol
-# locality while independent shards persist concurrently. When a shard develops
-# backlog, a bounded cohort is persisted concurrently and no normalized candle
-# is released until every raw event in that cohort is durable.
+# locality while independent shards persist concurrently. Keep each cohort small
+# because every raw event needs database/journal work and staging intentionally
+# caps the database pool at 10 connections; large cohorts would starve agent,
+# outbox, clock and backfill workers.
 DEFAULT_RAW_QUEUE_SIZE = 128
 DEFAULT_RAW_QUEUE_SHARDS = 8
-DEFAULT_RAW_BATCH_SIZE = 16
+DEFAULT_RAW_BATCH_SIZE = 2
 
 
 def _stream_payload(message: dict) -> dict:
@@ -257,8 +258,9 @@ class BinanceMarketDataAdapter(MarketDataAdapter):
             events = [item[0] for item in cohort]
             try:
                 # Every raw callback still performs the existing durable table +
-                # event-journal/broker path. Running an already queued cohort
-                # concurrently removes serial hosted-network RTT amplification.
+                # event-journal/broker path. The small cohort is intentional:
+                # preserve a bounded amount of database concurrency so the durable
+                # agent/outbox/backfill workers retain connections during bursts.
                 # No normalized candle is released until the entire cohort is done.
                 await asyncio.gather(
                     *(self._emit_raw_event(event) for event in events)
