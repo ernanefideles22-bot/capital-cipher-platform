@@ -44,7 +44,6 @@ jobs:
                   'report_sha256': report_sha,
                   'status': report['status'],
                   'registered_agents': month11['registered_agents'],
-                  'replay_candle_count': report['definition']['replay_candle_count'],
               }, indent=2, sort_keys=True),
               encoding='utf-8',
           )
