@@ -1,0 +1,61 @@
+name: Apply partial-fill safety patch
+
+on:
+  push:
+    branches: [fix/bybit-testnet-safety]
+    paths:
+      - .github/workflows/patch-partial-fill-safety.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: fix/bybit-testnet-safety
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Patch reconciliation and add partial-fill invariants
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('backend/app/oms/reconciliation.py')
+          text = path.read_text(encoding='utf-8')
+
+          old = '''        quantity_drift = (\n            abs(\n                venue.cumulative_filled_quantity\n                - local.cumulative_filled_quantity\n            )\n            > 1e-10\n        )\n'''
+          new = '''        fill_regression = (\n            venue.cumulative_filled_quantity + 1e-10\n            < local.cumulative_filled_quantity\n        )\n        quantity_drift = (\n            abs(\n                venue.cumulative_filled_quantity\n                - local.cumulative_filled_quantity\n            )\n            > 1e-10\n        )\n'''
+          if old not in text:
+              raise SystemExit('quantity drift anchor not found')
+          text = text.replace(old, new, 1)
+
+          old = '''                    severity=ReconciliationSeverity.WARNING,\n                    exchange=local.exchange,\n'''
+          new = '''                    severity=(\n                        ReconciliationSeverity.CRITICAL\n                        if fill_regression\n                        else ReconciliationSeverity.WARNING\n                    ),\n                    exchange=local.exchange,\n'''
+          if old not in text:
+              raise SystemExit('filled quantity severity anchor not found')
+          text = text.replace(old, new, 1)
+
+          old = '''                        "cumulative_filled_quantity": (\n                            venue.cumulative_filled_quantity\n                        ),\n'''
+          new = '''                        "cumulative_filled_quantity": max(\n                            local.cumulative_filled_quantity,\n                            venue.cumulative_filled_quantity,\n                        ),\n'''
+          if old not in text:
+              raise SystemExit('filled quantity update anchor not found')
+          text = text.replace(old, new, 1)
+          path.write_text(text, encoding='utf-8')
+
+          test = Path('backend/app/tests/test_bybit_partial_fill_safety.py')
+          test.write_text('''"""Explicit safety invariants for TESTNET partial fills and reconciliation."""\n\nfrom datetime import datetime, timezone\n\nimport pytest\nfrom pydantic import ValidationError\n\nfrom app.oms.reconciliation import _compare_orders, _compare_positions\nfrom app.schemas.common import Exchange, OrderSide\nfrom app.schemas.oms import (\n    ExecutionEnvironment,\n    OMSOrder,\n    OMSOrderStatus,\n    OMSOrderType,\n    ReconciliationMismatchType,\n    ReconciliationSeverity,\n    TERMINAL_OMS_STATUSES,\n    VenueOrderSnapshot,\n    VenuePositionSnapshot,\n    VenueStateSnapshot,\n)\n\n\ndef _local(*, filled: float, status=OMSOrderStatus.PARTIALLY_FILLED) -> OMSOrder:\n    return OMSOrder(\n        client_order_id='cc-partial-fill-test-0001',\n        decision_id='decision',\n        risk_check_id='risk',\n        approval_id='a' * 64,\n        request_fingerprint='b' * 64,\n        correlation_id='correlation',\n        exchange=Exchange.BYBIT,\n        environment=ExecutionEnvironment.TESTNET,\n        symbol='BTCUSDT',\n        timeframe='15m',\n        strategy='TEST',\n        side=OrderSide.BUY,\n        order_type=OMSOrderType.MARKET,\n        quantity=1.0,\n        requested_notional=100_000.0,\n        reference_price=100_000.0,\n        status=status,\n        venue_order_id='venue-1',\n        cumulative_filled_quantity=filled,\n        average_fill_price=100_000.0 if filled else None,\n    )\n\n\ndef _venue(*, filled: float, status=OMSOrderStatus.PARTIALLY_FILLED) -> VenueOrderSnapshot:\n    return VenueOrderSnapshot(\n        exchange=Exchange.BYBIT,\n        environment=ExecutionEnvironment.TESTNET,\n        venue_order_id='venue-1',\n        client_order_id='cc-partial-fill-test-0001',\n        symbol='BTCUSDT',\n        side=OrderSide.BUY,\n        order_type=OMSOrderType.MARKET,\n        status=status,\n        quantity=1.0,\n        cumulative_filled_quantity=filled,\n        average_fill_price=100_100.0 if filled else None,\n    )\n\n\ndef _snapshot(order: VenueOrderSnapshot, *, position_quantity: float | None = None):\n    positions = []\n    if position_quantity is not None:\n        positions.append(\n            VenuePositionSnapshot(\n                exchange=Exchange.BYBIT,\n                environment=ExecutionEnvironment.TESTNET,\n                symbol='BTCUSDT',\n                side=OrderSide.BUY,\n                quantity=position_quantity,\n                entry_price=100_000.0,\n                mark_price=100_100.0,\n            )\n        )\n    return VenueStateSnapshot(\n        exchange=Exchange.BYBIT,\n        environment=ExecutionEnvironment.TESTNET,\n        orders=[order],\n        positions=positions,\n        observed_at=datetime.now(timezone.utc),\n    )\n\n\ndef test_partially_filled_is_non_terminal():\n    assert OMSOrderStatus.PARTIALLY_FILLED not in TERMINAL_OMS_STATUSES\n    order = _local(filled=0.25)\n    assert order.terminal_at is None\n\n\ndef test_order_and_venue_reject_fill_above_requested_quantity():\n    with pytest.raises(ValidationError, match='filled quantity'):\n        _local(filled=1.01)\n    with pytest.raises(ValidationError, match='filled quantity'):\n        _venue(filled=1.01)\n\n\ndef test_reconciliation_advances_partial_fill_monotonically():\n    local = _local(filled=0.25)\n    mismatches, reconciled = _compare_orders(\n        [local], _snapshot(_venue(filled=0.60))\n    )\n    assert any(\n        item.mismatch_type == ReconciliationMismatchType.FILLED_QUANTITY_DRIFT\n        and item.severity == ReconciliationSeverity.WARNING\n        for item in mismatches\n    )\n    assert len(reconciled) == 1\n    assert reconciled[0].status == OMSOrderStatus.PARTIALLY_FILLED\n    assert reconciled[0].cumulative_filled_quantity == 0.60\n    assert reconciled[0].terminal_at is None\n\n\ndef test_reconciliation_never_regresses_persisted_fill_and_marks_critical():\n    local = _local(filled=0.60)\n    mismatches, reconciled = _compare_orders(\n        [local], _snapshot(_venue(filled=0.25))\n    )\n    drift = next(\n        item for item in mismatches\n        if item.mismatch_type == ReconciliationMismatchType.FILLED_QUANTITY_DRIFT\n    )\n    assert drift.severity == ReconciliationSeverity.CRITICAL\n    assert len(reconciled) == 1\n    assert reconciled[0].cumulative_filled_quantity == 0.60\n\n\ndef test_cancel_after_partial_fill_preserves_filled_exposure():\n    local = _local(filled=0.40)\n    mismatches, reconciled = _compare_orders(\n        [local], _snapshot(\n            _venue(filled=0.40, status=OMSOrderStatus.CANCELED)\n        )\n    )\n    assert any(\n        item.mismatch_type == ReconciliationMismatchType.ORDER_STATUS_DRIFT\n        for item in mismatches\n    )\n    assert len(reconciled) == 1\n    assert reconciled[0].status == OMSOrderStatus.CANCELED\n    assert reconciled[0].cumulative_filled_quantity == 0.40\n    assert reconciled[0].terminal_at is not None\n\n\ndef test_position_inconsistent_with_partial_fill_is_critical_drift():\n    local = _local(filled=0.40)\n    snapshot = _snapshot(_venue(filled=0.40), position_quantity=0.10)\n    mismatches = _compare_positions(\n        run_exchange=Exchange.BYBIT,\n        environment=ExecutionEnvironment.TESTNET,\n        local_orders=[local],\n        snapshot=snapshot,\n        run_id='run-1',\n    )\n    mismatch = next(\n        item for item in mismatches\n        if item.mismatch_type == ReconciliationMismatchType.POSITION_QUANTITY_DRIFT\n    )\n    assert mismatch.severity == ReconciliationSeverity.CRITICAL\n''', encoding='utf-8')
+          PY
+      - name: Commit partial-fill safety patch
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add backend/app/oms/reconciliation.py backend/app/tests/test_bybit_partial_fill_safety.py
+          git diff --cached --check
+          git commit -m "fix: enforce monotonic TESTNET partial fills"
+          git push origin HEAD:fix/bybit-testnet-safety
