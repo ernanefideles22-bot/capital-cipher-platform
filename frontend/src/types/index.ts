@@ -14,6 +14,19 @@ export interface SystemStatus {
   orchestrator: string;
   risk: string;
   database: string;
+  source_revision: string | null;
+  release_evidence: {
+    status: string;
+    source_revision: string | null;
+    bundle_id: string | null;
+    bundle_sha256: string | null;
+    matches_runtime_revision: boolean;
+  };
+  oms: {
+    environment: string;
+    exchange: string;
+    live_execution_available: false;
+  };
 }
 
 export interface AgentHealth {
@@ -189,6 +202,13 @@ export interface SpecialistCandidate {
   };
 }
 
+export interface RegimeShadowCriteria {
+  minimum_sample_reached: boolean;
+  accuracy_above_50_percent: boolean;
+  brier_below_random_baseline: boolean;
+  positive_marginal_contribution: boolean;
+}
+
 export interface RegimeShadowRow {
   agent_name: string;
   agent_version: string;
@@ -200,6 +220,11 @@ export interface RegimeShadowRow {
   mean_marginal_contribution: number;
   sample_sufficient: boolean;
   minimum_samples: number;
+  status: "COLLECTING" | "SHADOW_SPECIALIST" | "OBSERVED_NOT_QUALIFIED";
+  qualified_shadow_specialist: boolean;
+  progress_percent: number;
+  rank_within_regime: number;
+  criteria: RegimeShadowCriteria;
   decision_authority: false;
   automatic_weight_adjustment: false;
 }
@@ -207,10 +232,19 @@ export interface RegimeShadowRow {
 export interface RegimeShadowReport {
   rows: RegimeShadowRow[];
   unavailable_historical_forecasts: number;
+  shadow_specialist_count: number;
+  collecting_count: number;
+  observed_not_qualified_count: number;
   decision_authority: false;
   automatic_weight_adjustment: false;
   lookahead_protection: string;
   classifier: string;
+  qualification: {
+    minimum_samples: number;
+    accuracy_above: number;
+    brier_below: number;
+    marginal_contribution_above: number;
+  };
   candidate_count: number;
   candidate_names: string[];
 }
