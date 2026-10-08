@@ -12,9 +12,6 @@ permissions:
 jobs:
   diagnose:
     runs-on: ubuntu-latest
-    env:
-      REDIS_TEST_URL: redis://localhost:6379/15
-      POSTGRES_TEST_URL: postgresql+asyncpg://cipher:cipher@localhost:5432/capital_cipher_test
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -23,15 +20,31 @@ jobs:
       - name: Install Python dependencies
         working-directory: backend
         run: python -m pip install -e ".[dev,postgres]"
-      - name: Culprit alone
+      - name: Patch SQLite tests to isolated files
         working-directory: backend
-        run: timeout 20s python -m pytest -vv -s -p no:cacheprovider app/tests/test_month_5_agent_runtime.py::test_sqlite_runtime_batches_cohort_creation_idempotently
-      - name: Predecessor then culprit
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('app/tests/test_month_5_agent_runtime.py')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace(
+              'async def test_sqlite_runtime_persists_trace_and_immutable_evidence():\n    database = Database("sqlite+aiosqlite:///:memory:")',
+              'async def test_sqlite_runtime_persists_trace_and_immutable_evidence(tmp_path):\n    database = Database(f"sqlite+aiosqlite:///{tmp_path / \'trace.db\'}")',
+              1,
+          )
+          text = text.replace(
+              'async def test_sqlite_runtime_batches_cohort_creation_idempotently():\n    database = Database("sqlite+aiosqlite:///:memory:")',
+              'async def test_sqlite_runtime_batches_cohort_creation_idempotently(tmp_path):\n    database = Database(f"sqlite+aiosqlite:///{tmp_path / \'cohort.db\'}")',
+              1,
+          )
+          path.write_text(text, encoding='utf-8')
+          PY
+      - name: Predecessor then culprit with isolated files
         working-directory: backend
         run: |
           timeout 30s python -m pytest -vv -s -p no:cacheprovider \
             app/tests/test_month_5_agent_runtime.py::test_sqlite_runtime_persists_trace_and_immutable_evidence \
             app/tests/test_month_5_agent_runtime.py::test_sqlite_runtime_batches_cohort_creation_idempotently
-      - name: Month 5 file
+      - name: Full Month 5 file
         working-directory: backend
-        run: timeout 60s python -m pytest -vv -s -p no:cacheprovider app/tests/test_month_5_agent_runtime.py
+        run: timeout 60s python -m pytest -vv -p no:cacheprovider app/tests/test_month_5_agent_runtime.py
