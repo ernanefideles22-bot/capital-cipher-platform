@@ -60,8 +60,6 @@ async def test_closed_candle_dispatch_queue_isolated_from_slow_handler():
     await adapter._candle_queue.put(first)
     await asyncio.wait_for(started.wait(), timeout=1)
 
-    # The downstream handler is still blocked on the first candle, but ingestion
-    # can enqueue the next closed candle without waiting for that decision cycle.
     adapter._candle_queue.put_nowait(second)
     assert adapter.pending_candles == 1
 
@@ -105,8 +103,6 @@ async def test_raw_ingestion_is_parallel_across_symbols_but_bounded():
     )
     await asyncio.wait_for(btc_started.wait(), timeout=1)
 
-    # A slow durable write for BTC must not block ETH frame persistence or the
-    # WebSocket reader because each symbol is deterministically sharded.
     await adapter._queue_raw_message(
         _payload("ETHUSDT", "102", 1767268801000, closed=False)
     )
@@ -122,6 +118,48 @@ async def test_raw_ingestion_is_parallel_across_symbols_but_bounded():
     for task in raw_tasks:
         task.cancel()
     await asyncio.gather(*raw_tasks, return_exceptions=True)
+
+
+async def test_backlogged_same_shard_raw_events_drain_as_concurrent_cohort():
+    adapter = BinanceMarketDataAdapter(
+        raw_queue_size=8,
+        raw_queue_shards=1,
+        raw_batch_size=4,
+    )
+    all_started = asyncio.Event()
+    release = asyncio.Event()
+    started = 0
+
+    async def raw_handler(_event):
+        nonlocal started
+        started += 1
+        if started == 3:
+            all_started.set()
+        await release.wait()
+
+    adapter.on_raw_event = raw_handler
+    for offset in range(3):
+        await adapter._queue_raw_message(
+            _payload(
+                "BTCUSDT",
+                str(101 + offset),
+                1767268800000 + offset * 1000,
+                closed=False,
+            )
+        )
+
+    raw_task = asyncio.create_task(
+        adapter._dispatch_raw_messages(adapter._raw_queues[0], 0)
+    )
+    await asyncio.wait_for(all_started.wait(), timeout=1)
+    assert started == 3
+
+    release.set()
+    await asyncio.wait_for(adapter._raw_queues[0].join(), timeout=1)
+    assert adapter.pending_raw_events == 0
+
+    raw_task.cancel()
+    await asyncio.gather(raw_task, return_exceptions=True)
 
 
 async def test_closed_candle_is_suppressed_when_raw_persistence_fails():
@@ -150,6 +188,7 @@ def test_binance_queues_must_be_bounded_positive():
         {"candle_queue_size": 0},
         {"raw_queue_size": 0},
         {"raw_queue_shards": 0},
+        {"raw_batch_size": 0},
     ):
         try:
             BinanceMarketDataAdapter(**kwargs)
