@@ -48,6 +48,26 @@ def test_regime_classifier_is_undefined_without_minimum_history() -> None:
     assert result.confidence == 0
 
 
+def test_regime_shadow_specialist_requires_all_existing_quality_criteria() -> None:
+    row = {
+        "sample_count": 30,
+        "accuracy": 0.60,
+        "mean_brier_loss": 0.20,
+        "mean_marginal_contribution": 0.03,
+    }
+    RegimeShadowEvaluationService._qualify_row(row)
+    assert row["qualified_shadow_specialist"] is True
+    assert row["status"] == "SHADOW_SPECIALIST"
+    assert row["progress_percent"] == 100.0
+    assert all(row["criteria"].values())
+
+    row["mean_brier_loss"] = 0.25
+    RegimeShadowEvaluationService._qualify_row(row)
+    assert row["qualified_shadow_specialist"] is False
+    assert row["status"] == "OBSERVED_NOT_QUALIFIED"
+    assert row["criteria"]["brier_below_random_baseline"] is False
+
+
 class _FakeEvaluationService:
     def __init__(self, forecast, outcome) -> None:
         self.forecast = forecast
@@ -105,5 +125,9 @@ async def test_regime_shadow_ignores_candles_after_forecast_time() -> None:
     assert row["market_regime"] == expected
     assert row["market_regime"] != MarketRegime.HIGH_VOLATILITY.value
     assert row["accuracy"] == 1.0
+    assert row["status"] == "COLLECTING"
+    assert row["progress_percent"] == pytest.approx(100 / 30)
+    assert row["rank_within_regime"] == 1
+    assert row["criteria"]["minimum_sample_reached"] is False
     assert row["decision_authority"] is False
     assert row["automatic_weight_adjustment"] is False
