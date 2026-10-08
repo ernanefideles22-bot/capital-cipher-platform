@@ -12,29 +12,6 @@ permissions:
 jobs:
   diagnose:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:17-alpine
-        env:
-          POSTGRES_USER: cipher
-          POSTGRES_PASSWORD: cipher
-          POSTGRES_DB: capital_cipher_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U cipher -d capital_cipher_test"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
-      redis:
-        image: redis:8.2-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
     env:
       REDIS_TEST_URL: redis://localhost:6379/15
       POSTGRES_TEST_URL: postgresql+asyncpg://cipher:cipher@localhost:5432/capital_cipher_test
@@ -46,12 +23,15 @@ jobs:
       - name: Install Python dependencies
         working-directory: backend
         run: python -m pip install -e ".[dev,postgres]"
-      - name: Run newly added safety tests
+      - name: Culprit alone
+        working-directory: backend
+        run: timeout 20s python -m pytest -vv -s -p no:cacheprovider app/tests/test_month_5_agent_runtime.py::test_sqlite_runtime_batches_cohort_creation_idempotently
+      - name: Predecessor then culprit
         working-directory: backend
         run: |
-          python -m pytest -vv -p no:cacheprovider \
-            app/tests/test_bybit_partial_fill_safety.py \
-            app/tests/test_bybit_exit_context_wiring.py
-      - name: Run full backend suite with diagnostic timeout
+          timeout 30s python -m pytest -vv -s -p no:cacheprovider \
+            app/tests/test_month_5_agent_runtime.py::test_sqlite_runtime_persists_trace_and_immutable_evidence \
+            app/tests/test_month_5_agent_runtime.py::test_sqlite_runtime_batches_cohort_creation_idempotently
+      - name: Month 5 file
         working-directory: backend
-        run: timeout 75s python -m pytest -vv -p no:cacheprovider
+        run: timeout 60s python -m pytest -vv -s -p no:cacheprovider app/tests/test_month_5_agent_runtime.py
