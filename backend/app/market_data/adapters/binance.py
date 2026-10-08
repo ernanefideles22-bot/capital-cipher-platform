@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime, timezone
+from time import monotonic
 
 from app.core.logging import ServiceLogger
 from app.market_data.adapters.base import MarketDataAdapter
@@ -152,6 +153,18 @@ class BinanceMarketDataAdapter(MarketDataAdapter):
                 candle = await self._candle_queue.get()
             except asyncio.CancelledError:
                 raise
+            started = monotonic()
+            queue_depth_at_start = self._candle_queue.qsize()
+            logger.info(
+                "Closed candle dispatch started",
+                event_type="MARKET_CANDLE_DISPATCH_STARTED",
+                metadata={
+                    "symbol": candle.symbol,
+                    "timeframe": candle.timeframe,
+                    "closed_at": candle.closed_at.isoformat(),
+                    "queue_depth": queue_depth_at_start,
+                },
+            )
             try:
                 await self._emit_candle(candle)
             except asyncio.CancelledError:
@@ -168,7 +181,21 @@ class BinanceMarketDataAdapter(MarketDataAdapter):
                         "symbol": candle.symbol,
                         "timeframe": candle.timeframe,
                         "closed_at": candle.closed_at.isoformat(),
+                        "queue_depth": self._candle_queue.qsize(),
+                        "duration_ms": round((monotonic() - started) * 1000, 2),
                         "error_type": type(exc).__name__,
+                    },
+                )
+            else:
+                logger.info(
+                    "Closed candle dispatch completed",
+                    event_type="MARKET_CANDLE_DISPATCH_COMPLETED",
+                    metadata={
+                        "symbol": candle.symbol,
+                        "timeframe": candle.timeframe,
+                        "closed_at": candle.closed_at.isoformat(),
+                        "queue_depth": self._candle_queue.qsize(),
+                        "duration_ms": round((monotonic() - started) * 1000, 2),
                     },
                 )
             finally:
@@ -203,6 +230,16 @@ class BinanceMarketDataAdapter(MarketDataAdapter):
                             # WebSocket receive iteration. Queue it instead of
                             # blocking the receive loop and starving server traffic.
                             await self._candle_queue.put(candle)
+                            logger.info(
+                                "Closed candle queued for downstream processing",
+                                event_type="MARKET_CANDLE_QUEUED",
+                                metadata={
+                                    "symbol": candle.symbol,
+                                    "timeframe": candle.timeframe,
+                                    "closed_at": candle.closed_at.isoformat(),
+                                    "queue_depth": self._candle_queue.qsize(),
+                                },
+                            )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
