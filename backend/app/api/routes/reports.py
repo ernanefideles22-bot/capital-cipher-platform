@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Query
 
 from app.api.context import AppContext
 from app.api.deps import get_context
-from app.schemas.api import success_response
+from app.schemas.api import error_response, success_response
 
 router = APIRouter(prefix="/reports")
 
@@ -33,3 +33,24 @@ async def agent_ranking(context: AppContext = Depends(get_context)) -> dict:
 
     service = AgentRankingService(context.orchestrator, context.paper_engine)
     return success_response({"ranking": service.report()})
+
+
+@router.get("/agents/specialists")
+async def specialist_evaluation_report(
+    context: AppContext = Depends(get_context),
+) -> dict:
+    """Read-only shadow evaluation for the dashboard; never changes decision weights."""
+    service = context.agent_evaluation_service
+    if service is None:
+        return error_response(
+            "AGENT_EVALUATION_UNAVAILABLE",
+            "Agent evaluation service is not configured",
+        )
+    cards = await service.scorecards()
+    return success_response(
+        {
+            "scorecards": [card.model_dump(mode="json") for card in cards],
+            "decision_authority": False,
+            "automatic_weight_adjustment": False,
+        }
+    )
