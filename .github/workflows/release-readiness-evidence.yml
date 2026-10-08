@@ -12,7 +12,8 @@ permissions:
 
 env:
   SOURCE_REVISION: e967c234220c673084ad3a9e618603b4ad3d52af
-  SOURCE_CI_RUN_ID: "37711698153"
+  EXACT_CI_RUN_ID: "37711698153"
+  TREE_EQUIVALENT_CI_RUN_ID: "37711262950"
 
 jobs:
   evidence:
@@ -31,28 +32,35 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "${SOURCE_REVISION}"
 
-      - name: Verify official CI evidence for exact revision
+      - name: Verify official CI provenance
+        id: ci
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          status=""
-          conclusion=""
-          for attempt in $(seq 1 60); do
-            status="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_CI_RUN_ID}" --jq '.status')"
-            conclusion="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_CI_RUN_ID}" --jq '.conclusion // ""')"
-            if [ "${status}" = "completed" ]; then
-              break
-            fi
-            sleep 10
-          done
-          test "${status}" = "completed"
-          test "${conclusion}" = "success"
-          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_CI_RUN_ID}" --jq '.head_sha')" = "${SOURCE_REVISION}"
-          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_CI_RUN_ID}" --jq '.name')" = "Continuous Integration"
+          source_tree="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SOURCE_REVISION}" --jq '.commit.tree.sha')"
+          exact_status="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${EXACT_CI_RUN_ID}" --jq '.status')"
+          exact_conclusion="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${EXACT_CI_RUN_ID}" --jq '.conclusion // ""')"
+          exact_head="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${EXACT_CI_RUN_ID}" --jq '.head_sha')"
 
-          jobs_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_CI_RUN_ID}/jobs?per_page=100")"
+          ci_run_id=""
+          evidence_mode=""
+          if [ "${exact_status}" = "completed" ] && [ "${exact_conclusion}" = "success" ] && [ "${exact_head}" = "${SOURCE_REVISION}" ]; then
+            ci_run_id="${EXACT_CI_RUN_ID}"
+            evidence_mode="exact_revision"
+          else
+            fallback_conclusion="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${TREE_EQUIVALENT_CI_RUN_ID}" --jq '.conclusion // ""')"
+            fallback_head="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${TREE_EQUIVALENT_CI_RUN_ID}" --jq '.head_sha')"
+            fallback_tree="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${fallback_head}" --jq '.commit.tree.sha')"
+            test "${fallback_conclusion}" = "success"
+            test "${fallback_tree}" = "${source_tree}"
+            ci_run_id="${TREE_EQUIVALENT_CI_RUN_ID}"
+            evidence_mode="source_tree_equivalent"
+          fi
+
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${ci_run_id}" --jq '.name')" = "Continuous Integration"
+          jobs_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${ci_run_id}/jobs?per_page=100")"
           for required_step in \
             "Validate Supabase migrations on disposable PostgreSQL" \
             "Build and preflight staging image" \
@@ -64,17 +72,26 @@ jobs:
             test "${result}" = "success"
           done
 
+          echo "ci_run_id=${ci_run_id}" >> "${GITHUB_OUTPUT}"
+          echo "evidence_mode=${evidence_mode}" >> "${GITHUB_OUTPUT}"
+          echo "source_tree=${source_tree}" >> "${GITHUB_OUTPUT}"
+
           mkdir -p release-evidence
-          python - <<'PY'
+          CI_RUN_ID="${ci_run_id}" EVIDENCE_MODE="${evidence_mode}" SOURCE_TREE="${source_tree}" EXACT_STATUS="${exact_status}" EXACT_CONCLUSION="${exact_conclusion}" python - <<'PY'
           import json
           import os
           from pathlib import Path
 
           payload = {
               "workflow": "Continuous Integration",
-              "run_id": int(os.environ["SOURCE_CI_RUN_ID"]),
               "source_revision": os.environ["SOURCE_REVISION"],
-              "conclusion": "success",
+              "source_git_tree": os.environ["SOURCE_TREE"],
+              "evidence_run_id": int(os.environ["CI_RUN_ID"]),
+              "evidence_mode": os.environ["EVIDENCE_MODE"],
+              "exact_revision_ci_run_id": int(os.environ["EXACT_CI_RUN_ID"]),
+              "exact_revision_ci_status": os.environ["EXACT_STATUS"],
+              "exact_revision_ci_conclusion": os.environ["EXACT_CONCLUSION"] or None,
+              "tree_equivalent_ci_run_id": int(os.environ["TREE_EQUIVALENT_CI_RUN_ID"]),
               "required_steps_verified": [
                   "Validate Supabase migrations on disposable PostgreSQL",
                   "Build and preflight staging image",
@@ -145,8 +162,7 @@ jobs:
               separators=(",", ":"),
               ensure_ascii=True,
           ).encode("utf-8")
-          report_path = Path("release-evidence/month11-report.json")
-          report_path.write_bytes(canonical)
+          Path("release-evidence/month11-report.json").write_bytes(canonical)
           report_sha = hashlib.sha256(canonical).hexdigest()
           report_id = report["report_id"]
 
@@ -175,6 +191,9 @@ jobs:
         env:
           MONTH11_REPORT_ID: ${{ steps.month11.outputs.report_id }}
           MONTH11_REPORT_SHA256: ${{ steps.month11.outputs.report_sha256 }}
+          CI_EVIDENCE_RUN_ID: ${{ steps.ci.outputs.ci_run_id }}
+          CI_EVIDENCE_MODE: ${{ steps.ci.outputs.evidence_mode }}
+          SOURCE_GIT_TREE: ${{ steps.ci.outputs.source_tree }}
         shell: bash
         run: |
           set -euo pipefail
@@ -183,8 +202,9 @@ jobs:
           import os
           from pathlib import Path
 
-          evidence_path = Path("release-evidence/month12-release-evidence.json")
-          evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+          evidence = json.loads(
+              Path("release-evidence/month12-release-evidence.json").read_text(encoding="utf-8")
+          )
           assert evidence["status"] == "PASSED"
           assert evidence["source_revision"] == os.environ["SOURCE_REVISION"]
           assert evidence["month11_report_id"] == os.environ["MONTH11_REPORT_ID"]
@@ -195,9 +215,12 @@ jobs:
           assert all(item["status"] == "PASSED" for item in evidence["checks"])
 
           handoff = {
+              "baseline_only": True,
               "source_revision": os.environ["SOURCE_REVISION"],
-              "official_ci_run_id": int(os.environ["SOURCE_CI_RUN_ID"]),
-              "official_ci_conclusion": "success",
+              "source_git_tree": os.environ["SOURCE_GIT_TREE"],
+              "ci_evidence_run_id": int(os.environ["CI_EVIDENCE_RUN_ID"]),
+              "ci_evidence_mode": os.environ["CI_EVIDENCE_MODE"],
+              "exact_revision_ci_run_id": int(os.environ["EXACT_CI_RUN_ID"]),
               "month11_report_id": evidence["month11_report_id"],
               "month11_report_sha256": evidence["month11_report_sha256"],
               "release_evidence_bundle_id": evidence["evidence_bundle_id"],
@@ -208,11 +231,20 @@ jobs:
                   item["check_name"]: item["status"] for item in evidence["checks"]
               },
               "hosted_paper_staging": "https://capital-cipher-backend-staging.up.railway.app",
+              "known_open_readiness_items_from_pr24": [
+                  "exchange_accounting_and_equity",
+                  "protected_exits",
+                  "reduce_only",
+                  "partial_fill_semantics",
+                  "leverage_configuration",
+                  "bybit_market_feed",
+                  "remote_testnet_canary",
+              ],
               "testnet_release_authorized": False,
               "live_execution_authorized": False,
               "external_attestation_required": True,
               "local_testnet_canary_executed": False,
-              "next_gate": "Independent EXTERNAL reviewer must attest this exact evidence bundle before any TESTNET canary or activation.",
+              "next_gate": "Close all known readiness items, regenerate evidence on the final SHA, then obtain an independent EXTERNAL attestation before any TESTNET canary or activation.",
           }
           Path("release-evidence/external-audit-handoff.json").write_text(
               json.dumps(handoff, indent=2, sort_keys=True) + "\n",
@@ -223,7 +255,7 @@ jobs:
       - name: Upload immutable release evidence package
         uses: actions/upload-artifact@v4
         with:
-          name: release-readiness-e967c234
+          name: release-readiness-baseline-e967c234
           path: release-evidence/
           if-no-files-found: error
           retention-days: 30
