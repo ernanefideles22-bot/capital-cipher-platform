@@ -18,6 +18,7 @@ from app.schemas.oms import (
     ExecutionFill,
     OMSOrder,
     OMSOrderStatus,
+    OMSOrderType,
     VenueBalanceSnapshot,
     VenueOrderSnapshot,
     VenuePositionSnapshot,
@@ -92,6 +93,91 @@ class LocalBybitTestnetEmulator(ExchangeExecutionAdapter):
                 price=order.limit_price or order.reference_price,
             )
         return self._orders[venue_order_id]
+
+    async def submit_reduce_only_exit(
+        self,
+        position: VenuePositionSnapshot,
+        *,
+        client_order_id: str,
+    ) -> VenueOrderSnapshot:
+        if self._closed:
+            raise ExecutionRejectedError("Local TESTNET emulator is closed")
+        if (
+            position.exchange != self.exchange
+            or position.environment != ExecutionEnvironment.TESTNET
+        ):
+            raise SecurityError("Reduce-only exit is not scoped to Bybit TESTNET")
+        if position.quantity <= 0:
+            raise SecurityError("Reduce-only exit requires positive quantity")
+        normalized_client_id = client_order_id.strip()
+        if not 8 <= len(normalized_client_id) <= 36:
+            raise SecurityError("Reduce-only exit requires bounded client order id")
+
+        existing = next(
+            (
+                item
+                for item in self._orders.values()
+                if item.client_order_id == normalized_client_id
+            ),
+            None,
+        )
+        if existing is not None:
+            return existing
+
+        state = self._positions.get(position.symbol)
+        if state is None or abs(state.signed_quantity) <= 1e-12:
+            raise ExecutionRejectedError("Reduce-only exit found no open position")
+        venue_side = OrderSide.BUY if state.signed_quantity > 0 else OrderSide.SELL
+        if venue_side != position.side:
+            raise ExecutionRejectedError("Reduce-only exit side does not match position")
+        if position.quantity > abs(state.signed_quantity) + 1e-12:
+            raise ExecutionRejectedError("Reduce-only exit exceeds open exposure")
+
+        close_side = OrderSide.SELL if position.side == OrderSide.BUY else OrderSide.BUY
+        price = position.mark_price or position.entry_price
+        if price is None or price <= 0:
+            raise ExecutionRejectedError("Reduce-only exit requires a valid venue price")
+
+        venue_order_id = f"local-bybit-exit-{uuid4().hex[:16]}"
+        snapshot = VenueOrderSnapshot(
+            exchange=self.exchange,
+            environment=ExecutionEnvironment.TESTNET,
+            venue_order_id=venue_order_id,
+            client_order_id=normalized_client_id,
+            symbol=position.symbol,
+            side=close_side,
+            order_type=OMSOrderType.MARKET,
+            status=OMSOrderStatus.FILLED,
+            quantity=position.quantity,
+            cumulative_filled_quantity=position.quantity,
+            average_fill_price=price,
+        )
+        self._orders[venue_order_id] = snapshot
+        fill_id = f"{venue_order_id}:{position.quantity:.12f}"
+        self._fills.setdefault(
+            fill_id,
+            ExecutionFill(
+                fill_id=fill_id,
+                venue_order_id=venue_order_id,
+                client_order_id=normalized_client_id,
+                exchange=self.exchange,
+                environment=ExecutionEnvironment.TESTNET,
+                symbol=position.symbol,
+                side=close_side,
+                quantity=position.quantity,
+                price=price,
+                fee=0.0,
+                fee_asset="USDT",
+                occurred_at=utcnow(),
+            ),
+        )
+        self._apply_position_delta(
+            symbol=position.symbol,
+            side=close_side,
+            quantity=position.quantity,
+            price=price,
+        )
+        return snapshot
 
     async def cancel_order(self, order: OMSOrder) -> VenueOrderSnapshot:
         self._validate_order(order)
