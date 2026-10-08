@@ -64,6 +64,7 @@ from app.orchestrator.portfolio_consensus import (
     WeightedConsensusService,
 )
 from app.orchestrator.service import Orchestrator
+from app.oms.bybit_testnet_exit import BybitTestnetExitService
 from app.oms.reconciliation import ReconciliationService
 from app.oms.service import OMSService
 from app.operations.service import OperationsService
@@ -123,6 +124,7 @@ class AppContext:
     operations_service: OperationsService | None = None
     shadow_validation_service: ShadowValidationService | None = None
     release_readiness_service: ReleaseReadinessService | None = None
+    bybit_testnet_exit_service: BybitTestnetExitService | None = None
     market_connected: bool = False
 
 
@@ -383,6 +385,16 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         halt_on_critical_drift=settings.oms_halt_on_critical_drift,
         interval_seconds=settings.oms_reconciliation_interval_seconds,
     )
+    bybit_testnet_exit_service = None
+    if (
+        target_environment == ExecutionEnvironment.TESTNET
+        and target_exchange == Exchange.BYBIT
+    ):
+        bybit_testnet_exit_service = BybitTestnetExitService(
+            adapter=oms_service.adapter,
+            risk_manager=risk_manager,
+            audit_service=audit_service,
+        )
     context_holder: dict = {}
     market_data_agent = MarketDataAgent(
         candle_store,
@@ -569,6 +581,7 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         operations_service=operations_service,
         shadow_validation_service=shadow_validation_service,
         release_readiness_service=release_readiness_service,
+        bybit_testnet_exit_service=bybit_testnet_exit_service,
     )
     context_holder["ctx"] = ctx
     return ctx
