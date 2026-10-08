@@ -155,6 +155,20 @@ export interface AgentRankingRow {
   note: string;
 }
 
+export interface SpecialistScorecard {
+  schema_version: string;
+  agent_name: string;
+  agent_version: string;
+  sample_count: number;
+  directional_sample_count: number;
+  accuracy: number | null;
+  mean_brier_loss: number | null;
+  mean_marginal_contribution: number | null;
+  status: "INSUFFICIENT_SAMPLE" | "EVALUATED";
+  minimum_samples: number;
+  evaluated_at: string;
+}
+
 export interface PerformanceReport {
   overall: PaperPerformance;
   breakdown_by: string;
