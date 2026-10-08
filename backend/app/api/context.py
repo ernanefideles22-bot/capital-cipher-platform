@@ -129,6 +129,14 @@ class AppContext:
 def build_context(settings: Settings, *, with_database: bool = False) -> AppContext:
     state_machine = SystemStateMachine()
     candle_store = CandleStore()
+    target_environment = ExecutionEnvironment(
+        settings.oms_execution_environment
+    )
+    target_exchange = (
+        Exchange.BINANCE
+        if target_environment == ExecutionEnvironment.PAPER
+        else Exchange(settings.oms_testnet_exchange)
+    )
 
     database: Database | None = None
     repository: Repository | None = None
@@ -155,13 +163,21 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
     if repository is not None and data_catalog is not None and gap_service is not None:
         raw_blob_store = LocalContentAddressedBlobStore(settings.data_lake_root)
         raw_data_lake = RawDataLake(repository, raw_blob_store)
+        bybit_public_base_url = (
+            settings.bybit_testnet_rest_url
+            if (
+                target_environment == ExecutionEnvironment.TESTNET
+                and target_exchange == Exchange.BYBIT
+            )
+            else settings.bybit_public_rest_url
+        )
         public_market_clients = {
             Exchange.BINANCE: BinancePublicRestClient(
                 base_url=settings.binance_public_rest_url,
                 timeout_seconds=settings.public_market_http_timeout_seconds,
             ),
             Exchange.BYBIT: BybitPublicRestClient(
-                base_url=settings.bybit_public_rest_url,
+                base_url=bybit_public_base_url,
                 timeout_seconds=settings.public_market_http_timeout_seconds,
             ),
         }
@@ -240,14 +256,6 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
     )
 
     audit_service = AuditService(repository=repository)
-    target_environment = ExecutionEnvironment(
-        settings.oms_execution_environment
-    )
-    target_exchange = (
-        Exchange.BINANCE
-        if target_environment == ExecutionEnvironment.PAPER
-        else Exchange(settings.oms_testnet_exchange)
-    )
     limits = RiskLimits(
         risk_per_trade_percent=settings.risk_per_trade_percent,
         max_daily_drawdown_percent=settings.max_daily_drawdown_percent,
@@ -377,9 +385,13 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
     )
     context_holder: dict = {}
     market_data_agent = MarketDataAgent(
-        candle_store, connection_status_fn=lambda: (
-            "CONNECTED" if context_holder.get("ctx") and context_holder["ctx"].market_connected else "DISCONNECTED"
-        )
+        candle_store,
+        connection_status_fn=lambda: (
+            "CONNECTED"
+            if context_holder.get("ctx")
+            and context_holder["ctx"].market_connected
+            else "DISCONNECTED"
+        ),
     )
     quant_agent = QuantAgent(candle_store)
     trend_agent = TrendAgent(candle_store)

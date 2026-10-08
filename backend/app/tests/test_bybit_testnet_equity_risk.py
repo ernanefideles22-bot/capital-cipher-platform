@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -10,10 +11,10 @@ from app.audit.service import AuditService
 from app.core.errors import SecurityError
 from app.core.state_machine import SystemState, SystemStateMachine
 from app.risk.venue_aware import VenueAwareRiskManager
-from app.schemas.common import CandidateAction
+from app.schemas.common import CandidateAction, OrderSide
 from app.schemas.decisions import Decision
 from app.schemas.oms import ExecutionEnvironment
-from app.schemas.risk import RiskLimits
+from app.schemas.risk import PositionExposure, RiskLimits
 
 
 async def _operating_state_machine() -> SystemStateMachine:
@@ -40,6 +41,18 @@ def _decision() -> Decision:
         confidence=90,
         strategy="SCALP_15M",
         agent_summary=[{"name": "QuantAgent", "signal": "BUY"}],
+    )
+
+
+def _exposure(identity: str) -> PositionExposure:
+    return PositionExposure(
+        paper_order_id=identity,
+        symbol="BTCUSDT",
+        timeframe="15m",
+        strategy="TEST",
+        side=OrderSide.BUY,
+        notional=100.0,
+        leverage=1.0,
     )
 
 
@@ -105,3 +118,72 @@ async def test_testnet_equity_updates_daily_and_total_drawdown():
     assert await manager.effective_balance(10_000.0, force=True) == 19_000.0
     assert manager.state.daily_pnl_percent == pytest.approx(-5.0)
     assert manager.state.total_drawdown_percent == pytest.approx(5.0)
+
+
+@pytest.mark.asyncio
+async def test_testnet_risk_filters_paper_and_other_exchange_exposure():
+    managed_id = "11111111-1111-1111-1111-111111111111"
+    other_id = "22222222-2222-2222-2222-222222222222"
+
+    class _Repository:
+        async def load_open_position_exposures(self):
+            return [
+                _exposure("paper-order-1"),
+                _exposure("venue:BYBIT:TESTNET:BTCUSDT:BUY"),
+                _exposure("venue:BINANCE:TESTNET:BTCUSDT:BUY"),
+                _exposure(f"oms-reservation:{managed_id}"),
+                _exposure(f"oms-reservation:{other_id}"),
+                _exposure(f"oms:{managed_id}"),
+            ]
+
+        async def list_oms_orders(self, *, exchange, environment, limit):
+            assert exchange.value == "BYBIT"
+            assert environment == ExecutionEnvironment.TESTNET
+            assert limit is None
+            return [SimpleNamespace(oms_order_id=managed_id)]
+
+    manager = VenueAwareRiskManager(
+        RiskLimits(),
+        await _operating_state_machine(),
+        AuditService(),
+        execution_environment=ExecutionEnvironment.TESTNET,
+        initial_balance=10_000.0,
+        repository=_Repository(),
+    )
+
+    async def equity_provider() -> float:
+        return 20_000.0
+
+    manager.set_testnet_equity_provider(equity_provider)
+    await manager.refresh_positions()
+
+    identities = {
+        item.paper_order_id for item in manager.position_exposures()
+    }
+    assert identities == {
+        "venue:BYBIT:TESTNET:BTCUSDT:BUY",
+        f"oms-reservation:{managed_id}",
+        f"oms:{managed_id}",
+    }
+
+
+@pytest.mark.asyncio
+async def test_paper_history_cannot_reset_testnet_equity_baseline():
+    manager = VenueAwareRiskManager(
+        RiskLimits(),
+        await _operating_state_machine(),
+        AuditService(),
+        execution_environment=ExecutionEnvironment.TESTNET,
+        initial_balance=10_000.0,
+    )
+
+    async def equity_provider() -> float:
+        return 20_000.0
+
+    manager.set_testnet_equity_provider(equity_provider)
+    await manager.effective_balance(10_000.0, force=True)
+    manager.restore_realized_history([], 10_000.0)
+    manager.register_trade_result(-1_000.0)
+
+    assert manager.initial_balance == pytest.approx(20_000.0)
+    assert manager.state.daily_pnl_percent == pytest.approx(0.0)

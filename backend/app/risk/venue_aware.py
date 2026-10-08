@@ -10,16 +10,18 @@ from datetime import datetime, timezone
 from app.core.errors import SecurityError
 from app.orchestrator.portfolio_consensus import PortfolioConstructionService
 from app.risk.manager import RiskManager
+from app.schemas.common import Exchange
 from app.schemas.decisions import Decision
 from app.schemas.oms import ExecutionEnvironment
+from app.schemas.paper import PaperOrder
 from app.schemas.portfolio_consensus import PortfolioProposal, WeightedConsensus
-from app.schemas.risk import RiskCheck
+from app.schemas.risk import PositionExposure, RiskCheck
 
 EquityProvider = Callable[[], Awaitable[float]]
 
 
 class VenueAwareRiskManager(RiskManager):
-    """Use venue equity as the TESTNET sizing and drawdown source of truth."""
+    """Use Bybit venue state as the TESTNET risk source of truth."""
 
     def __init__(
         self,
@@ -50,7 +52,35 @@ class VenueAwareRiskManager(RiskManager):
     async def initialize(self) -> None:
         await super().initialize()
         if self.execution_environment == ExecutionEnvironment.TESTNET:
+            self.sync_positions(await self._load_bybit_testnet_positions())
             await self.effective_balance(self.initial_balance, force=True)
+
+    async def _load_bybit_testnet_positions(self) -> list[PositionExposure]:
+        if self._repository is None:
+            return []
+        exposures = await self._repository.load_open_position_exposures()
+        orders = await self._repository.list_oms_orders(
+            exchange=Exchange.BYBIT,
+            environment=ExecutionEnvironment.TESTNET,
+            limit=None,
+        )
+        managed_ids = {order.oms_order_id for order in orders}
+        scoped: list[PositionExposure] = []
+        for exposure in exposures:
+            identity = exposure.paper_order_id
+            if identity.startswith("venue:BYBIT:TESTNET:"):
+                scoped.append(exposure)
+                continue
+            if identity.startswith("oms-reservation:"):
+                order_id = identity.removeprefix("oms-reservation:")
+                if order_id in managed_ids:
+                    scoped.append(exposure)
+                continue
+            if identity.startswith("oms:"):
+                order_id = identity.removeprefix("oms:")
+                if order_id in managed_ids:
+                    scoped.append(exposure)
+        return scoped
 
     async def effective_balance(
         self,
@@ -110,9 +140,37 @@ class VenueAwareRiskManager(RiskManager):
         return equity
 
     async def refresh_positions(self) -> None:
-        await super().refresh_positions()
+        if self.execution_environment != ExecutionEnvironment.TESTNET:
+            await super().refresh_positions()
+            return
+        self.sync_positions(await self._load_bybit_testnet_positions())
+        await self.effective_balance(self.initial_balance, force=True)
+
+    # The PAPER engine remains available for research APIs even in a TESTNET
+    # process. Its historical book must never alter TESTNET PnL or exposure.
+    def restore_realized_history(
+        self,
+        orders: list[PaperOrder],
+        initial_balance: float,
+    ) -> None:
         if self.execution_environment == ExecutionEnvironment.TESTNET:
-            await self.effective_balance(self.initial_balance, force=True)
+            return
+        super().restore_realized_history(orders, initial_balance)
+
+    def register_trade_result(self, pnl: float) -> None:
+        if self.execution_environment == ExecutionEnvironment.TESTNET:
+            return
+        super().register_trade_result(pnl)
+
+    def register_position(self, order: PaperOrder) -> None:
+        if self.execution_environment == ExecutionEnvironment.TESTNET:
+            return
+        super().register_position(order)
+
+    def unregister_position(self, paper_order_id: str) -> None:
+        if self.execution_environment == ExecutionEnvironment.TESTNET:
+            return
+        super().unregister_position(paper_order_id)
 
     async def check(
         self,
@@ -145,8 +203,12 @@ class VenueAwareRiskManager(RiskManager):
             risk_per_trade_percent_override=risk_per_trade_percent_override,
             min_risk_reward_override=min_risk_reward_override,
             max_open_positions_override=max_open_positions_override,
-            max_strategy_exposure_percent_override=max_strategy_exposure_percent_override,
-            max_portfolio_var_percent_override=max_portfolio_var_percent_override,
+            max_strategy_exposure_percent_override=(
+                max_strategy_exposure_percent_override
+            ),
+            max_portfolio_var_percent_override=(
+                max_portfolio_var_percent_override
+            ),
             max_notional_override=max_notional_override,
         )
 
