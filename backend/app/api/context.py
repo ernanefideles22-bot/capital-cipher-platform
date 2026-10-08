@@ -38,8 +38,8 @@ from app.execution.adapters.base import ExchangeExecutionAdapter
 from app.execution.adapters.binance_testnet import (
     BinanceTestnetExecutionAdapter,
 )
-from app.execution.adapters.bybit_testnet import (
-    BybitTestnetExecutionAdapter,
+from app.execution.adapters.bybit_testnet_protected import (
+    ProtectedBybitTestnetExecutionAdapter,
 )
 from app.execution.adapters.paper import PaperExecutionAdapter
 from app.execution.credentials import EnvironmentTestnetCredentialProvider
@@ -184,9 +184,7 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         backfill_worker = HistoricalBackfillWorker(
             repository=repository,
             service=backfill_service,
-            poll_interval_seconds=(
-                settings.backfill_worker_poll_interval_seconds
-            ),
+            poll_interval_seconds=settings.backfill_worker_poll_interval_seconds,
             lease_seconds=settings.backfill_lease_seconds,
             retry_base_seconds=settings.backfill_retry_base_seconds,
             retry_max_seconds=settings.backfill_retry_max_seconds,
@@ -318,7 +316,7 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
                 )
             )
         else:
-            testnet_adapter = BybitTestnetExecutionAdapter(
+            testnet_adapter = ProtectedBybitTestnetExecutionAdapter(
                 credentials,
                 base_url=settings.bybit_testnet_rest_url,
                 category=settings.bybit_testnet_category,
