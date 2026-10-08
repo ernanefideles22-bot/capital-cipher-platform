@@ -114,7 +114,11 @@ class BinanceMarketDataAdapter(MarketDataAdapter):
         retries = 0
         while not self._stop.is_set() and retries <= self._max_retries:
             try:
-                async with websockets.connect(self._stream_url(), ping_interval=20) as ws:
+                # Binance already sends protocol-level ping frames every 20 seconds
+                # and requires matching pongs. The websockets client responds to
+                # server pings automatically, so disable its independent keepalive
+                # to avoid client-side 1011 ping timeouts on hosted networks.
+                async with websockets.connect(self._stream_url(), ping_interval=None) as ws:
                     retries = 0
                     self.connected = True
                     await self._emit_status(
