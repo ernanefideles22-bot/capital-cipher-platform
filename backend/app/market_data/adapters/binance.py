@@ -22,6 +22,12 @@ BINANCE_WS_BASE = "wss://stream.binance.com:9443"
 # Binance interval strings match our timeframes for the supported set.
 SUPPORTED_TIMEFRAMES = {"1m", "5m", "15m", "1h", "4h", "1d"}
 
+# Closed candles are sparse (one per subscribed symbol/timeframe boundary), but
+# their downstream 300-agent decision cycle is deliberately much heavier than
+# WebSocket ingestion. Keep a bounded buffer so ingestion is decoupled without
+# allowing an unbounded backlog to hide an unhealthy consumer.
+DEFAULT_CANDLE_QUEUE_SIZE = 64
+
 
 def _stream_payload(message: dict) -> dict:
     """Return data from an official combined-stream envelope."""
@@ -78,22 +84,52 @@ def normalize_kline(payload: dict) -> Candle | None:
 class BinanceMarketDataAdapter(MarketDataAdapter):
     exchange_name = "BINANCE"
 
-    def __init__(self, max_retries: int = 10) -> None:
+    def __init__(
+        self,
+        max_retries: int = 10,
+        *,
+        candle_queue_size: int = DEFAULT_CANDLE_QUEUE_SIZE,
+    ) -> None:
         super().__init__()
+        if candle_queue_size < 1:
+            raise ValueError("candle_queue_size must be positive")
         self._subscriptions: set[tuple[str, str]] = set()
         self._task: asyncio.Task | None = None
+        self._candle_dispatch_task: asyncio.Task | None = None
         self._max_retries = max_retries
         self._stop = asyncio.Event()
+        self._candle_queue: asyncio.Queue[Candle] = asyncio.Queue(
+            maxsize=candle_queue_size
+        )
+
+    @property
+    def pending_candles(self) -> int:
+        """Number of normalized closed candles waiting for downstream handling."""
+
+        return self._candle_queue.qsize()
 
     async def connect(self) -> None:
         self._stop.clear()
-        self._task = asyncio.create_task(self._run())
+        if self._candle_dispatch_task is None or self._candle_dispatch_task.done():
+            self._candle_dispatch_task = asyncio.create_task(
+                self._dispatch_candles()
+            )
+        if self._task is None or self._task.done():
+            self._task = asyncio.create_task(self._run())
 
     async def disconnect(self) -> None:
         self._stop.set()
         if self._task:
             self._task.cancel()
+            await asyncio.gather(self._task, return_exceptions=True)
             self._task = None
+        if self._candle_dispatch_task:
+            self._candle_dispatch_task.cancel()
+            await asyncio.gather(
+                self._candle_dispatch_task,
+                return_exceptions=True,
+            )
+            self._candle_dispatch_task = None
         self.connected = False
         await self._emit_status("MARKET_DISCONNECTED", {"exchange": self.exchange_name})
 
@@ -107,6 +143,36 @@ class BinanceMarketDataAdapter(MarketDataAdapter):
             f"{symbol.lower()}@kline_{tf}" for symbol, tf in sorted(self._subscriptions)
         )
         return f"{BINANCE_WS_BASE}/stream?streams={streams}"
+
+    async def _dispatch_candles(self) -> None:
+        """Serialize heavy downstream candle handling outside the WS read loop."""
+
+        while not self._stop.is_set():
+            try:
+                candle = await self._candle_queue.get()
+            except asyncio.CancelledError:
+                raise
+            try:
+                await self._emit_candle(candle)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # One downstream failure must not permanently kill delivery of
+                # subsequent closed candles. The Orchestrator remains fail-closed
+                # for its own domain errors; this log covers unexpected callback
+                # failures at the adapter boundary.
+                logger.error(
+                    "Closed candle downstream dispatch failed",
+                    event_type="MARKET_CANDLE_DISPATCH_FAILED",
+                    metadata={
+                        "symbol": candle.symbol,
+                        "timeframe": candle.timeframe,
+                        "closed_at": candle.closed_at.isoformat(),
+                        "error_type": type(exc).__name__,
+                    },
+                )
+            finally:
+                self._candle_queue.task_done()
 
     async def _run(self) -> None:
         import websockets  # local import: optional dependency at test time
@@ -128,10 +194,15 @@ class BinanceMarketDataAdapter(MarketDataAdapter):
                         message = json.loads(raw)
                         raw_event = build_raw_kline_event(message)
                         if raw_event is not None:
+                            # Preserve the existing invariant: public source data is
+                            # durably handled before normalized analysis is queued.
                             await self._emit_raw_event(raw_event)
                         candle = normalize_kline(message)
                         if candle is not None:
-                            await self._emit_candle(candle)
+                            # The 300-agent cycle can take materially longer than a
+                            # WebSocket receive iteration. Queue it instead of
+                            # blocking the receive loop and starving server traffic.
+                            await self._candle_queue.put(candle)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
