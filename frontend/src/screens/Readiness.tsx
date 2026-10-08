@@ -18,16 +18,29 @@ function criterion(ok: boolean, label: string) {
   return <span className={`rounded border px-2 py-1 text-[10px] ${ok ? "border-emerald-900 bg-emerald-950/20 text-emerald-300" : "border-slate-800 bg-slate-950 text-slate-600"}`}>{label}</span>;
 }
 
+function ageLabel(timestamp: string | null): string {
+  if (!timestamp) return "sem execução";
+  const ageMs = Date.now() - new Date(timestamp).getTime();
+  if (!Number.isFinite(ageMs) || ageMs < 0) return "agora";
+  const seconds = Math.floor(ageMs / 1000);
+  if (seconds < 60) return `${seconds}s atrás`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m atrás`;
+  return `${Math.floor(minutes / 60)}h atrás`;
+}
+
 export default function Readiness() {
   const status = usePolling(api.status, 5000);
   const risk = usePolling(api.risk, 5000);
-  const agentsData = usePolling(api.agents, 5000);
+  const agentsData = usePolling(api.agents, 3000);
+  const decisionsData = usePolling(api.decisions, 3000);
   const specialistData = usePolling(api.specialistScorecards, 10000);
   const candidateData = usePolling(api.specialistCandidates, 10000);
   const regimeData = usePolling(api.regimeShadow, 10000);
   const paperData = usePolling(api.paperOrders, 5000);
 
   const agents = agentsData?.agents ?? [];
+  const decisions = decisionsData?.decisions ?? [];
   const readyAgents = agents.filter((agent) => agent.status === "READY").length;
   const failedAgents = agents.filter((agent) => ["FAILED", "TIMEOUT"].includes(agent.status)).length;
   const scorecards = specialistData?.scorecards ?? [];
@@ -43,6 +56,19 @@ export default function Readiness() {
     if (aContribution !== bContribution) return bContribution - aContribution;
     return (b.accuracy ?? 0) - (a.accuracy ?? 0);
   }).slice(0, 10), [scorecards]);
+
+  const recentWindowMs = 5 * 60 * 1000;
+  const now = Date.now();
+  const activeAgents = agents.filter((agent) => agent.last_run_at && now - new Date(agent.last_run_at).getTime() <= 60_000);
+  const recentDecisions = decisions.filter((decision) => now - new Date(decision.created_at).getTime() <= recentWindowMs);
+  const recentAgentRuns = agents.reduce((sum, agent) => sum + agent.total_runs, 0);
+  const recentAgentEvents = [...agents]
+    .filter((agent) => agent.last_run_at)
+    .sort((a, b) => new Date(b.last_run_at ?? 0).getTime() - new Date(a.last_run_at ?? 0).getTime())
+    .slice(0, 10);
+  const recentDecisionEvents = [...decisions]
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+    .slice(0, 6);
 
   const runtimeHealthy = Boolean(status) && status?.mode === "PAPER" && !status?.kill_switch_active;
   const marketHealthy = status?.market_data === "CONNECTED";
@@ -60,6 +86,85 @@ export default function Readiness() {
           <StatePill ok={runtimeHealthy} text={runtimeHealthy ? "PAPER saudável" : "Verificar runtime"} />
           <StatePill ok={marketHealthy} text={marketHealthy ? "Market data conectado" : "Market data pendente"} />
           <StatePill ok={evidenceCurrent} text={evidenceCurrent ? "Evidência atual" : "Evidência pendente"} />
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-cyan-900/60 bg-cyan-950/10 p-5">
+        <div className="flex flex-col justify-between gap-3 lg:flex-row lg:items-center">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className={`h-2.5 w-2.5 rounded-full ${activeAgents.length > 0 ? "animate-pulse bg-emerald-400" : "bg-slate-700"}`} />
+              <span className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-400">Atividade ao vivo</span>
+            </div>
+            <h3 className="mt-1 text-lg font-semibold text-white">Motor PAPER em observação</h3>
+            <p className="mt-1 text-xs text-slate-500">Atualização a cada 3 segundos usando execuções e decisões reais já expostas pelo backend.</p>
+          </div>
+          <div className="font-mono text-[11px] text-slate-600">heartbeat visual · {new Date().toLocaleTimeString("pt-BR")}</div>
+        </div>
+
+        <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          <div className="rounded-lg border border-emerald-900/50 bg-emerald-950/15 p-4">
+            <div className="text-[10px] uppercase tracking-wide text-emerald-500">Agentes ativos agora</div>
+            <div className="mt-2 text-3xl font-semibold text-emerald-300">{activeAgents.length}</div>
+            <div className="mt-1 text-xs text-slate-600">Executaram nos últimos 60s</div>
+          </div>
+          <div className="rounded-lg border border-cyan-900/50 bg-cyan-950/15 p-4">
+            <div className="text-[10px] uppercase tracking-wide text-cyan-500">Decisões · 5 min</div>
+            <div className="mt-2 text-3xl font-semibold text-cyan-200">{recentDecisions.length}</div>
+            <div className="mt-1 text-xs text-slate-600">Novas decisões recentes</div>
+          </div>
+          <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-4">
+            <div className="text-[10px] uppercase tracking-wide text-slate-500">Execuções acumuladas</div>
+            <div className="mt-2 text-3xl font-semibold text-white">{recentAgentRuns.toLocaleString("pt-BR")}</div>
+            <div className="mt-1 text-xs text-slate-600">Somatório total_runs dos agentes</div>
+          </div>
+          <div className="rounded-lg border border-violet-900/50 bg-violet-950/15 p-4">
+            <div className="text-[10px] uppercase tracking-wide text-violet-500">Forecasts liquidados</div>
+            <div className="mt-2 text-3xl font-semibold text-violet-200">{scorecards.reduce((sum, card) => sum + card.sample_count, 0)}</div>
+            <div className="mt-1 text-xs text-slate-600">Amostras nos scorecards</div>
+          </div>
+          <div className="rounded-lg border border-amber-900/50 bg-amber-950/15 p-4">
+            <div className="text-[10px] uppercase tracking-wide text-amber-500">Coletando por regime</div>
+            <div className="mt-2 text-3xl font-semibold text-amber-200">{regimeData?.collecting_count ?? 0}</div>
+            <div className="mt-1 text-xs text-slate-600">Linhas ainda em formação</div>
+          </div>
+        </div>
+
+        <div className="mt-5 grid gap-4 xl:grid-cols-2">
+          <div className="rounded-lg border border-slate-800 bg-slate-950/40">
+            <div className="border-b border-slate-800 px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">Últimas execuções de agentes</div>
+            <div className="max-h-80 divide-y divide-slate-900 overflow-y-auto">
+              {recentAgentEvents.map((agent) => (
+                <div key={`${agent.name}-${agent.version}`} className="flex items-center justify-between gap-3 px-4 py-3">
+                  <div className="min-w-0">
+                    <div className="truncate font-mono text-xs text-cyan-100">{agent.name}</div>
+                    <div className="mt-1 text-[10px] text-slate-600">{agent.last_signal ?? "sem sinal"} · confiança {agent.last_confidence === null ? "—" : pct(agent.last_confidence)}</div>
+                  </div>
+                  <div className="shrink-0 text-right">
+                    <div className="text-[10px] text-slate-500">{ageLabel(agent.last_run_at)}</div>
+                    <div className="mt-1 text-[10px] text-slate-700">{agent.total_runs.toLocaleString("pt-BR")} runs</div>
+                  </div>
+                </div>
+              ))}
+              {recentAgentEvents.length === 0 && <div className="px-4 py-8 text-center text-xs text-slate-600">Ainda não há execução recente registrada pelos agentes.</div>}
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-slate-800 bg-slate-950/40">
+            <div className="border-b border-slate-800 px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">Últimas decisões do orquestrador</div>
+            <div className="max-h-80 divide-y divide-slate-900 overflow-y-auto">
+              {recentDecisionEvents.map((decision) => (
+                <div key={decision.decision_id} className="flex items-center justify-between gap-3 px-4 py-3">
+                  <div className="min-w-0">
+                    <div className="text-xs text-slate-300"><span className="font-mono text-cyan-100">{decision.symbol}</span> · {decision.timeframe} · <span className={decision.candidate_action === "HOLD" ? "text-slate-500" : "text-emerald-300"}>{decision.candidate_action}</span></div>
+                    <div className="mt-1 truncate text-[10px] text-slate-600">{decision.strategy} · confiança {pct(decision.confidence)}</div>
+                  </div>
+                  <div className="shrink-0 text-[10px] text-slate-500">{ageLabel(decision.created_at)}</div>
+                </div>
+              ))}
+              {recentDecisionEvents.length === 0 && <div className="px-4 py-8 text-center text-xs text-slate-600">Nenhuma decisão recente disponível.</div>}
+            </div>
+          </div>
         </div>
       </section>
 
