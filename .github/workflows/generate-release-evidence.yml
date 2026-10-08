@@ -1,0 +1,91 @@
+name: Generate exact-SHA release evidence
+
+on:
+  push:
+    branches: [diag/release-evidence-538382db]
+    paths:
+      - .github/workflows/generate-release-evidence.yml
+
+permissions:
+  contents: read
+
+jobs:
+  evidence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: 538382db668619d27f3eb7508a01f1be04db698d
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install backend dependencies
+        working-directory: backend
+        run: python -m pip install -e ".[dev,postgres]"
+      - name: Generate Month 11 and Month 12 evidence
+        working-directory: backend
+        run: |
+          set -euo pipefail
+          python scripts/run_month11_shadow_validation.py > /tmp/month11.json
+          python - <<'PY'
+          import hashlib, json, pathlib, subprocess
+          source_revision = '538382db668619d27f3eb7508a01f1be04db698d'
+          month11_path = pathlib.Path('/tmp/month11.json')
+          raw = month11_path.read_bytes()
+          month11 = json.loads(raw)
+          report = month11['report']
+          assert report['status'] == 'PASSED', report['status']
+          report_id = report['report_id']
+          report_sha = hashlib.sha256(raw).hexdigest()
+          pathlib.Path('/tmp/month11-meta.json').write_text(
+              json.dumps({
+                  'source_revision': source_revision,
+                  'report_id': report_id,
+                  'report_sha256': report_sha,
+                  'status': report['status'],
+                  'registered_agents': month11['registered_agents'],
+                  'replay_candle_count': report['definition']['replay_candle_count'],
+              }, indent=2, sort_keys=True),
+              encoding='utf-8',
+          )
+          cmd = [
+              'python', 'scripts/run_release_readiness_audit.py',
+              '--source-revision', source_revision,
+              '--month11-report-id', report_id,
+              '--month11-report-sha256', report_sha,
+              '--ci-quality-gate-passed',
+              '--database-migrations-validated',
+          ]
+          with open('/tmp/month12.json', 'wb') as output:
+              subprocess.run(cmd, check=True, stdout=output)
+          bundle = json.loads(pathlib.Path('/tmp/month12.json').read_text())
+          assert bundle['source_revision'] == source_revision
+          assert bundle['status'] == 'PASSED', bundle['status']
+          assert len(bundle['checks']) == 10
+          assert all(item['status'] == 'PASSED' for item in bundle['checks'])
+          pathlib.Path('/tmp/evidence-summary.json').write_text(
+              json.dumps({
+                  'source_revision': source_revision,
+                  'month11_report_id': report_id,
+                  'month11_report_sha256': report_sha,
+                  'month12_evidence_bundle_id': bundle['evidence_bundle_id'],
+                  'month12_bundle_sha256': bundle['bundle_sha256'],
+                  'month12_status': bundle['status'],
+                  'audit_checks_passed': sum(item['status'] == 'PASSED' for item in bundle['checks']),
+                  'live_execution_surface_present': bundle['live_execution_surface_present'],
+              }, indent=2, sort_keys=True),
+              encoding='utf-8',
+          )
+          print('CAPITAL_CIPHER_RELEASE_EVIDENCE_SUMMARY')
+          print(pathlib.Path('/tmp/evidence-summary.json').read_text())
+          PY
+      - uses: actions/upload-artifact@v6
+        with:
+          name: capital-cipher-release-evidence-538382db
+          path: |
+            /tmp/month11.json
+            /tmp/month11-meta.json
+            /tmp/month12.json
+            /tmp/evidence-summary.json
+          if-no-files-found: error
+          retention-days: 30
