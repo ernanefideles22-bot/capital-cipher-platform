@@ -32,10 +32,13 @@ DEFAULT_CANDLE_QUEUE_SIZE = 64
 
 # Kline updates arrive much more frequently than closed candles. Persisting one
 # raw frame touches PostgreSQL and the durable event bus, so it must never run
-# inline in the WebSocket receive loop. Sharded bounded queues preserve ordering
-# for each symbol while allowing independent symbols to persist concurrently.
+# inline in the WebSocket receive loop. Sharded bounded queues preserve symbol
+# locality while independent shards persist concurrently. When a shard develops
+# backlog, a bounded cohort is persisted concurrently and no normalized candle
+# is released until every raw event in that cohort is durable.
 DEFAULT_RAW_QUEUE_SIZE = 128
 DEFAULT_RAW_QUEUE_SHARDS = 8
+DEFAULT_RAW_BATCH_SIZE = 16
 
 
 def _stream_payload(message: dict) -> dict:
@@ -107,6 +110,7 @@ class BinanceMarketDataAdapter(MarketDataAdapter):
         candle_queue_size: int = DEFAULT_CANDLE_QUEUE_SIZE,
         raw_queue_size: int = DEFAULT_RAW_QUEUE_SIZE,
         raw_queue_shards: int = DEFAULT_RAW_QUEUE_SHARDS,
+        raw_batch_size: int = DEFAULT_RAW_BATCH_SIZE,
     ) -> None:
         super().__init__()
         if candle_queue_size < 1:
@@ -115,11 +119,14 @@ class BinanceMarketDataAdapter(MarketDataAdapter):
             raise ValueError("raw_queue_size must be positive")
         if raw_queue_shards < 1:
             raise ValueError("raw_queue_shards must be positive")
+        if raw_batch_size < 1:
+            raise ValueError("raw_batch_size must be positive")
         self._subscriptions: set[tuple[str, str]] = set()
         self._task: asyncio.Task | None = None
         self._candle_dispatch_task: asyncio.Task | None = None
         self._raw_dispatch_tasks: list[asyncio.Task] = []
         self._max_retries = max_retries
+        self._raw_batch_size = raw_batch_size
         self._stop = asyncio.Event()
         self._candle_queue: asyncio.Queue[Candle] = asyncio.Queue(
             maxsize=candle_queue_size
@@ -144,7 +151,7 @@ class BinanceMarketDataAdapter(MarketDataAdapter):
         return sum(queue.qsize() for queue in self._raw_queues)
 
     def _raw_queue_index(self, symbol: str | None) -> int:
-        """Deterministically preserve per-symbol order across raw workers."""
+        """Keep one symbol on a deterministic raw-ingestion shard."""
 
         if not symbol:
             return 0
@@ -159,6 +166,21 @@ class BinanceMarketDataAdapter(MarketDataAdapter):
         queue = self._raw_queues[self._raw_queue_index(raw_event.symbol)]
         await queue.put((raw_event, message))
         return True
+
+    def _drain_raw_cohort(
+        self,
+        queue: asyncio.Queue[tuple[RawMarketEvent, dict]],
+        first: tuple[RawMarketEvent, dict],
+    ) -> list[tuple[RawMarketEvent, dict]]:
+        """Take an immediately available bounded cohort without adding latency."""
+
+        cohort = [first]
+        while len(cohort) < self._raw_batch_size:
+            try:
+                cohort.append(queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+        return cohort
 
     async def connect(self) -> None:
         self._stop.clear()
@@ -223,37 +245,54 @@ class BinanceMarketDataAdapter(MarketDataAdapter):
         queue: asyncio.Queue[tuple[RawMarketEvent, dict]],
         shard: int,
     ) -> None:
-        """Persist/publicize raw events before allowing normalized analysis."""
+        """Make a raw cohort durable before releasing any normalized candle."""
 
         while not self._stop.is_set():
             try:
-                raw_event, message = await queue.get()
+                first = await queue.get()
             except asyncio.CancelledError:
                 raise
+            cohort = self._drain_raw_cohort(queue, first)
             started = monotonic()
+            events = [item[0] for item in cohort]
             try:
-                # This callback owns durable raw persistence + event-bus
-                # publication. A failure here deliberately suppresses the candle.
-                await self._emit_raw_event(raw_event)
-                candle = normalize_kline(
-                    message,
-                    received_at=raw_event.received_at,
+                # Every raw callback still performs the existing durable table +
+                # event-journal/broker path. Running an already queued cohort
+                # concurrently removes serial hosted-network RTT amplification.
+                # No normalized candle is released until the entire cohort is done.
+                await asyncio.gather(
+                    *(self._emit_raw_event(event) for event in events)
                 )
-                if candle is not None:
-                    await self._candle_queue.put(candle)
+                cohort_ms = round((monotonic() - started) * 1000, 2)
+                for raw_event, message in cohort:
+                    candle = normalize_kline(
+                        message,
+                        received_at=raw_event.received_at,
+                    )
+                    if candle is not None:
+                        await self._candle_queue.put(candle)
+                        logger.info(
+                            "Closed candle queued after durable raw ingestion",
+                            event_type="MARKET_CANDLE_QUEUED",
+                            metadata={
+                                "symbol": candle.symbol,
+                                "timeframe": candle.timeframe,
+                                "closed_at": candle.closed_at.isoformat(),
+                                "candle_queue_depth": self._candle_queue.qsize(),
+                                "raw_queue_depth": self.pending_raw_events,
+                                "raw_ingest_ms": cohort_ms,
+                                "raw_cohort_size": len(cohort),
+                                "shard": shard,
+                            },
+                        )
+                if len(cohort) > 1:
                     logger.info(
-                        "Closed candle queued after durable raw ingestion",
-                        event_type="MARKET_CANDLE_QUEUED",
+                        "Raw market cohort persisted",
+                        event_type="MARKET_RAW_COHORT_PERSISTED",
                         metadata={
-                            "symbol": candle.symbol,
-                            "timeframe": candle.timeframe,
-                            "closed_at": candle.closed_at.isoformat(),
-                            "candle_queue_depth": self._candle_queue.qsize(),
+                            "cohort_size": len(cohort),
                             "raw_queue_depth": self.pending_raw_events,
-                            "raw_ingest_ms": round(
-                                (monotonic() - started) * 1000,
-                                2,
-                            ),
+                            "duration_ms": cohort_ms,
                             "shard": shard,
                         },
                     )
@@ -261,11 +300,17 @@ class BinanceMarketDataAdapter(MarketDataAdapter):
                 raise
             except Exception as exc:
                 logger.error(
-                    "Raw market event ingestion failed; normalized candle suppressed",
+                    "Raw market cohort ingestion failed; normalized candles suppressed",
                     event_type="MARKET_RAW_INGESTION_FAILED",
                     metadata={
-                        "symbol": raw_event.symbol,
-                        "event_id": raw_event.event_id,
+                        "symbols": sorted(
+                            {
+                                event.symbol
+                                for event in events
+                                if event.symbol is not None
+                            }
+                        ),
+                        "cohort_size": len(cohort),
                         "raw_queue_depth": self.pending_raw_events,
                         "duration_ms": round((monotonic() - started) * 1000, 2),
                         "error_type": type(exc).__name__,
@@ -273,7 +318,8 @@ class BinanceMarketDataAdapter(MarketDataAdapter):
                     },
                 )
             finally:
-                queue.task_done()
+                for _ in cohort:
+                    queue.task_done()
 
     async def _dispatch_candles(self) -> None:
         """Serialize heavy downstream candle handling outside the WS read loop."""
@@ -301,10 +347,6 @@ class BinanceMarketDataAdapter(MarketDataAdapter):
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                # One downstream failure must not permanently kill delivery of
-                # subsequent closed candles. The Orchestrator remains fail-closed
-                # for its own domain errors; this log covers unexpected callback
-                # failures at the adapter boundary.
                 logger.error(
                     "Closed candle downstream dispatch failed",
                     event_type="MARKET_CANDLE_DISPATCH_FAILED",
@@ -353,8 +395,8 @@ class BinanceMarketDataAdapter(MarketDataAdapter):
                     async for raw in ws:
                         message = json.loads(raw)
                         # Never perform PostgreSQL/Redis work in the socket reader.
-                        # The bounded, per-symbol-ordered raw queues provide
-                        # backpressure without coupling normal I/O latency to ping
+                        # The bounded raw queues provide explicit backpressure
+                        # without coupling normal hosted I/O latency to ping
                         # handling or frame reception.
                         await self._queue_raw_message(message)
             except asyncio.CancelledError:
