@@ -1,6 +1,6 @@
 import type {
   AgentHealth, AgentRankingRow, ApiResponse, AuditEvent, BacktestReport, Candle,
-  Decision, PaperOrder, PaperPerformance, PerformanceReport, RiskStatus, SystemStatus,
+  Decision, PaperOrder, PaperPerformance, PerformanceReport, RiskStatus, SpecialistScorecard, SystemStatus,
 } from "../types";
 
 // Keep the default same-origin for a dashboard served by the backend. A
@@ -35,6 +35,7 @@ export const api = {
   performanceReport: (by: "symbol" | "timeframe") =>
     get<PerformanceReport>(`/reports/performance?by=${by}`),
   agentRanking: () => get<{ ranking: AgentRankingRow[] }>("/reports/agents/ranking"),
+  specialistScorecards: () => get<{ scorecards: SpecialistScorecard[]; decision_authority: boolean; automatic_weight_adjustment: boolean }>("/reports/agents/specialists"),
   backtestReports: () => get<{ reports: BacktestReport[] }>("/backtest/reports"),
   runBacktest: async (body: Record<string, unknown>, apiKey: string) => {
     const response = await fetch(`${BASE}/backtest/run`, {
