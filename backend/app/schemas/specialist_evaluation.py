@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 from datetime import timedelta
+from decimal import Decimal, ROUND_HALF_EVEN, localcontext
 from typing import Literal
 
 from pydantic import (
@@ -27,6 +28,8 @@ SpecialistDomain = Literal[
 ]
 EvaluationStatus = Literal["INSUFFICIENT_SAMPLE", "EVALUATED"]
 
+_EVIDENCE_VALUE_QUANTUM = Decimal("0.000000000000000001")
+
 
 def _sha256(payload: dict) -> str:
     encoded = json.dumps(
@@ -37,6 +40,18 @@ def _sha256(payload: dict) -> str:
         allow_nan=False,
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _canonical_evidence_value(value: float) -> float:
+    """Match the PostgreSQL NUMERIC(38,18) persistence boundary before hashing."""
+
+    with localcontext() as context:
+        context.prec = 80
+        normalized = Decimal(str(value)).quantize(
+            _EVIDENCE_VALUE_QUANTUM,
+            rounding=ROUND_HALF_EVEN,
+        )
+    return float(normalized)
 
 
 class StrictEvaluationModel(BaseModel):
@@ -67,6 +82,10 @@ class SpecialistEvidence(StrictEvaluationModel):
             raise ValueError("evidence value must be finite")
         if self.received_at < self.observed_at:
             raise ValueError("received_at must not be before observed_at")
+        # Evidence values are stored as NUMERIC(38,18). Canonicalize before the
+        # immutable identity is computed so a database round-trip cannot change
+        # the hash solely because a derived float had more than 18 decimals.
+        self.value = _canonical_evidence_value(self.value)
         identity = _sha256(
             {
                 "schema_version": self.schema_version,
