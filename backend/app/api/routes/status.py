@@ -45,5 +45,21 @@ async def system_status(context: AppContext = Depends(get_context)) -> dict:
                 "live_execution_available": False,
             },
             "database": "CONNECTED" if context.repository is not None else "IN_MEMORY",
+            "runtime_capacity": {
+                "default_timeframe": context.settings.default_timeframe,
+                "symbol_count": len(context.settings.allowed_symbols_list),
+                "database_pool_size": context.settings.database_pool_size,
+                "database_max_overflow": context.settings.database_max_overflow,
+                "database_connection_ceiling": (
+                    context.settings.database_pool_size
+                    + context.settings.database_max_overflow
+                ),
+                "agent_max_concurrency": context.settings.agent_max_concurrency,
+                "agent_worker_max_concurrency": (
+                    context.settings.agent_worker_max_concurrency
+                ),
+                "agent_worker_batch_size": context.settings.agent_worker_batch_size,
+                "agent_lease_seconds": context.settings.agent_lease_seconds,
+            },
         }
     )
