@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
+from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import and_, func, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -4211,6 +4212,54 @@ class Repository:
         )
 
     @staticmethod
+    def _same_specialist_source_event(
+        stored: SpecialistEvidence,
+        incoming: SpecialistEvidence,
+    ) -> bool:
+        """Compare provider-event identity while excluding receipt metadata."""
+
+        immutable_source_fields = (
+            "schema_version",
+            "domain",
+            "metric_name",
+            "scope",
+            "source",
+            "source_event_id",
+            "value",
+            "unit",
+            "quality_score",
+            "observed_at",
+            "provenance_uri",
+            "payload_sha256",
+        )
+        return all(
+            getattr(stored, field) == getattr(incoming, field)
+            for field in immutable_source_fields
+        )
+
+    @staticmethod
+    def _same_specialist_source_row(
+        row: SpecialistEvidenceModel,
+        incoming: SpecialistEvidence,
+    ) -> bool:
+        """Confirm a legacy DB row against a fresh provider event without trusting its hash."""
+
+        return (
+            row.schema_version == incoming.schema_version
+            and row.domain == incoming.domain
+            and row.metric_name == incoming.metric_name
+            and row.scope == incoming.scope
+            and row.source == incoming.source
+            and row.source_event_id == incoming.source_event_id
+            and float(row.value) == incoming.value
+            and row.unit == incoming.unit
+            and row.quality_score == incoming.quality_score
+            and _as_utc(row.observed_at) == incoming.observed_at
+            and row.provenance_uri == incoming.provenance_uri
+            and row.payload_sha256 == incoming.payload_sha256
+        )
+
+    @staticmethod
     def _agent_forecast_from_row(
         row: AgentForecastModel,
     ) -> AgentForecast:
@@ -4286,8 +4335,18 @@ class Repository:
                     )
                 )
                 if source_event is not None:
-                    stored = self._specialist_evidence_from_row(source_event)
-                    if stored != evidence:
+                    try:
+                        stored = self._specialist_evidence_from_row(source_event)
+                    except PydanticValidationError as exc:
+                        if not self._same_specialist_source_row(source_event, evidence):
+                            raise ValidationError(
+                                "Persisted source event failed integrity and differs from incoming evidence"
+                            ) from exc
+                        # A fresh governed provider event independently confirms the
+                        # immutable source fields. Keep the legacy DB row append-only
+                        # for audit, but allow current runtime evidence to proceed.
+                        return evidence
+                    if not self._same_specialist_source_event(stored, evidence):
                         raise ValidationError(
                             "Source event already maps to different evidence"
                         )
@@ -4319,11 +4378,13 @@ class Repository:
                 f"Failed to persist specialist evidence: {exc}"
             ) from exc
 
-    async def list_specialist_evidence(
+    async def list_specialist_evidence_with_rejections(
         self,
         *,
         limit: int = 100,
-    ) -> list[SpecialistEvidence]:
+    ) -> tuple[list[SpecialistEvidence], list[dict[str, str]]]:
+        """Load valid evidence and logically quarantine only invalid rows."""
+
         if not 1 <= limit <= 100_000:
             raise ValueError("Specialist evidence limit must be 1..100000")
         async with self._db.session() as session:
@@ -4337,10 +4398,32 @@ class Repository:
                     .limit(limit)
                 )
             )
-            return [
-                self._specialist_evidence_from_row(row)
-                for row in rows
-            ]
+        valid: list[SpecialistEvidence] = []
+        rejected: list[dict[str, str]] = []
+        for row in rows:
+            try:
+                valid.append(self._specialist_evidence_from_row(row))
+            except PydanticValidationError as exc:
+                rejected.append(
+                    {
+                        "evidence_id": row.evidence_id,
+                        "source": row.source,
+                        "source_event_id": row.source_event_id,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    }
+                )
+        return valid, rejected
+
+    async def list_specialist_evidence(
+        self,
+        *,
+        limit: int = 100,
+    ) -> list[SpecialistEvidence]:
+        valid, _ = await self.list_specialist_evidence_with_rejections(
+            limit=limit
+        )
+        return valid
 
     async def save_agent_forecasts(
         self,

@@ -43,28 +43,41 @@ class SpecialistEvidenceService:
     async def initialize(self) -> None:
         if self._repository is None:
             return
-        try:
-            historical = await self._repository.list_specialist_evidence(
-                limit=10_000
-            )
-        except PydanticValidationError as exc:
-            # Legacy rows written before values were canonicalized to the
-            # NUMERIC(38,18) persistence boundary may no longer reproduce their
-            # pre-persistence evidence_id. They are advisory SHADOW evidence and
-            # must never be trusted after an integrity failure. Keep the rows in
-            # PostgreSQL for audit, exclude the whole historical set from runtime,
-            # and let governed collectors repopulate fresh evidence on new candle
-            # buckets. Database availability errors still propagate and fail startup.
+        rejected: list[dict[str, str]] = []
+        quarantine_loader = getattr(
+            self._repository,
+            "list_specialist_evidence_with_rejections",
+            None,
+        )
+        if quarantine_loader is not None:
+            historical, rejected = await quarantine_loader(limit=10_000)
+        else:
+            try:
+                historical = await self._repository.list_specialist_evidence(
+                    limit=10_000
+                )
+            except PydanticValidationError as exc:
+                historical = []
+                rejected = [
+                    {
+                        "evidence_id": "unknown",
+                        "source": "unknown",
+                        "source_event_id": "unknown",
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    }
+                ]
+        if rejected:
             self.historical_integrity_rejected = True
-            self._items.clear()
-            self._source_events.clear()
             logger.error(
                 "Persisted specialist evidence failed immutable identity validation; "
-                "historical evidence excluded from runtime",
+                "invalid rows quarantined from runtime",
                 event_type="SPECIALIST_EVIDENCE_INTEGRITY_REJECTED",
-                metadata={"error_type": type(exc).__name__},
+                metadata={
+                    "rejected_count": len(rejected),
+                    "rejected": rejected[:20],
+                },
             )
-            return
         for evidence in historical:
             self._items[evidence.evidence_id] = evidence
             self._source_events[
