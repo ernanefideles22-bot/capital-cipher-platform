@@ -1,11 +1,11 @@
 """Live market-data continuity before agent evaluation.
 
 A transient WebSocket interruption must not make the 300-agent cohort reason
-about a candle series with holes.  This module reuses the existing historical
+about a candle series with holes. This module reuses the existing historical
 backfill service to repair only the missing *closed* candles, hydrates the
 in-memory CandleStore, and then allows the current live candle to reach the
-Orchestrator.  Recovered historical candles never generate retroactive trading
-decisions.
+Orchestrator. Recovered or persisted historical candles never generate
+retroactive trading decisions.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from typing import Any, Protocol
 
 from app.core.logging import ServiceLogger
 from app.market_data.data_quality import TIMEFRAME_SECONDS
-from app.market_data.store import CandleStore
+from app.market_data.store import MAX_CANDLES, CandleStore
 from app.schemas.backfill import HistoricalBackfillRequest
 from app.schemas.market import Candle
 
@@ -44,12 +44,12 @@ class CandleOrchestrator(Protocol):
 
 
 class LiveCandleContinuityProcessor:
-    """Repair a detected live gap before the next current-candle decision.
+    """Hydrate/repair market history before each current-candle decision.
 
     The processor is intentionally synchronous with respect to the downstream
-    candle-dispatch consumer: the current candle waits for repair, while the
-    Binance WebSocket receive loop remains free to keep ingesting messages into
-    its bounded queue.
+    candle-dispatch consumer: the current candle waits for history hydration or
+    repair, while the exchange WebSocket receive loop remains free to keep
+    ingesting messages into its bounded queue.
     """
 
     def __init__(
@@ -59,11 +59,123 @@ class LiveCandleContinuityProcessor:
         repository: CandleRepository,
         backfill_service: BackfillRunner,
         orchestrator: CandleOrchestrator,
+        history_limit: int = MAX_CANDLES,
     ) -> None:
+        if history_limit < 1:
+            raise ValueError("history_limit must be positive")
         self._store = store
         self._repository = repository
         self._backfill_service = backfill_service
         self._orchestrator = orchestrator
+        self._history_limit = history_limit
+
+    async def _hydrate_persisted_history(
+        self,
+        candle: Candle,
+        *,
+        step_seconds: int,
+    ) -> bool:
+        """Seed an empty in-memory series from its persisted contiguous suffix.
+
+        Persistence is queried only up to the candle immediately preceding the
+        current live close, which prevents look-ahead. If older persisted rows
+        contain a hole, only the newest contiguous suffix is loaded. Any gap
+        between that suffix and the current candle is then handled by the same
+        fail-closed live backfill path used for WebSocket interruptions.
+        """
+
+        step = timedelta(seconds=step_seconds)
+        history_end = candle.closed_at - step
+        history_start = candle.closed_at - (step * self._history_limit)
+        try:
+            persisted = await self._repository.list_candles(
+                exchange=candle.exchange.value,
+                symbol=candle.symbol,
+                timeframe=candle.timeframe,
+                start_at=history_start,
+                end_at=history_end,
+                limit=self._history_limit,
+            )
+        except Exception as exc:
+            logger.error(
+                "Persisted candle history hydration failed",
+                event_type="MARKET_HISTORY_HYDRATION_BLOCKED",
+                metadata={
+                    "exchange": candle.exchange.value,
+                    "symbol": candle.symbol,
+                    "timeframe": candle.timeframe,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            return False
+
+        ordered = sorted(
+            (
+                item
+                for item in persisted
+                if item.closed_at <= history_end
+            ),
+            key=lambda item: item.closed_at,
+        )
+        if not ordered:
+            logger.info(
+                "No persisted candle history available for initial hydration",
+                event_type="MARKET_HISTORY_HYDRATED",
+                metadata={
+                    "exchange": candle.exchange.value,
+                    "symbol": candle.symbol,
+                    "timeframe": candle.timeframe,
+                    "hydrated_count": 0,
+                },
+            )
+            return True
+
+        # Keep only the newest exact-cadence suffix. An older hole must not be
+        # silently bridged because rolling indicators would otherwise reason
+        # about a discontinuous series as if it were complete.
+        suffix_reversed = [ordered[-1]]
+        expected_previous = ordered[-1].closed_at - step
+        for item in reversed(ordered[:-1]):
+            if item.closed_at == expected_previous:
+                suffix_reversed.append(item)
+                expected_previous -= step
+                continue
+            if item.closed_at < expected_previous:
+                break
+            # A duplicate or unexpected newer timestamp is ignored here; the
+            # persisted candle identity normally prevents this condition.
+
+        suffix = list(reversed(suffix_reversed))
+        try:
+            for historical_candle in suffix:
+                self._store.add(historical_candle)
+        except Exception as exc:
+            logger.error(
+                "Persisted candle history could not hydrate in-memory state",
+                event_type="MARKET_HISTORY_HYDRATION_BLOCKED",
+                metadata={
+                    "exchange": candle.exchange.value,
+                    "symbol": candle.symbol,
+                    "timeframe": candle.timeframe,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            return False
+
+        logger.info(
+            "Persisted candle history hydrated before agent evaluation",
+            event_type="MARKET_HISTORY_HYDRATED",
+            metadata={
+                "exchange": candle.exchange.value,
+                "symbol": candle.symbol,
+                "timeframe": candle.timeframe,
+                "hydrated_count": len(suffix),
+                "persisted_rows_considered": len(ordered),
+                "first_closed_at": suffix[0].closed_at.isoformat(),
+                "last_closed_at": suffix[-1].closed_at.isoformat(),
+            },
+        )
+        return True
 
     async def handle(self, candle: Candle) -> Any:
         previous = self._store.latest(
@@ -71,10 +183,24 @@ class LiveCandleContinuityProcessor:
             candle.symbol,
             candle.timeframe,
         )
+
+        step_seconds = TIMEFRAME_SECONDS.get(candle.timeframe)
+        if previous is None and step_seconds is not None:
+            hydrated = await self._hydrate_persisted_history(
+                candle,
+                step_seconds=step_seconds,
+            )
+            if not hydrated:
+                return None
+            previous = self._store.latest(
+                candle.exchange.value,
+                candle.symbol,
+                candle.timeframe,
+            )
+
         if previous is None:
             return await self._orchestrator.on_candle_closed(candle)
 
-        step_seconds = TIMEFRAME_SECONDS.get(candle.timeframe)
         if step_seconds is None:
             logger.error(
                 "Live candle continuity blocked unsupported timeframe",
@@ -195,7 +321,7 @@ class LiveCandleContinuityProcessor:
             )
             return None
 
-        # State hydration only.  Calling the Orchestrator for these historical
+        # State hydration only. Calling the Orchestrator for these historical
         # candles would create retroactive decisions/orders, which is explicitly
         # forbidden for live continuity repair.
         for recovered_candle in recovered:
