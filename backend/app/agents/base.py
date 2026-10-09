@@ -33,6 +33,7 @@ class BaseAgent(abc.ABC):
     decision_role: Literal["PRIMARY", "SHADOW"] = "SHADOW"
     critical: bool = False
     timeout_ms: int = 5000
+    evidence_prefetch_timeout_ms: int = 5000
     max_attempts: int = 3
 
     def __init__(self) -> None:
@@ -64,6 +65,7 @@ class BaseAgent(abc.ABC):
             "decision_role": self.decision_role,
             "critical": self.critical,
             "timeout_ms": self.timeout_ms,
+            "evidence_prefetch_timeout_ms": self.evidence_prefetch_timeout_ms,
             "max_attempts": self.max_attempts,
         }
         encoded = json.dumps(
@@ -128,14 +130,14 @@ class BaseAgent(abc.ABC):
         )
 
     async def _prefetch_governed_evidence(self, agent_input: AgentInput) -> None:
-        """Warm shared derivatives evidence before the timed analysis window.
+        """Warm shared derivatives evidence before the analysis timeout window.
 
         Month 8 DERIVATIVES specialists share one public, read-only collector per
-        runtime cohort. Provider I/O and durable evidence persistence have their
-        own bounded network/database contracts and must not consume the agent's
-        five-second analysis budget. The specialist still performs its normal
-        refresh call inside ``_analyze``; after this shared prefetch that call is
-        idempotent and returns immediately for the same symbol/candle bucket.
+        runtime cohort. Provider I/O and durable evidence persistence do not consume
+        the five-second analysis budget, but this prefetch has its own explicit
+        timeout so external I/O cannot make the full agent lifecycle unbounded.
+        The specialist still performs its normal refresh call inside ``_analyze``;
+        after this shared prefetch that call is idempotent for the same bucket.
 
         The hook is structural on purpose: only governed external specialists
         receive ``_derivatives_collector`` from the existing Month 8 builder, so
@@ -163,7 +165,7 @@ class BaseAgent(abc.ABC):
 
     # -- execution -----------------------------------------------------------
     async def run(self, agent_input: AgentInput) -> AgentOutput:
-        """Execute the agent with timeout and contract enforcement."""
+        """Execute the agent with bounded prefetch and analysis timeouts."""
         if not self.enabled:
             return self._output(
                 AgentStatus.SKIPPED, Signal.NEUTRAL, 0, "Agent disabled", latency_ms=0
@@ -172,10 +174,20 @@ class BaseAgent(abc.ABC):
         self.total_runs += 1
         self.last_run_at = datetime.now(timezone.utc)
         self.last_input = agent_input
-        started = time.monotonic()
+        started = time.perf_counter()
+        analysis_started: float | None = None
+        prefetch_latency_ms = 0.0
         try:
-            await self._prefetch_governed_evidence(agent_input)
-            analysis_started = time.monotonic()
+            prefetch_started = time.perf_counter()
+            await asyncio.wait_for(
+                self._prefetch_governed_evidence(agent_input),
+                timeout=self.evidence_prefetch_timeout_ms / 1000,
+            )
+            prefetch_latency_ms = round(
+                (time.perf_counter() - prefetch_started) * 1000,
+                3,
+            )
+            analysis_started = time.perf_counter()
             output = await asyncio.wait_for(
                 self._analyze(agent_input), timeout=self.timeout_ms / 1000
             )
@@ -183,14 +195,18 @@ class BaseAgent(abc.ABC):
                 raise ValueError(
                     "Agent output name does not match the registered agent"
                 )
-            latency_ms = int((time.monotonic() - started) * 1000)
-            analysis_latency_ms = int((time.monotonic() - analysis_started) * 1000)
+            latency_ms_precise = (time.perf_counter() - started) * 1000
+            latency_ms = int(round(latency_ms_precise))
+            analysis_latency_ms = round(
+                (time.perf_counter() - analysis_started) * 1000,
+                3,
+            )
             output = output.model_copy(update={"latency_ms": latency_ms})
             self.status = "READY"
             self.last_signal = output.signal.value
             self.last_confidence = output.confidence
             self.last_output = output
-            self.total_latency_ms += latency_ms
+            self.total_latency_ms += latency_ms_precise
             self._logger.info(
                 f"{self.name} completed",
                 event_type="AGENT_COMPLETED",
@@ -198,7 +214,9 @@ class BaseAgent(abc.ABC):
                 metadata={
                     "signal": output.signal.value,
                     "confidence": output.confidence,
+                    "prefetch_latency_ms": prefetch_latency_ms,
                     "analysis_latency_ms": analysis_latency_ms,
+                    "total_latency_ms": round(latency_ms_precise, 3),
                 },
             )
             return output
@@ -206,17 +224,34 @@ class BaseAgent(abc.ABC):
             self.status = "TIMEOUT"
             self.total_failures += 1
             self.last_failure_at = datetime.now(timezone.utc)
-            latency_ms = int((time.monotonic() - started) * 1000)
+            latency_ms_precise = (time.perf_counter() - started) * 1000
+            latency_ms = int(round(latency_ms_precise))
+            timeout_phase = (
+                "evidence_prefetch" if analysis_started is None else "analysis"
+            )
+            timeout_budget_ms = (
+                self.evidence_prefetch_timeout_ms
+                if analysis_started is None
+                else self.timeout_ms
+            )
             self._logger.error(
                 f"{self.name} timeout",
                 event_type="AGENT_TIMEOUT",
                 correlation_id=agent_input.correlation_id,
+                metadata={
+                    "timeout_phase": timeout_phase,
+                    "timeout_budget_ms": timeout_budget_ms,
+                    "total_latency_ms": round(latency_ms_precise, 3),
+                },
             )
             output = self._output(
                 AgentStatus.TIMEOUT,
                 Signal.BLOCK if self.critical else Signal.NEUTRAL,
                 0,
-                f"{self.name} exceeded timeout of {self.timeout_ms}ms",
+                (
+                    f"{self.name} exceeded {timeout_phase} timeout "
+                    f"of {timeout_budget_ms}ms"
+                ),
                 latency_ms=latency_ms,
             )
             self.last_output = output
@@ -225,12 +260,16 @@ class BaseAgent(abc.ABC):
             self.status = "FAILED"
             self.total_failures += 1
             self.last_failure_at = datetime.now(timezone.utc)
-            latency_ms = int((time.monotonic() - started) * 1000)
+            latency_ms_precise = (time.perf_counter() - started) * 1000
+            latency_ms = int(round(latency_ms_precise))
             self._logger.error(
                 f"{self.name} failed with {type(exc).__name__}",
                 event_type="AGENT_FAILED",
                 correlation_id=agent_input.correlation_id,
-                metadata={"error_type": type(exc).__name__},
+                metadata={
+                    "error_type": type(exc).__name__,
+                    "total_latency_ms": round(latency_ms_precise, 3),
+                },
             )
             output = self._output(
                 AgentStatus.FAILED,
