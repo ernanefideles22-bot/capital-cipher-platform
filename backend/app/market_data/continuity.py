@@ -2,10 +2,10 @@
 
 A transient WebSocket interruption must not make the 300-agent cohort reason
 about a candle series with holes. This module reuses the existing historical
-backfill service to repair only the missing *closed* candles, hydrates the
-in-memory CandleStore, and then allows the current live candle to reach the
-Orchestrator. Recovered or persisted historical candles never generate
-retroactive trading decisions.
+backfill service to repair missing *closed* candles, hydrates the in-memory
+CandleStore, and then allows the current live candle to reach the Orchestrator.
+Recovered or persisted historical candles never generate retroactive trading
+decisions.
 """
 
 from __future__ import annotations
@@ -20,6 +20,11 @@ from app.schemas.backfill import HistoricalBackfillRequest
 from app.schemas.market import Candle
 
 logger = ServiceLogger("market-continuity")
+
+# The largest current candle-window specialists require up to 180 observations
+# (including derived multi-window diagnostics). Seed at least this many when
+# public history is available so a deploy does not force hours of WAIT outputs.
+DEFAULT_SPECIALIST_HISTORY_CANDLES = 180
 
 
 class CandleRepository(Protocol):
@@ -60,14 +65,60 @@ class LiveCandleContinuityProcessor:
         backfill_service: BackfillRunner,
         orchestrator: CandleOrchestrator,
         history_limit: int = MAX_CANDLES,
+        specialist_history_candles: int = DEFAULT_SPECIALIST_HISTORY_CANDLES,
     ) -> None:
         if history_limit < 1:
             raise ValueError("history_limit must be positive")
+        if specialist_history_candles < 1:
+            raise ValueError("specialist_history_candles must be positive")
+        if specialist_history_candles > history_limit:
+            raise ValueError(
+                "specialist_history_candles cannot exceed history_limit"
+            )
         self._store = store
         self._repository = repository
         self._backfill_service = backfill_service
         self._orchestrator = orchestrator
         self._history_limit = history_limit
+        self._specialist_history_candles = specialist_history_candles
+
+    @staticmethod
+    def _contiguous_suffix(
+        candles: list[Candle],
+        *,
+        step: timedelta,
+    ) -> list[Candle]:
+        if not candles:
+            return []
+        ordered = sorted(candles, key=lambda item: item.closed_at)
+        suffix_reversed = [ordered[-1]]
+        expected_previous = ordered[-1].closed_at - step
+        for item in reversed(ordered[:-1]):
+            if item.closed_at == expected_previous:
+                suffix_reversed.append(item)
+                expected_previous -= step
+                continue
+            if item.closed_at < expected_previous:
+                break
+            # Duplicate/unexpected newer timestamps are ignored. The persisted
+            # candle identity normally prevents this condition.
+        return list(reversed(suffix_reversed))
+
+    async def _load_persisted_history(
+        self,
+        candle: Candle,
+        *,
+        start_at: datetime,
+        end_at: datetime,
+    ) -> list[Candle]:
+        return await self._repository.list_candles(
+            exchange=candle.exchange.value,
+            symbol=candle.symbol,
+            timeframe=candle.timeframe,
+            start_at=start_at,
+            end_at=end_at,
+            limit=self._history_limit,
+        )
 
     async def _hydrate_persisted_history(
         self,
@@ -75,26 +126,24 @@ class LiveCandleContinuityProcessor:
         *,
         step_seconds: int,
     ) -> bool:
-        """Seed an empty in-memory series from its persisted contiguous suffix.
+        """Seed an empty in-memory series from a verified contiguous suffix.
 
         Persistence is queried only up to the candle immediately preceding the
-        current live close, which prevents look-ahead. If older persisted rows
-        contain a hole, only the newest contiguous suffix is loaded. Any gap
-        between that suffix and the current candle is then handled by the same
-        fail-closed live backfill path used for WebSocket interruptions.
+        current live close, which prevents look-ahead. If the newest contiguous
+        suffix is too short for the current specialist cohort, the existing
+        governed public backfill service repairs only the required recent
+        history window. Historical rows hydrate state only and never reach the
+        Orchestrator.
         """
 
         step = timedelta(seconds=step_seconds)
         history_end = candle.closed_at - step
         history_start = candle.closed_at - (step * self._history_limit)
         try:
-            persisted = await self._repository.list_candles(
-                exchange=candle.exchange.value,
-                symbol=candle.symbol,
-                timeframe=candle.timeframe,
+            persisted = await self._load_persisted_history(
+                candle,
                 start_at=history_start,
                 end_at=history_end,
-                limit=self._history_limit,
             )
         except Exception as exc:
             logger.error(
@@ -109,15 +158,73 @@ class LiveCandleContinuityProcessor:
             )
             return False
 
-        ordered = sorted(
-            (
-                item
-                for item in persisted
-                if item.closed_at <= history_end
-            ),
-            key=lambda item: item.closed_at,
-        )
-        if not ordered:
+        eligible = [item for item in persisted if item.closed_at <= history_end]
+        suffix = self._contiguous_suffix(eligible, step=step)
+
+        if len(suffix) < self._specialist_history_candles:
+            repair_start = candle.closed_at - (
+                step * self._specialist_history_candles
+            )
+            request = HistoricalBackfillRequest(
+                exchange=candle.exchange,
+                symbol=candle.symbol,
+                timeframe=candle.timeframe,
+                start_at=repair_start,
+                end_at=history_end,
+                max_candles=self._specialist_history_candles,
+            )
+            try:
+                repair = await self._backfill_service.run(request)
+                repair_status = getattr(repair, "status", None)
+                if repair_status == "COMPLETED":
+                    persisted = await self._load_persisted_history(
+                        candle,
+                        start_at=history_start,
+                        end_at=history_end,
+                    )
+                    eligible = [
+                        item
+                        for item in persisted
+                        if item.closed_at <= history_end
+                    ]
+                    suffix = self._contiguous_suffix(eligible, step=step)
+                else:
+                    logger.warning(
+                        "Specialist history repair did not complete; using safe suffix",
+                        event_type="MARKET_HISTORY_REPAIR_INCOMPLETE",
+                        metadata={
+                            "exchange": candle.exchange.value,
+                            "symbol": candle.symbol,
+                            "timeframe": candle.timeframe,
+                            "status": repair_status or "UNKNOWN",
+                            "available_contiguous_candles": len(suffix),
+                            "required_contiguous_candles": (
+                                self._specialist_history_candles
+                            ),
+                        },
+                    )
+            except Exception as exc:
+                # Deep specialist history is an availability enhancement. The
+                # current cycle can still proceed with the verified suffix; each
+                # specialist independently fails closed to WAIT if its own window
+                # is insufficient. Recent live gaps remain strictly fail-closed
+                # in handle().
+                logger.warning(
+                    "Specialist history repair failed; using safe suffix",
+                    event_type="MARKET_HISTORY_REPAIR_INCOMPLETE",
+                    metadata={
+                        "exchange": candle.exchange.value,
+                        "symbol": candle.symbol,
+                        "timeframe": candle.timeframe,
+                        "error_type": type(exc).__name__,
+                        "available_contiguous_candles": len(suffix),
+                        "required_contiguous_candles": (
+                            self._specialist_history_candles
+                        ),
+                    },
+                )
+
+        if not suffix:
             logger.info(
                 "No persisted candle history available for initial hydration",
                 event_type="MARKET_HISTORY_HYDRATED",
@@ -130,22 +237,6 @@ class LiveCandleContinuityProcessor:
             )
             return True
 
-        # Keep only the newest exact-cadence suffix. An older hole must not be
-        # silently bridged because rolling indicators would otherwise reason
-        # about a discontinuous series as if it were complete.
-        suffix_reversed = [ordered[-1]]
-        expected_previous = ordered[-1].closed_at - step
-        for item in reversed(ordered[:-1]):
-            if item.closed_at == expected_previous:
-                suffix_reversed.append(item)
-                expected_previous -= step
-                continue
-            if item.closed_at < expected_previous:
-                break
-            # A duplicate or unexpected newer timestamp is ignored here; the
-            # persisted candle identity normally prevents this condition.
-
-        suffix = list(reversed(suffix_reversed))
         try:
             for historical_candle in suffix:
                 self._store.add(historical_candle)
@@ -170,7 +261,8 @@ class LiveCandleContinuityProcessor:
                 "symbol": candle.symbol,
                 "timeframe": candle.timeframe,
                 "hydrated_count": len(suffix),
-                "persisted_rows_considered": len(ordered),
+                "persisted_rows_considered": len(eligible),
+                "specialist_history_target": self._specialist_history_candles,
                 "first_closed_at": suffix[0].closed_at.isoformat(),
                 "last_closed_at": suffix[-1].closed_at.isoformat(),
             },

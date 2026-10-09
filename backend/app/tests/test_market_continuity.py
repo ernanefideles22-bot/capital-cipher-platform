@@ -30,21 +30,33 @@ def _candle(closed_at: datetime, close: float = 100.0) -> Candle:
 
 class FakeRepository:
     def __init__(self, recovered: list[Candle]) -> None:
-        self.recovered = recovered
+        self.rows = list(recovered)
         self.calls: list[dict] = []
 
     async def list_candles(self, **kwargs) -> list[Candle]:
         self.calls.append(kwargs)
-        return list(self.recovered)
+        start_at = kwargs.get("start_at")
+        end_at = kwargs.get("end_at")
+        limit = kwargs.get("limit", len(self.rows))
+        eligible = [
+            candle
+            for candle in self.rows
+            if (start_at is None or candle.closed_at >= start_at)
+            and (end_at is None or candle.closed_at <= end_at)
+        ]
+        return sorted(eligible, key=lambda item: item.closed_at)[:limit]
 
 
 class FakeBackfill:
-    def __init__(self, *, status: str = "COMPLETED") -> None:
+    def __init__(self, *, status: str = "COMPLETED", on_run=None) -> None:
         self.status = status
         self.requests = []
+        self.on_run = on_run
 
     async def run(self, request):
         self.requests.append(request)
+        if self.on_run is not None:
+            self.on_run(request)
         return SimpleNamespace(status=self.status, job_id="bf-1")
 
 
@@ -74,7 +86,8 @@ async def test_empty_store_hydrates_persisted_history_before_current_decision():
         repository=repository,
         backfill_service=backfill,
         orchestrator=orchestrator,
-        history_limit=10,
+        history_limit=3,
+        specialist_history_candles=3,
     )
 
     current = _candle(BASE, 100)
@@ -86,8 +99,8 @@ async def test_empty_store_hydrates_persisted_history_before_current_decision():
     assert len(repository.calls) == 1
     hydration_call = repository.calls[0]
     assert hydration_call["end_at"] == BASE - timedelta(minutes=5)
-    assert hydration_call["start_at"] == BASE - timedelta(minutes=50)
-    assert hydration_call["limit"] == 10
+    assert hydration_call["start_at"] == BASE - timedelta(minutes=15)
+    assert hydration_call["limit"] == 3
     # Persisted candles only hydrate indicator state; none is evaluated as a
     # current event, so no retroactive decision can be created.
     assert [item.closed_at for item in store.get("BINANCE", "BTCUSDT", "5m")] == [
@@ -114,7 +127,8 @@ async def test_initial_hydration_keeps_only_newest_contiguous_suffix():
         repository=repository,
         backfill_service=backfill,
         orchestrator=orchestrator,
-        history_limit=10,
+        history_limit=4,
+        specialist_history_candles=2,
     )
 
     current = _candle(BASE, 100)
@@ -126,6 +140,50 @@ async def test_initial_hydration_keeps_only_newest_contiguous_suffix():
         BASE - timedelta(minutes=10),
         BASE - timedelta(minutes=5),
         BASE,
+    ]
+
+
+async def test_short_history_is_repaired_before_specialists_run():
+    store = CandleStore()
+    repository = FakeRepository(
+        [_candle(BASE - timedelta(minutes=5), 99)]
+    )
+    repaired_history = [
+        _candle(BASE - timedelta(minutes=20), 96),
+        _candle(BASE - timedelta(minutes=15), 97),
+        _candle(BASE - timedelta(minutes=10), 98),
+        _candle(BASE - timedelta(minutes=5), 99),
+    ]
+
+    def repair_repository(_request) -> None:
+        repository.rows = list(repaired_history)
+
+    backfill = FakeBackfill(on_run=repair_repository)
+    orchestrator = RecordingOrchestrator(store)
+    processor = LiveCandleContinuityProcessor(
+        store=store,
+        repository=repository,
+        backfill_service=backfill,
+        orchestrator=orchestrator,
+        history_limit=6,
+        specialist_history_candles=4,
+    )
+
+    current = _candle(BASE, 100)
+    result = await processor.handle(current)
+
+    assert result == current
+    assert len(backfill.requests) == 1
+    request = backfill.requests[0]
+    assert request.start_at == BASE - timedelta(minutes=20)
+    assert request.end_at == BASE - timedelta(minutes=5)
+    assert request.max_candles == 4
+    # The repaired history is state only. Only the current live candle is
+    # evaluated by the orchestrator.
+    assert orchestrator.seen == [current]
+    assert [item.closed_at for item in store.get("BINANCE", "BTCUSDT", "5m")] == [
+        *(item.closed_at for item in repaired_history),
+        current.closed_at,
     ]
 
 
