@@ -1,7 +1,7 @@
 name: One-shot specialist evidence repair
 
 on:
-  push:
+  pull_request:
     branches:
       - deploy/railway-paper-staging
     paths:
