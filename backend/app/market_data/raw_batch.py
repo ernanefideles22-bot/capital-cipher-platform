@@ -8,16 +8,22 @@ a bounded cohort.
 
 from __future__ import annotations
 
+from time import monotonic
+
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from app.core.errors import DatabaseError
+from app.core.logging import ServiceLogger
 from app.core.event_bus import EventBus, EventPublication, Topics
 from app.database.models import RawMarketEventModel
 from app.database.session import Database
 from app.schemas.events import EventTypes
 from app.schemas.market import RawMarketEvent
+
+
+logger = ServiceLogger("raw_batch_persistence")
 
 
 class RawMarketEventBatchPersister:
@@ -60,6 +66,7 @@ class RawMarketEventBatchPersister:
             for event in events
         ]
 
+        started = monotonic()
         try:
             async with self._database.session() as session, session.begin():
                 dialect = self._database.engine.dialect.name
@@ -96,6 +103,7 @@ class RawMarketEventBatchPersister:
                 f"Failed to persist raw market event cohort: {exc}"
             ) from exc
 
+        raw_committed = monotonic()
         # Journal and broker publication are already batch-capable. Await the
         # whole cohort so a broker/journal failure suppresses normalization of
         # any closed candle contained in this raw cohort.
@@ -111,4 +119,16 @@ class RawMarketEventBatchPersister:
                 )
                 for event in events
             ]
+        )
+
+        completed = monotonic()
+        logger.info(
+            "Raw persistence stages completed",
+            event_type="MARKET_RAW_PERSISTENCE_TIMING",
+            metadata={
+                "cohort_size": len(events),
+                "raw_commit_ms": (raw_committed - started) * 1000,
+                "journal_broker_ms": (completed - raw_committed) * 1000,
+                "total_ms": (completed - started) * 1000,
+            },
         )

@@ -2,8 +2,9 @@ name: Continuous Integration
 
 on:
   pull_request:
+  workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, deploy/railway-paper-staging, fix/staging-critical-integrity]
 
 permissions:
   contents: read
@@ -40,6 +41,8 @@ jobs:
       POSTGRES_TEST_URL: postgresql+asyncpg://cipher:cipher@localhost:5432/capital_cipher_test
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'

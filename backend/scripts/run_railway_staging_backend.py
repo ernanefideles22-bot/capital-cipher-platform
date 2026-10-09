@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
@@ -96,6 +97,12 @@ def validate() -> dict[str, object]:
 
 
 def main() -> None:
+    # Railway's resolved Git source is authoritative, not a manually maintained
+    # application variable that can silently survive a new deployment.
+    revision = os.getenv("RAILWAY_GIT_COMMIT_SHA", "")
+    if not re.fullmatch(r"[a-f0-9]{40}", revision):
+        raise RuntimeError("RAILWAY_SOURCE_REVISION_MISSING_OR_INVALID")
+    os.environ["APP_SOURCE_REVISION"] = revision
     print(json.dumps(validate(), sort_keys=True), flush=True)
     port = os.getenv("PORT", "8000")
     os.execvp(
