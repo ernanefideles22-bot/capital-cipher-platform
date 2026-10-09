@@ -127,6 +127,40 @@ class BaseAgent(abc.ABC):
             last_confidence=self.last_confidence,
         )
 
+    async def _prefetch_governed_evidence(self, agent_input: AgentInput) -> None:
+        """Warm shared derivatives evidence before the timed analysis window.
+
+        Month 8 DERIVATIVES specialists share one public, read-only collector per
+        runtime cohort. Provider I/O and durable evidence persistence have their
+        own bounded network/database contracts and must not consume the agent's
+        five-second analysis budget. The specialist still performs its normal
+        refresh call inside ``_analyze``; after this shared prefetch that call is
+        idempotent and returns immediately for the same symbol/candle bucket.
+
+        The hook is structural on purpose: only governed external specialists
+        receive ``_derivatives_collector`` from the existing Month 8 builder, so
+        core/OHLCV agents retain the exact lifecycle they had before.
+        """
+
+        collector = getattr(self, "_derivatives_collector", None)
+        if collector is None:
+            return
+        definition = getattr(self, "_definition", None)
+        if getattr(definition, "domain", None) != "DERIVATIVES":
+            return
+        scope = (
+            "GLOBAL"
+            if getattr(definition, "scope", "SYMBOL") == "GLOBAL"
+            else agent_input.symbol
+        )
+        if scope == "GLOBAL":
+            return
+        await collector.refresh(
+            scope=scope,
+            as_of=agent_input.timestamp,
+            timeframe=agent_input.timeframe,
+        )
+
     # -- execution -----------------------------------------------------------
     async def run(self, agent_input: AgentInput) -> AgentOutput:
         """Execute the agent with timeout and contract enforcement."""
@@ -140,6 +174,8 @@ class BaseAgent(abc.ABC):
         self.last_input = agent_input
         started = time.monotonic()
         try:
+            await self._prefetch_governed_evidence(agent_input)
+            analysis_started = time.monotonic()
             output = await asyncio.wait_for(
                 self._analyze(agent_input), timeout=self.timeout_ms / 1000
             )
@@ -148,6 +184,7 @@ class BaseAgent(abc.ABC):
                     "Agent output name does not match the registered agent"
                 )
             latency_ms = int((time.monotonic() - started) * 1000)
+            analysis_latency_ms = int((time.monotonic() - analysis_started) * 1000)
             output = output.model_copy(update={"latency_ms": latency_ms})
             self.status = "READY"
             self.last_signal = output.signal.value
@@ -158,7 +195,11 @@ class BaseAgent(abc.ABC):
                 f"{self.name} completed",
                 event_type="AGENT_COMPLETED",
                 correlation_id=agent_input.correlation_id,
-                metadata={"signal": output.signal.value, "confidence": output.confidence},
+                metadata={
+                    "signal": output.signal.value,
+                    "confidence": output.confidence,
+                    "analysis_latency_ms": analysis_latency_ms,
+                },
             )
             return output
         except asyncio.TimeoutError:
