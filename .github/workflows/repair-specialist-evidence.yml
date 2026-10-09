@@ -1,0 +1,387 @@
+name: One-shot specialist evidence repair
+
+on:
+  push:
+    branches:
+      - deploy/railway-paper-staging
+    paths:
+      - .github/workflows/repair-specialist-evidence.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: deploy/railway-paper-staging
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Apply structural specialist evidence repair
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from textwrap import dedent, indent
+
+          repository_path = Path("backend/app/database/repositories/repository.py")
+          text = repository_path.read_text(encoding="utf-8")
+
+          sqlalchemy_import = "from sqlalchemy import and_, func, or_, select, tuple_, update\n"
+          pydantic_import = "from pydantic import ValidationError as PydanticValidationError\n"
+          if pydantic_import not in text:
+              if sqlalchemy_import not in text:
+                  raise SystemExit("repository import anchor not found")
+              text = text.replace(sqlalchemy_import, pydantic_import + sqlalchemy_import, 1)
+
+          helper_anchor = "    @staticmethod\n    def _agent_forecast_from_row(\n"
+          helper = indent(
+              dedent(
+                  '''
+                  @staticmethod
+                  def _same_specialist_source_event(
+                      stored: SpecialistEvidence,
+                      incoming: SpecialistEvidence,
+                  ) -> bool:
+                      """Compare provider-event identity while excluding receipt metadata."""
+
+                      immutable_source_fields = (
+                          "schema_version",
+                          "domain",
+                          "metric_name",
+                          "scope",
+                          "source",
+                          "source_event_id",
+                          "value",
+                          "unit",
+                          "quality_score",
+                          "observed_at",
+                          "provenance_uri",
+                          "payload_sha256",
+                      )
+                      return all(
+                          getattr(stored, field) == getattr(incoming, field)
+                          for field in immutable_source_fields
+                      )
+
+                  @staticmethod
+                  def _same_specialist_source_row(
+                      row: SpecialistEvidenceModel,
+                      incoming: SpecialistEvidence,
+                  ) -> bool:
+                      """Confirm a legacy DB row against a fresh provider event without trusting its hash."""
+
+                      return (
+                          row.schema_version == incoming.schema_version
+                          and row.domain == incoming.domain
+                          and row.metric_name == incoming.metric_name
+                          and row.scope == incoming.scope
+                          and row.source == incoming.source
+                          and row.source_event_id == incoming.source_event_id
+                          and float(row.value) == incoming.value
+                          and row.unit == incoming.unit
+                          and row.quality_score == incoming.quality_score
+                          and _as_utc(row.observed_at) == incoming.observed_at
+                          and row.provenance_uri == incoming.provenance_uri
+                          and row.payload_sha256 == incoming.payload_sha256
+                      )
+                  '''
+              ).strip("\n") + "\n\n",
+              "    ",
+          )
+          if "def _same_specialist_source_event(" not in text:
+              if helper_anchor not in text:
+                  raise SystemExit("specialist helper anchor not found")
+              text = text.replace(helper_anchor, helper + helper_anchor, 1)
+
+          save_start = text.index("    async def save_specialist_evidence(")
+          save_end = text.index("    async def list_specialist_evidence(", save_start)
+          save_block = text[save_start:save_end]
+          branch_start = save_block.index("                if source_event is not None:\n")
+          branch_end = save_block.index("                session.add(\n", branch_start)
+          source_branch = indent(
+              dedent(
+                  '''
+                  if source_event is not None:
+                      try:
+                          stored = self._specialist_evidence_from_row(source_event)
+                      except PydanticValidationError as exc:
+                          if not self._same_specialist_source_row(source_event, evidence):
+                              raise ValidationError(
+                                  "Persisted source event failed integrity and differs from incoming evidence"
+                              ) from exc
+                          # A fresh governed provider event independently confirms the
+                          # immutable source fields. Keep the legacy DB row append-only
+                          # for audit, but allow current runtime evidence to proceed.
+                          return evidence
+                      if not self._same_specialist_source_event(stored, evidence):
+                          raise ValidationError(
+                              "Source event already maps to different evidence"
+                          )
+                      return stored
+                  '''
+              ).strip("\n") + "\n",
+              "                ",
+          )
+          save_block = save_block[:branch_start] + source_branch + save_block[branch_end:]
+          text = text[:save_start] + save_block + text[save_end:]
+
+          list_start = text.index("    async def list_specialist_evidence(")
+          list_end = text.index("    async def save_agent_forecasts(", list_start)
+          list_block = indent(
+              dedent(
+                  '''
+                  async def list_specialist_evidence_with_rejections(
+                      self,
+                      *,
+                      limit: int = 100,
+                  ) -> tuple[list[SpecialistEvidence], list[dict[str, str]]]:
+                      """Load valid evidence and logically quarantine only invalid rows."""
+
+                      if not 1 <= limit <= 100_000:
+                          raise ValueError("Specialist evidence limit must be 1..100000")
+                      async with self._db.session() as session:
+                          rows = list(
+                              await session.scalars(
+                                  select(SpecialistEvidenceModel)
+                                  .order_by(
+                                      SpecialistEvidenceModel.observed_at.desc(),
+                                      SpecialistEvidenceModel.evidence_id,
+                                  )
+                                  .limit(limit)
+                              )
+                          )
+                      valid: list[SpecialistEvidence] = []
+                      rejected: list[dict[str, str]] = []
+                      for row in rows:
+                          try:
+                              valid.append(self._specialist_evidence_from_row(row))
+                          except PydanticValidationError as exc:
+                              rejected.append(
+                                  {
+                                      "evidence_id": row.evidence_id,
+                                      "source": row.source,
+                                      "source_event_id": row.source_event_id,
+                                      "error_type": type(exc).__name__,
+                                      "error": str(exc),
+                                  }
+                              )
+                      return valid, rejected
+
+                  async def list_specialist_evidence(
+                      self,
+                      *,
+                      limit: int = 100,
+                  ) -> list[SpecialistEvidence]:
+                      valid, _ = await self.list_specialist_evidence_with_rejections(
+                          limit=limit
+                      )
+                      return valid
+
+                  '''
+              ).lstrip("\n"),
+              "    ",
+          )
+          text = text[:list_start] + list_block + text[list_end:]
+          repository_path.write_text(text, encoding="utf-8")
+
+          evaluation_path = Path("backend/app/agents/evaluation.py")
+          evaluation = evaluation_path.read_text(encoding="utf-8")
+          class_start = evaluation.index("class SpecialistEvidenceService:")
+          init_start = evaluation.index("    async def initialize(self) -> None:", class_start)
+          init_end = evaluation.index("    async def ingest(", init_start)
+          init_block = indent(
+              dedent(
+                  '''
+                  async def initialize(self) -> None:
+                      if self._repository is None:
+                          return
+                      rejected: list[dict[str, str]] = []
+                      quarantine_loader = getattr(
+                          self._repository,
+                          "list_specialist_evidence_with_rejections",
+                          None,
+                      )
+                      if quarantine_loader is not None:
+                          historical, rejected = await quarantine_loader(limit=10_000)
+                      else:
+                          try:
+                              historical = await self._repository.list_specialist_evidence(
+                                  limit=10_000
+                              )
+                          except PydanticValidationError as exc:
+                              historical = []
+                              rejected = [
+                                  {
+                                      "evidence_id": "unknown",
+                                      "source": "unknown",
+                                      "source_event_id": "unknown",
+                                      "error_type": type(exc).__name__,
+                                      "error": str(exc),
+                                  }
+                              ]
+                      if rejected:
+                          self.historical_integrity_rejected = True
+                          logger.error(
+                              "Persisted specialist evidence failed immutable identity validation; "
+                              "invalid rows quarantined from runtime",
+                              event_type="SPECIALIST_EVIDENCE_INTEGRITY_REJECTED",
+                              metadata={
+                                  "rejected_count": len(rejected),
+                                  "rejected": rejected[:20],
+                              },
+                          )
+                      for evidence in historical:
+                          self._items[evidence.evidence_id] = evidence
+                          self._source_events[
+                              (evidence.source, evidence.source_event_id)
+                          ] = evidence.evidence_id
+
+                  '''
+              ).lstrip("\n"),
+              "    ",
+          )
+          evaluation = evaluation[:init_start] + init_block + evaluation[init_end:]
+          evaluation_path.write_text(evaluation, encoding="utf-8")
+
+          test_path = Path("backend/app/tests/test_specialist_evidence_repair.py")
+          test_path.write_text(
+              dedent(
+                  '''
+                  from __future__ import annotations
+
+                  from datetime import datetime, timedelta, timezone
+                  from types import SimpleNamespace
+
+                  import pytest
+
+                  from app.agents.evaluation import SpecialistEvidenceService
+                  from app.database.repositories.repository import Repository
+                  from app.schemas.specialist_evaluation import SpecialistEvidence
+
+
+                  def _evidence(*, value: float = 0.001) -> SpecialistEvidence:
+                      observed = datetime(2026, 10, 9, 12, 0, tzinfo=timezone.utc)
+                      return SpecialistEvidence(
+                          domain="DERIVATIVES",
+                          metric_name="funding_rate",
+                          scope="ETHUSDT",
+                          source="binance.usdm.public",
+                          source_event_id="funding:ETHUSDT:20261009T080000Z",
+                          value=value,
+                          unit="ratio",
+                          quality_score=100,
+                          observed_at=observed,
+                          received_at=observed + timedelta(seconds=1),
+                          provenance_uri="https://fapi.binance.com/fapi/v1/fundingRate",
+                          payload_sha256="a" * 64,
+                      )
+
+
+                  def _with_received_at(evidence: SpecialistEvidence, received_at: datetime) -> SpecialistEvidence:
+                      payload = evidence.model_dump(exclude={"evidence_id"})
+                      payload["received_at"] = received_at
+                      return SpecialistEvidence(**payload)
+
+
+                  def test_repeated_source_event_ignores_receipt_timestamp_for_idempotency() -> None:
+                      first = _evidence()
+                      repeated = _with_received_at(
+                          first,
+                          first.received_at + timedelta(minutes=5),
+                      )
+
+                      assert repeated.evidence_id != first.evidence_id
+                      assert Repository._same_specialist_source_event(first, repeated) is True
+
+
+                  def test_fresh_provider_event_can_confirm_matching_legacy_row_without_hash() -> None:
+                      incoming = _evidence()
+                      row = SimpleNamespace(
+                          schema_version=incoming.schema_version,
+                          domain=incoming.domain,
+                          metric_name=incoming.metric_name,
+                          scope=incoming.scope,
+                          source=incoming.source,
+                          source_event_id=incoming.source_event_id,
+                          value=incoming.value,
+                          unit=incoming.unit,
+                          quality_score=incoming.quality_score,
+                          observed_at=incoming.observed_at,
+                          provenance_uri=incoming.provenance_uri,
+                          payload_sha256=incoming.payload_sha256,
+                      )
+
+                      assert Repository._same_specialist_source_row(row, incoming) is True
+                      row.value = incoming.value + 0.01
+                      assert Repository._same_specialist_source_row(row, incoming) is False
+
+
+                  class MixedIntegrityRepository:
+                      def __init__(self) -> None:
+                          self.valid = _evidence(value=0.002)
+
+                      async def list_specialist_evidence_with_rejections(self, *, limit: int):
+                          assert limit == 10_000
+                          return [self.valid], [
+                              {
+                                  "evidence_id": "0" * 64,
+                                  "source": "binance.usdm.public",
+                                  "source_event_id": "legacy-corrupt-event",
+                                  "error_type": "ValidationError",
+                                  "error": "evidence_id does not match immutable evidence",
+                              }
+                          ]
+
+
+                  @pytest.mark.asyncio
+                  async def test_invalid_history_row_does_not_drop_valid_history() -> None:
+                      repository = MixedIntegrityRepository()
+                      service = SpecialistEvidenceService(repository)
+
+                      await service.initialize()
+
+                      assert service.historical_integrity_rejected is True
+                      assert await service.list(limit=10) == [repository.valid]
+                  '''
+              ).lstrip("\n"),
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Install backend test dependencies
+        working-directory: backend
+        run: python -m pip install -e ".[dev,postgres]"
+
+      - name: Compile repaired modules
+        run: >-
+          python -m py_compile
+          backend/app/database/repositories/repository.py
+          backend/app/agents/evaluation.py
+          backend/app/tests/test_specialist_evidence_repair.py
+
+      - name: Run specialist evidence and derivatives regressions
+        working-directory: backend
+        run: >-
+          python -m pytest
+          app/tests/test_specialist_evidence_integrity.py
+          app/tests/test_specialist_evidence_repair.py
+          app/tests/test_binance_derivatives_evidence.py
+          app/tests/test_binance_derivatives_evidence_timeout.py
+          -q
+
+      - name: Commit tested repair and remove one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/repair-specialist-evidence.yml
+          git config user.name "capital-cipher-ci"
+          git config user.email "capital-cipher-ci@users.noreply.github.com"
+          git add -A
+          git commit -m "Fix specialist evidence idempotency and row quarantine"
+          echo "TESTED_SHA=$(git rev-parse HEAD)"
+          git push origin HEAD:deploy/railway-paper-staging

@@ -19,6 +19,7 @@ from app.schemas.oms import (
     OMSOrder,
     OMSOrderStatus,
     OMSOrderType,
+    TERMINAL_OMS_STATUSES,
     VenueBalanceSnapshot,
     VenueOrderSnapshot,
     VenuePositionSnapshot,
@@ -58,9 +59,8 @@ class LocalBybitTestnetEmulator(ExchangeExecutionAdapter):
         return not self._closed
 
     async def submit_order(self, order: OMSOrder) -> VenueOrderSnapshot:
+        self._ensure_open()
         self._validate_order(order)
-        if self._closed:
-            raise ExecutionRejectedError("Local TESTNET emulator is closed")
         existing = next(
             (
                 item
@@ -100,8 +100,7 @@ class LocalBybitTestnetEmulator(ExchangeExecutionAdapter):
         *,
         client_order_id: str,
     ) -> VenueOrderSnapshot:
-        if self._closed:
-            raise ExecutionRejectedError("Local TESTNET emulator is closed")
+        self._ensure_open()
         if (
             position.exchange != self.exchange
             or position.environment != ExecutionEnvironment.TESTNET
@@ -180,9 +179,10 @@ class LocalBybitTestnetEmulator(ExchangeExecutionAdapter):
         return snapshot
 
     async def cancel_order(self, order: OMSOrder) -> VenueOrderSnapshot:
+        self._ensure_open()
         self._validate_order(order)
         snapshot = self._find_order(order)
-        if snapshot.status == OMSOrderStatus.FILLED:
+        if snapshot.status in TERMINAL_OMS_STATUSES:
             return snapshot
         canceled = snapshot.model_copy(
             update={
@@ -198,6 +198,7 @@ class LocalBybitTestnetEmulator(ExchangeExecutionAdapter):
         *,
         symbols: set[str] | None = None,
     ) -> VenueStateSnapshot:
+        self._ensure_open()
         requested = {item.upper() for item in symbols} if symbols else None
         orders = [
             item
@@ -257,6 +258,7 @@ class LocalBybitTestnetEmulator(ExchangeExecutionAdapter):
     ) -> VenueOrderSnapshot:
         """Test-only control to emulate later partial/full venue fills."""
 
+        self._ensure_open()
         snapshot = self._orders[venue_order_id]
         return self._apply_fill(snapshot, quantity=quantity, price=price)
 
@@ -267,6 +269,10 @@ class LocalBybitTestnetEmulator(ExchangeExecutionAdapter):
         quantity: float,
         price: float,
     ) -> VenueOrderSnapshot:
+        if snapshot.status in TERMINAL_OMS_STATUSES:
+            raise ExecutionRejectedError(
+                f"Cannot apply fill to terminal emulated order {snapshot.status.value}"
+            )
         if quantity <= 0 or price <= 0:
             raise ValueError("fill quantity and price must be positive")
         remaining = snapshot.quantity - snapshot.cumulative_filled_quantity
@@ -343,12 +349,23 @@ class LocalBybitTestnetEmulator(ExchangeExecutionAdapter):
         state.signed_quantity = after
 
     def _find_order(self, order: OMSOrder) -> VenueOrderSnapshot:
-        if order.venue_order_id and order.venue_order_id in self._orders:
-            return self._orders[order.venue_order_id]
+        if order.venue_order_id:
+            snapshot = self._orders.get(order.venue_order_id)
+            if snapshot is None:
+                raise ExecutionRejectedError("Emulated order not found")
+            if snapshot.client_order_id != order.client_order_id:
+                raise ExecutionRejectedError(
+                    "Emulated venue and client order identifiers do not match"
+                )
+            return snapshot
         for snapshot in self._orders.values():
             if snapshot.client_order_id == order.client_order_id:
                 return snapshot
         raise ExecutionRejectedError("Emulated order not found")
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise ExecutionRejectedError("Local TESTNET emulator is closed")
 
     def _validate_order(self, order: OMSOrder) -> None:
         if (
