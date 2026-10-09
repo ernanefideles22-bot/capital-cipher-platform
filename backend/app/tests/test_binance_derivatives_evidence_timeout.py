@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import httpx
 import pytest
@@ -10,6 +10,12 @@ from app.agents.binance_derivatives_evidence import (
     BinanceUsdMDerivativesEvidenceCollector,
 )
 from app.agents.evaluation import SpecialistEvidenceService
+from app.agents.month8_specialists import (
+    DERIVATIVES_DEFINITIONS,
+    ExternalEvidenceSpecialist,
+)
+from app.schemas.agents import AgentInput
+from app.schemas.common import AgentStatus, Signal
 
 
 class SlowEvidenceService(SpecialistEvidenceService):
@@ -18,9 +24,7 @@ class SlowEvidenceService(SpecialistEvidenceService):
         return await super().ingest(evidence)
 
 
-@pytest.mark.asyncio
-async def test_refresh_batch_survives_first_caller_timeout() -> None:
-    as_of = datetime(2026, 10, 9, 10, 40, tzinfo=timezone.utc)
+def _handler(as_of: datetime):
     end_time = int(as_of.timestamp() * 1_000)
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -55,10 +59,16 @@ async def test_refresh_batch_survives_first_caller_timeout() -> None:
             raise AssertionError(request.url.path)
         return httpx.Response(200, json=payload)
 
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_refresh_batch_survives_first_caller_timeout() -> None:
+    as_of = datetime(2026, 10, 9, 10, 40, tzinfo=timezone.utc)
     service = SlowEvidenceService()
     client = httpx.AsyncClient(
         base_url="https://fapi.binance.test",
-        transport=httpx.MockTransport(handler),
+        transport=httpx.MockTransport(_handler(as_of)),
     )
     collector = BinanceUsdMDerivativesEvidenceCollector(
         service,
@@ -90,3 +100,48 @@ async def test_refresh_batch_survives_first_caller_timeout() -> None:
         "long_short_ratio",
         "taker_buy_sell_ratio",
     }
+
+
+@pytest.mark.asyncio
+async def test_derivatives_prefetch_does_not_consume_analysis_timeout() -> None:
+    as_of = datetime(2026, 10, 9, 10, 45, tzinfo=timezone.utc)
+    service = SlowEvidenceService()
+    client = httpx.AsyncClient(
+        base_url="https://fapi.binance.test",
+        transport=httpx.MockTransport(_handler(as_of)),
+    )
+    collector = BinanceUsdMDerivativesEvidenceCollector(
+        service,
+        client=client,
+    )
+    funding_definition = next(
+        definition
+        for definition in DERIVATIVES_DEFINITIONS
+        if definition.metric_name == "funding_rate"
+    )
+    agent = ExternalEvidenceSpecialist(
+        service,
+        funding_definition,
+        derivatives_collector=collector,
+    )
+    # Deliberately shorter than SlowEvidenceService.ingest(). Before the
+    # lifecycle fix this exact setup timed out while waiting for shared I/O.
+    agent.timeout_ms = 10
+    agent_input = AgentInput(
+        correlation_id="derivatives-prefetch-timeout-test",
+        agent_name=agent.name,
+        timestamp=as_of,
+        symbol="BTCUSDT",
+        timeframe="5m",
+    )
+
+    try:
+        output = await agent.run(agent_input)
+    finally:
+        await client.aclose()
+
+    assert output.status == AgentStatus.COMPLETED
+    assert output.signal == Signal.SELL
+    assert output.confidence > 0
+    assert output.latency_ms >= 30
+    assert agent.total_failures == 0
