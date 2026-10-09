@@ -6,6 +6,9 @@ import statistics
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
+from pydantic import ValidationError as PydanticValidationError
+
+from app.core.logging import ServiceLogger
 from app.schemas.agents import AgentOutput, AgentRegistration
 from app.schemas.common import Signal
 from app.schemas.market import Candle
@@ -16,6 +19,8 @@ from app.schemas.specialist_evaluation import (
     SpecialistEvidence,
     SpecialistDomain,
 )
+
+logger = ServiceLogger("specialist_evidence")
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -33,16 +38,38 @@ class SpecialistEvidenceService:
         self._repository = repository
         self._items: dict[str, SpecialistEvidence] = {}
         self._source_events: dict[tuple[str, str], str] = {}
+        self.historical_integrity_rejected: bool = False
 
     async def initialize(self) -> None:
-        if self._repository is not None:
-            for evidence in await self._repository.list_specialist_evidence(
+        if self._repository is None:
+            return
+        try:
+            historical = await self._repository.list_specialist_evidence(
                 limit=10_000
-            ):
-                self._items[evidence.evidence_id] = evidence
-                self._source_events[
-                    (evidence.source, evidence.source_event_id)
-                ] = evidence.evidence_id
+            )
+        except PydanticValidationError as exc:
+            # Legacy rows written before values were canonicalized to the
+            # NUMERIC(38,18) persistence boundary may no longer reproduce their
+            # pre-persistence evidence_id. They are advisory SHADOW evidence and
+            # must never be trusted after an integrity failure. Keep the rows in
+            # PostgreSQL for audit, exclude the whole historical set from runtime,
+            # and let governed collectors repopulate fresh evidence on new candle
+            # buckets. Database availability errors still propagate and fail startup.
+            self.historical_integrity_rejected = True
+            self._items.clear()
+            self._source_events.clear()
+            logger.error(
+                "Persisted specialist evidence failed immutable identity validation; "
+                "historical evidence excluded from runtime",
+                event_type="SPECIALIST_EVIDENCE_INTEGRITY_REJECTED",
+                metadata={"error_type": type(exc).__name__},
+            )
+            return
+        for evidence in historical:
+            self._items[evidence.evidence_id] = evidence
+            self._source_events[
+                (evidence.source, evidence.source_event_id)
+            ] = evidence.evidence_id
 
     async def ingest(self, evidence: SpecialistEvidence) -> SpecialistEvidence:
         source_key = (evidence.source, evidence.source_event_id)
