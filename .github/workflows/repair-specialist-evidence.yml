@@ -36,11 +36,7 @@ jobs:
           if pydantic_import not in text:
               if sqlalchemy_import not in text:
                   raise SystemExit("repository import anchor not found")
-              text = text.replace(
-                  sqlalchemy_import,
-                  pydantic_import + sqlalchemy_import,
-                  1,
-              )
+              text = text.replace(sqlalchemy_import, pydantic_import + sqlalchemy_import, 1)
 
           helper_anchor = "    @staticmethod\n    def _agent_forecast_from_row(\n"
           helper = indent(
@@ -71,6 +67,28 @@ jobs:
                           getattr(stored, field) == getattr(incoming, field)
                           for field in immutable_source_fields
                       )
+
+                  @staticmethod
+                  def _same_specialist_source_row(
+                      row: SpecialistEvidenceModel,
+                      incoming: SpecialistEvidence,
+                  ) -> bool:
+                      """Confirm a legacy DB row against a fresh provider event without trusting its hash."""
+
+                      return (
+                          row.schema_version == incoming.schema_version
+                          and row.domain == incoming.domain
+                          and row.metric_name == incoming.metric_name
+                          and row.scope == incoming.scope
+                          and row.source == incoming.source
+                          and row.source_event_id == incoming.source_event_id
+                          and float(row.value) == incoming.value
+                          and row.unit == incoming.unit
+                          and row.quality_score == incoming.quality_score
+                          and _as_utc(row.observed_at) == incoming.observed_at
+                          and row.provenance_uri == incoming.provenance_uri
+                          and row.payload_sha256 == incoming.payload_sha256
+                      )
                   '''
               ).strip("\n") + "\n\n",
               "    ",
@@ -83,19 +101,33 @@ jobs:
           save_start = text.index("    async def save_specialist_evidence(")
           save_end = text.index("    async def list_specialist_evidence(", save_start)
           save_block = text[save_start:save_end]
-          source_marker = "                source_event = await session.scalar("
-          source_start = save_block.index(source_marker)
-          source_segment = save_block[source_start:]
-          old_condition = "                    if stored != evidence:\n"
-          new_condition = (
-              "                    if not self._same_specialist_source_event(\n"
-              "                        stored, evidence\n"
-              "                    ):\n"
+          branch_start = save_block.index("                if source_event is not None:\n")
+          branch_end = save_block.index("                session.add(\n", branch_start)
+          source_branch = indent(
+              dedent(
+                  '''
+                  if source_event is not None:
+                      try:
+                          stored = self._specialist_evidence_from_row(source_event)
+                      except PydanticValidationError as exc:
+                          if not self._same_specialist_source_row(source_event, evidence):
+                              raise ValidationError(
+                                  "Persisted source event failed integrity and differs from incoming evidence"
+                              ) from exc
+                          # A fresh governed provider event independently confirms the
+                          # immutable source fields. Keep the legacy DB row append-only
+                          # for audit, but allow current runtime evidence to proceed.
+                          return evidence
+                      if not self._same_specialist_source_event(stored, evidence):
+                          raise ValidationError(
+                              "Source event already maps to different evidence"
+                          )
+                      return stored
+                  '''
+              ).strip("\n") + "\n",
+              "                ",
           )
-          if old_condition not in source_segment:
-              raise SystemExit("source-event conflict condition not found")
-          source_segment = source_segment.replace(old_condition, new_condition, 1)
-          save_block = save_block[:source_start] + source_segment
+          save_block = save_block[:branch_start] + source_branch + save_block[branch_end:]
           text = text[:save_start] + save_block + text[save_end:]
 
           list_start = text.index("    async def list_specialist_evidence(")
@@ -223,6 +255,7 @@ jobs:
                   from __future__ import annotations
 
                   from datetime import datetime, timedelta, timezone
+                  from types import SimpleNamespace
 
                   import pytest
 
@@ -241,7 +274,7 @@ jobs:
                           source_event_id="funding:ETHUSDT:20261009T080000Z",
                           value=value,
                           unit="ratio",
-                          quality_score=1.0,
+                          quality_score=100,
                           observed_at=observed,
                           received_at=observed + timedelta(seconds=1),
                           provenance_uri="https://fapi.binance.com/fapi/v1/fundingRate",
@@ -249,14 +282,43 @@ jobs:
                       )
 
 
+                  def _with_received_at(evidence: SpecialistEvidence, received_at: datetime) -> SpecialistEvidence:
+                      payload = evidence.model_dump(exclude={"evidence_id"})
+                      payload["received_at"] = received_at
+                      return SpecialistEvidence(**payload)
+
+
                   def test_repeated_source_event_ignores_receipt_timestamp_for_idempotency() -> None:
                       first = _evidence()
-                      repeated = first.model_copy(
-                          update={"received_at": first.received_at + timedelta(minutes=5)}
+                      repeated = _with_received_at(
+                          first,
+                          first.received_at + timedelta(minutes=5),
                       )
 
                       assert repeated.evidence_id != first.evidence_id
                       assert Repository._same_specialist_source_event(first, repeated) is True
+
+
+                  def test_fresh_provider_event_can_confirm_matching_legacy_row_without_hash() -> None:
+                      incoming = _evidence()
+                      row = SimpleNamespace(
+                          schema_version=incoming.schema_version,
+                          domain=incoming.domain,
+                          metric_name=incoming.metric_name,
+                          scope=incoming.scope,
+                          source=incoming.source,
+                          source_event_id=incoming.source_event_id,
+                          value=incoming.value,
+                          unit=incoming.unit,
+                          quality_score=incoming.quality_score,
+                          observed_at=incoming.observed_at,
+                          provenance_uri=incoming.provenance_uri,
+                          payload_sha256=incoming.payload_sha256,
+                      )
+
+                      assert Repository._same_specialist_source_row(row, incoming) is True
+                      row.value = incoming.value + 0.01
+                      assert Repository._same_specialist_source_row(row, incoming) is False
 
 
                   class MixedIntegrityRepository:
