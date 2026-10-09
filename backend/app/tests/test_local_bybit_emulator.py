@@ -123,10 +123,64 @@ async def test_emulator_rejects_fill_beyond_remaining_quantity():
 
 
 @pytest.mark.asyncio
-async def test_emulator_healthcheck_closes_fail_closed():
-    adapter = LocalBybitTestnetEmulator()
+async def test_emulator_rejects_fill_after_cancel_without_reopening_exposure():
+    adapter = LocalBybitTestnetEmulator(default_fill_fraction=0.25)
+    order = _order(quantity=4.0)
+    submitted = await adapter.submit_order(order)
+    cancel_request = order.model_copy(update={"venue_order_id": submitted.venue_order_id})
+    canceled = await adapter.cancel_order(cancel_request)
+
+    with pytest.raises(ExecutionRejectedError, match="terminal emulated order CANCELED"):
+        adapter.apply_additional_fill(
+            venue_order_id=submitted.venue_order_id,
+            quantity=1.0,
+            price=101.0,
+        )
+
+    state = await adapter.fetch_state(symbols={"BTCUSDT"})
+    assert canceled.status == OMSOrderStatus.CANCELED
+    assert state.orders[0].status == OMSOrderStatus.CANCELED
+    assert state.positions[0].quantity == 1.0
+    assert sum(fill.quantity for fill in state.fills) == 1.0
+
+
+@pytest.mark.asyncio
+async def test_emulator_rejects_mismatched_venue_and_client_order_ids():
+    adapter = LocalBybitTestnetEmulator(default_fill_fraction=0)
+    first_order = _order()
+    second_order = _order().model_copy(update={"client_order_id": "local-test-0002"})
+    first = await adapter.submit_order(first_order)
+    await adapter.submit_order(second_order)
+    mismatched = second_order.model_copy(update={"venue_order_id": first.venue_order_id})
+
+    with pytest.raises(ExecutionRejectedError, match="identifiers do not match"):
+        await adapter.cancel_order(mismatched)
+
+    state = await adapter.fetch_state()
+    assert len(state.orders) == 2
+    assert all(item.status == OMSOrderStatus.SUBMITTED for item in state.orders)
+
+
+@pytest.mark.asyncio
+async def test_emulator_healthcheck_closes_fail_closed_for_all_operations():
+    adapter = LocalBybitTestnetEmulator(default_fill_fraction=0)
+    order = _order()
+    submitted = await adapter.submit_order(order)
+    cancel_request = order.model_copy(update={"venue_order_id": submitted.venue_order_id})
+
     assert await adapter.healthcheck() is True
     await adapter.aclose()
     assert await adapter.healthcheck() is False
-    with pytest.raises(ExecutionRejectedError):
-        await adapter.submit_order(_order())
+
+    with pytest.raises(ExecutionRejectedError, match="emulator is closed"):
+        await adapter.submit_order(order)
+    with pytest.raises(ExecutionRejectedError, match="emulator is closed"):
+        await adapter.cancel_order(cancel_request)
+    with pytest.raises(ExecutionRejectedError, match="emulator is closed"):
+        await adapter.fetch_state()
+    with pytest.raises(ExecutionRejectedError, match="emulator is closed"):
+        adapter.apply_additional_fill(
+            venue_order_id=submitted.venue_order_id,
+            quantity=1.0,
+            price=100.0,
+        )
