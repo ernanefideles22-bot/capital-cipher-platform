@@ -9,6 +9,9 @@ from typing import Protocol
 from app.core.logging import ServiceLogger
 from app.core.publication import PublicationCoordinator
 from app.core.transports.base import EventTransport
+from app.database.repositories.outbox_batch import (
+    list_published_bus_message_ids as durable_published_bus_message_ids,
+)
 from app.schemas.events import BusMessage
 
 logger = ServiceLogger("event_outbox")
@@ -18,11 +21,6 @@ class OutboxRepository(Protocol):
     async def list_pending_bus_messages(self, limit: int = 100) -> list[BusMessage]: ...
 
     async def is_bus_message_published(self, event_id: str) -> bool: ...
-
-    async def list_published_bus_message_ids(
-        self,
-        event_ids: list[str],
-    ) -> set[str]: ...
 
     async def mark_bus_message_published(
         self, event_id: str, broker_message_id: str
@@ -81,6 +79,12 @@ class OutboxDispatcher:
         )
         if batch_method is not None:
             return set(await batch_method(event_ids))
+        durable_ids = await durable_published_bus_message_ids(
+            self._repository,
+            event_ids,
+        )
+        if durable_ids is not None:
+            return durable_ids
         states = await asyncio.gather(
             *(
                 self._repository.is_bus_message_published(event_id)
