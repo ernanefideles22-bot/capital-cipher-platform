@@ -9,6 +9,9 @@ from typing import Protocol
 from app.core.logging import ServiceLogger
 from app.core.publication import PublicationCoordinator
 from app.core.transports.base import EventTransport
+from app.database.repositories.outbox_batch import (
+    list_published_bus_message_ids as durable_published_bus_message_ids,
+)
 from app.schemas.events import BusMessage
 
 logger = ServiceLogger("event_outbox")
@@ -23,7 +26,18 @@ class OutboxRepository(Protocol):
         self, event_id: str, broker_message_id: str
     ) -> None: ...
 
+    async def mark_bus_messages_published(
+        self,
+        published: list[tuple[str, str]],
+    ) -> None: ...
+
     async def mark_bus_message_failed(self, event_id: str, error_type: str) -> None: ...
+
+    async def mark_bus_messages_failed(
+        self,
+        event_ids: list[str],
+        error_type: str,
+    ) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -55,43 +69,146 @@ class OutboxDispatcher:
             publication_coordinator or PublicationCoordinator()
         )
 
-    async def drain_once(self) -> OutboxDrainResult:
-        pending = await self._repository.list_pending_bus_messages(self._batch_size)
-        results = await asyncio.gather(
-            *(self._publish_one(message) for message in pending)
+    async def _published_ids(self, event_ids: list[str]) -> set[str]:
+        """Recheck publication state with one query when batch support exists."""
+
+        batch_method = getattr(
+            self._repository,
+            "list_published_bus_message_ids",
+            None,
         )
-        return OutboxDrainResult(
-            attempted=len(pending),
-            published=results.count("published"),
-            failed=results.count("failed"),
+        if batch_method is not None:
+            return set(await batch_method(event_ids))
+        durable_ids = await durable_published_bus_message_ids(
+            self._repository,
+            event_ids,
+        )
+        if durable_ids is not None:
+            return durable_ids
+        states = await asyncio.gather(
+            *(
+                self._repository.is_bus_message_published(event_id)
+                for event_id in event_ids
+            )
+        )
+        return {
+            event_id
+            for event_id, published in zip(event_ids, states, strict=True)
+            if published
+        }
+
+    async def _mark_published(
+        self,
+        published: list[tuple[str, str]],
+    ) -> None:
+        batch_method = getattr(
+            self._repository,
+            "mark_bus_messages_published",
+            None,
+        )
+        if batch_method is not None:
+            await batch_method(published)
+            return
+        await asyncio.gather(
+            *(
+                self._repository.mark_bus_message_published(event_id, broker_id)
+                for event_id, broker_id in published
+            )
         )
 
-    async def _publish_one(self, message: BusMessage) -> str:
-        async with self._publication_coordinator.hold(message.event_id):
-            # The pending list can become stale while a direct publisher is
-            # completing. Recheck under the same event lock before xadd.
-            if await self._repository.is_bus_message_published(message.event_id):
-                return "skipped"
+    async def _mark_failed(
+        self,
+        event_ids: list[str],
+        error_type: str,
+    ) -> None:
+        batch_method = getattr(
+            self._repository,
+            "mark_bus_messages_failed",
+            None,
+        )
+        if batch_method is not None:
+            await batch_method(event_ids, error_type)
+            return
+        await asyncio.gather(
+            *(
+                self._repository.mark_bus_message_failed(event_id, error_type)
+                for event_id in event_ids
+            )
+        )
+
+    async def drain_once(self) -> OutboxDrainResult:
+        """Replay one cohort without one DB/broker round-trip per event.
+
+        Direct publication and recovery share the same per-event coordinator.
+        The cohort lock prevents an outbox replay racing a direct publisher;
+        publication state is then rechecked once for the whole cohort. Redis
+        Streams remains at-least-once and PostgreSQL remains the durable audit
+        source.
+        """
+
+        pending = await self._repository.list_pending_bus_messages(
+            self._batch_size
+        )
+        if not pending:
+            return OutboxDrainResult(attempted=0, published=0, failed=0)
+
+        event_ids = [message.event_id for message in pending]
+        async with self._publication_coordinator.hold_many(event_ids):
+            published_ids = await self._published_ids(event_ids)
+            replay = [
+                message
+                for message in pending
+                if message.event_id not in published_ids
+            ]
+            if not replay:
+                return OutboxDrainResult(
+                    attempted=len(pending),
+                    published=0,
+                    failed=0,
+                )
+
             try:
-                broker_id = await self._transport.publish(message)
-                await self._repository.mark_bus_message_published(
-                    message.event_id, broker_id
+                publish_many = getattr(self._transport, "publish_many", None)
+                if publish_many is not None:
+                    broker_ids = await publish_many(replay)
+                else:
+                    broker_ids = await asyncio.gather(
+                        *(self._transport.publish(message) for message in replay)
+                    )
+                if len(broker_ids) != len(replay):
+                    raise RuntimeError(
+                        "Broker batch result length mismatch"
+                    )
+                published = [
+                    (message.event_id, broker_id)
+                    for message, broker_id in zip(
+                        replay,
+                        broker_ids,
+                        strict=True,
+                    )
+                ]
+                await self._mark_published(published)
+                return OutboxDrainResult(
+                    attempted=len(pending),
+                    published=len(replay),
+                    failed=0,
                 )
-                return "published"
             except Exception as exc:
-                await self._repository.mark_bus_message_failed(
-                    message.event_id, type(exc).__name__
-                )
+                replay_ids = [message.event_id for message in replay]
+                await self._mark_failed(replay_ids, type(exc).__name__)
                 logger.error(
-                    "Outbox publish failed",
+                    "Outbox batch publish failed",
                     event_type="OUTBOX_PUBLISH_FAILED",
-                    correlation_id=message.correlation_id,
                     metadata={
-                        "event_id": message.event_id,
+                        "event_count": len(replay_ids),
                         "error_type": type(exc).__name__,
                     },
                 )
-                return "failed"
+                return OutboxDrainResult(
+                    attempted=len(pending),
+                    published=0,
+                    failed=len(replay),
+                )
 
     async def run(self, stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():
