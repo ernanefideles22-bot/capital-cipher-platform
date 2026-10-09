@@ -219,11 +219,12 @@ def test_warehouse_models_target_internal_postgres_schema():
     assert f"{INTERNAL_SCHEMA}.candle_observations" in ddl
 
 
-async def test_protected_catalog_api_materializes_and_reads_manifest():
+async def test_protected_catalog_api_materializes_and_reads_manifest(tmp_path):
     admin_key = "c" * 32
+    database_path = tmp_path / "catalog-api.db"
     settings = Settings(
         ADMIN_API_KEY=admin_key,
-        DATABASE_URL="sqlite+aiosqlite:///:memory:",
+        DATABASE_URL=f"sqlite+aiosqlite:///{database_path}",
     )
     context = build_context(settings, with_database=True)
     app = create_app(context, with_market_data=False)
