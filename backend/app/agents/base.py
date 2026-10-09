@@ -119,7 +119,7 @@ class BaseAgent(abc.ABC):
             enabled=self.enabled,
             last_run_at=self.last_run_at,
             last_failure_at=self.last_failure_at,
-            avg_latency_ms=round(avg_latency, 2),
+            avg_latency_ms=avg_latency,
             error_rate=round(error_rate, 4),
             total_runs=self.total_runs,
             total_failures=self.total_failures,
@@ -183,8 +183,8 @@ class BaseAgent(abc.ABC):
                 raise ValueError(
                     "Agent output name does not match the registered agent"
                 )
-            latency_ms = int((time.monotonic() - started) * 1000)
-            analysis_latency_ms = int((time.monotonic() - analysis_started) * 1000)
+            latency_ms = (time.monotonic() - started) * 1000
+            analysis_latency_ms = (time.monotonic() - analysis_started) * 1000
             output = output.model_copy(update={"latency_ms": latency_ms})
             self.status = "READY"
             self.last_signal = output.signal.value
@@ -206,7 +206,7 @@ class BaseAgent(abc.ABC):
             self.status = "TIMEOUT"
             self.total_failures += 1
             self.last_failure_at = datetime.now(timezone.utc)
-            latency_ms = int((time.monotonic() - started) * 1000)
+            latency_ms = (time.monotonic() - started) * 1000
             self._logger.error(
                 f"{self.name} timeout",
                 event_type="AGENT_TIMEOUT",
@@ -225,7 +225,7 @@ class BaseAgent(abc.ABC):
             self.status = "FAILED"
             self.total_failures += 1
             self.last_failure_at = datetime.now(timezone.utc)
-            latency_ms = int((time.monotonic() - started) * 1000)
+            latency_ms = (time.monotonic() - started) * 1000
             self._logger.error(
                 f"{self.name} failed with {type(exc).__name__}",
                 event_type="AGENT_FAILED",
@@ -251,7 +251,7 @@ class BaseAgent(abc.ABC):
         *,
         evidence: dict | None = None,
         warnings: list[str] | None = None,
-        latency_ms: int = 0,
+        latency_ms: float = 0,
     ) -> AgentOutput:
         return AgentOutput(
             agent_name=self.name,

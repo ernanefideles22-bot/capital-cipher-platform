@@ -2,8 +2,7 @@ name: Current Release Readiness Evidence
 
 on:
   push:
-    branches:
-      - fix/production-readiness-audit
+    branches: [main, deploy/railway-paper-staging, fix/staging-critical-integrity]
   workflow_dispatch:
 
 permissions:
@@ -11,18 +10,18 @@ permissions:
   actions: read
 
 env:
-  SOURCE_REVISION: 9d06596923d841ea33755d51c244654bffa00b5e
-  CI_RUN_ID: "37777766756"
+  SOURCE_REVISION: ${{ github.sha }}
 
 jobs:
   evidence:
     name: Current PAPER release evidence
+    timeout-minutes: 45
     runs-on: ubuntu-latest
     steps:
       - name: Checkout exact source revision
         uses: actions/checkout@v7
         with:
-          ref: 9d06596923d841ea33755d51c244654bffa00b5e
+          ref: ${{ env.SOURCE_REVISION }}
           persist-credentials: false
 
       - name: Verify exact source and CI
@@ -32,8 +31,20 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "${SOURCE_REVISION}"
-          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${CI_RUN_ID}" --jq '.head_sha')" = "${SOURCE_REVISION}"
-          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${CI_RUN_ID}" --jq '.conclusion')" = "success"
+          for attempt in $(seq 1 60); do
+            CI_RUN_ID=$(gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs" \
+              -f head_sha="${SOURCE_REVISION}" \
+              --jq '[.workflow_runs[] | select(.event == "push" or .event == "workflow_dispatch")] | first | .id // empty')
+            if test -n "$CI_RUN_ID"; then break; fi
+            sleep 10
+          done
+          test -n "$CI_RUN_ID"
+          gh run watch "$CI_RUN_ID" --exit-status --interval 20
+          RUN=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${CI_RUN_ID}")
+          test "$(jq -r '.head_sha' <<< "$RUN")" = "$SOURCE_REVISION"
+          test "$(jq -r '.conclusion' <<< "$RUN")" = success
+          test "$(jq -r '.path' <<< "$RUN")" = .github/workflows/ci.yml
+          echo "CI_RUN_ID=$CI_RUN_ID" >> "$GITHUB_ENV"
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -88,7 +99,7 @@ jobs:
               'month12_status': bundle['status'],
               'audit_checks_passed': sum(item['status'] == 'PASSED' for item in bundle['checks']),
               'live_execution_surface_present': bundle['live_execution_surface_present'],
-              'local_emulator_canary': 'PASSED_IN_CI_89',
+              'local_emulator_canary': 'PASSED_IN_EXACT_SHA_CI',
               'external_testnet_credentials_present': False,
           }
           (root / 'release-evidence/evidence-summary.json').write_text(
@@ -100,7 +111,7 @@ jobs:
       - name: Upload current release evidence
         uses: actions/upload-artifact@v6
         with:
-          name: capital-cipher-release-evidence-9d065969
+          name: capital-cipher-release-evidence-${{ env.SOURCE_REVISION }}
           path: release-evidence/
           if-no-files-found: error
           retention-days: 30

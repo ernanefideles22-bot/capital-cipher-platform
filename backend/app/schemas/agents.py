@@ -68,7 +68,7 @@ class AgentOutput(StrictAgentModel):
     reason: str = Field(min_length=1, max_length=1_000)
     evidence: dict[str, Any] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
-    latency_ms: int = Field(ge=0, default=0)
+    latency_ms: float = Field(ge=0, default=0, allow_inf_nan=False)
     created_at: AwareDatetime = Field(default_factory=utcnow)
 
 

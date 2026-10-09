@@ -9,8 +9,11 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Any
-from uuid import uuid4
+from uuid import uuid4, uuid5, NAMESPACE_URL
+
+from pydantic import ValidationError as PydanticValidationError
 
 from sqlalchemy import and_, func, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
@@ -236,6 +239,7 @@ def _spot_base_asset(symbol: str) -> str | None:
 class Repository:
     def __init__(self, database: Database) -> None:
         self._db = database
+        self.quarantined_evidence_ids: set[str] = set()
 
     async def _durable_position_exposures(
         self,
@@ -4287,7 +4291,10 @@ class Repository:
                 )
                 if source_event is not None:
                     stored = self._specialist_evidence_from_row(source_event)
-                    if stored != evidence:
+                    # Re-fetching the same immutable provider event after a
+                    # restart changes receipt time, not its source identity.
+                    ignored = {"evidence_id", "received_at"}
+                    if stored.model_dump(exclude=ignored) != evidence.model_dump(exclude=ignored):
                         raise ValidationError(
                             "Source event already maps to different evidence"
                         )
@@ -4301,7 +4308,7 @@ class Repository:
                         scope=evidence.scope,
                         source=evidence.source,
                         source_event_id=evidence.source_event_id,
-                        value=evidence.value,
+                        value=Decimal(str(evidence.value)),
                         unit=evidence.unit,
                         quality_score=evidence.quality_score,
                         observed_at=evidence.observed_at,
@@ -4337,10 +4344,32 @@ class Repository:
                     .limit(limit)
                 )
             )
-            return [
-                self._specialist_evidence_from_row(row)
-                for row in rows
-            ]
+            valid = []
+            for row in rows:
+                try:
+                    valid.append(self._specialist_evidence_from_row(row))
+                except PydanticValidationError as exc:
+                    # Preserve the immutable source row. A deterministic audit ID
+                    # records quarantine once, even across restarts/workers.
+                    audit_id = str(uuid5(NAMESPACE_URL, f"specialist-quarantine:{row.evidence_id}"))
+                    values = dict(
+                        id=audit_id, correlation_id=audit_id,
+                        audit_type="SPECIALIST_EVIDENCE_QUARANTINED",
+                        entity_type="specialist_evidence", entity_id=row.evidence_id,
+                        payload={"evidence_id": row.evidence_id,
+                                 "source": row.source, "source_event_id": row.source_event_id,
+                                 "reason": "IMMUTABLE_CONTRACT_INVALID",
+                                 "error_types": [error["type"] for error in exc.errors()]},
+                        created_at=_now(),
+                    )
+                    statement = self._dialect_insert(AuditLogModel)
+                    if statement is not None:
+                        await session.execute(statement.values(**values).on_conflict_do_nothing(index_elements=["id"]))
+                    elif await session.get(AuditLogModel, audit_id) is None:
+                        session.add(AuditLogModel(**values))
+                    self.quarantined_evidence_ids.add(row.evidence_id)
+            await session.commit()
+            return valid
 
     async def save_agent_forecasts(
         self,

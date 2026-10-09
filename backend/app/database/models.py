@@ -11,6 +11,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Double,
     Identity,
     Index,
     Integer,
@@ -1692,7 +1693,7 @@ class AgentOutputModel(Base):
     reason: Mapped[str | None] = mapped_column(Text)
     evidence: Mapped[dict | None] = mapped_column(JsonType)
     warnings: Mapped[list | None] = mapped_column(JsonType)
-    latency_ms: Mapped[int | None] = mapped_column(Integer)
+    latency_ms: Mapped[float | None] = mapped_column(Double)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
 
 

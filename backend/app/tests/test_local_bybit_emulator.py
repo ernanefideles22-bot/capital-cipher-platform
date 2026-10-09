@@ -130,3 +130,50 @@ async def test_emulator_healthcheck_closes_fail_closed():
     assert await adapter.healthcheck() is False
     with pytest.raises(ExecutionRejectedError):
         await adapter.submit_order(_order())
+
+
+@pytest.mark.asyncio
+async def test_closed_emulator_rejects_all_data_operations():
+    adapter = LocalBybitTestnetEmulator(default_fill_fraction=0)
+    order = _order()
+    snapshot = await adapter.submit_order(order)
+    await adapter.aclose()
+    await adapter.aclose()
+    assert not await adapter.healthcheck()
+    for operation in (adapter.submit_order(order), adapter.cancel_order(order), adapter.fetch_state()):
+        with pytest.raises(ExecutionRejectedError, match="closed"):
+            await operation
+    with pytest.raises(ExecutionRejectedError, match="closed"):
+        adapter.apply_additional_fill(venue_order_id=snapshot.venue_order_id, quantity=1, price=100)
+    with pytest.raises(ExecutionRejectedError, match="closed"):
+        await adapter.submit_reduce_only_exit(None, client_order_id="closed-exit-001")
+
+
+@pytest.mark.asyncio
+async def test_cancelled_order_cannot_receive_fill_and_state_is_unchanged():
+    adapter = LocalBybitTestnetEmulator(default_fill_fraction=0.25)
+    order = _order()
+    snapshot = await adapter.submit_order(order)
+    await adapter.cancel_order(order)
+    before = await adapter.fetch_state()
+    with pytest.raises(ExecutionRejectedError, match="terminal"):
+        adapter.apply_additional_fill(venue_order_id=snapshot.venue_order_id, quantity=1, price=100)
+    after = await adapter.fetch_state()
+    assert after.orders == before.orders
+    assert after.fills == before.fills
+    assert [(p.symbol, p.quantity) for p in after.positions] == [(p.symbol, p.quantity) for p in before.positions]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("venue_id", ["wrong-existing", "unknown"])
+async def test_emulator_rejects_mismatched_identifiers(venue_id):
+    adapter = LocalBybitTestnetEmulator(default_fill_fraction=0)
+    order = _order()
+    await adapter.submit_order(order)
+    other = await adapter.submit_order(order.model_copy(update={"client_order_id": "other-client-001"}))
+    request = order.model_copy(update={"venue_order_id": other.venue_order_id if venue_id == "wrong-existing" else "unknown"})
+    with pytest.raises(ExecutionRejectedError, match="identifiers"):
+        await adapter.cancel_order(request)
+    with pytest.raises(ExecutionRejectedError, match="identifiers"):
+        await adapter.submit_order(request)
+    assert all(s.status == OMSOrderStatus.SUBMITTED for s in (await adapter.fetch_state()).orders)
