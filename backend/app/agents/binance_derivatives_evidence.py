@@ -64,6 +64,9 @@ class BinanceUsdMDerivativesEvidenceCollector:
         self._client = client
         self._locks: dict[str, asyncio.Lock] = {}
         self._attempted: set[tuple[str, str, int]] = set()
+        self._inflight: dict[
+            tuple[str, str, int], asyncio.Task[None]
+        ] = {}
 
     @staticmethod
     def _period(timeframe: str) -> str:
@@ -76,7 +79,13 @@ class BinanceUsdMDerivativesEvidenceCollector:
         as_of: datetime,
         timeframe: str,
     ) -> None:
-        """Populate available evidence for one symbol without raising upstream."""
+        """Populate available evidence once while surviving caller timeouts.
+
+        Multiple derivatives agents execute concurrently and share this collector.
+        A first caller can hit its individual five-second agent timeout while the
+        durable evidence batch is still being written. Shielding one shared task
+        prevents that caller cancellation from leaving a prefix-only snapshot.
+        """
 
         if as_of.tzinfo is None:
             raise ValueError("as_of must be timezone-aware")
@@ -85,24 +94,52 @@ class BinanceUsdMDerivativesEvidenceCollector:
             return
         period = self._period(timeframe)
         as_of_utc = as_of.astimezone(timezone.utc)
-        bucket = int(as_of_utc.timestamp()) // max(60, self._period_seconds(period))
+        bucket = int(as_of_utc.timestamp()) // max(
+            60,
+            self._period_seconds(period),
+        )
         attempt_key = (symbol, period, bucket)
         if attempt_key in self._attempted:
             return
+
         lock = self._locks.setdefault(symbol, asyncio.Lock())
         async with lock:
             if attempt_key in self._attempted:
                 return
-            try:
-                await self._refresh_locked(
-                    symbol=symbol,
-                    as_of=as_of_utc,
-                    period=period,
+            task = self._inflight.get(attempt_key)
+            if task is None or task.done():
+                task = asyncio.create_task(
+                    self._refresh_and_mark(
+                        attempt_key=attempt_key,
+                        symbol=symbol,
+                        as_of=as_of_utc,
+                        period=period,
+                    )
                 )
-            finally:
-                # A failed provider call must not make all 15 derivatives agents
-                # hammer the same public endpoint in the same candle cycle.
-                self._attempted.add(attempt_key)
+                self._inflight[attempt_key] = task
+
+        try:
+            await asyncio.shield(task)
+        finally:
+            if task.done():
+                async with lock:
+                    if self._inflight.get(attempt_key) is task:
+                        self._inflight.pop(attempt_key, None)
+
+    async def _refresh_and_mark(
+        self,
+        *,
+        attempt_key: tuple[str, str, int],
+        symbol: str,
+        as_of: datetime,
+        period: str,
+    ) -> None:
+        await self._refresh_locked(
+            symbol=symbol,
+            as_of=as_of,
+            period=period,
+        )
+        self._attempted.add(attempt_key)
 
     @staticmethod
     def _period_seconds(period: str) -> int:
@@ -126,7 +163,12 @@ class BinanceUsdMDerivativesEvidenceCollector:
             (
                 "open_interest_change",
                 "/futures/data/openInterestHist",
-                {"symbol": symbol, "period": period, "endTime": end_time, "limit": 2},
+                {
+                    "symbol": symbol,
+                    "period": period,
+                    "endTime": end_time,
+                    "limit": 2,
+                },
             ),
             (
                 "basis",
@@ -142,12 +184,22 @@ class BinanceUsdMDerivativesEvidenceCollector:
             (
                 "long_short_ratio",
                 "/futures/data/globalLongShortAccountRatio",
-                {"symbol": symbol, "period": period, "endTime": end_time, "limit": 1},
+                {
+                    "symbol": symbol,
+                    "period": period,
+                    "endTime": end_time,
+                    "limit": 1,
+                },
             ),
             (
                 "taker_buy_sell_ratio",
                 "/futures/data/takerlongshortRatio",
-                {"symbol": symbol, "period": period, "endTime": end_time, "limit": 1},
+                {
+                    "symbol": symbol,
+                    "period": period,
+                    "endTime": end_time,
+                    "limit": 1,
+                },
             ),
         )
 
@@ -170,7 +222,13 @@ class BinanceUsdMDerivativesEvidenceCollector:
         else:
             results = await fetch_all(self._client)
 
-        for (metric_name, path, _), payload in zip(requests, results, strict=True):
+        candidates: list[tuple[str, SpecialistEvidence]] = []
+        unavailable: list[str] = []
+        for (metric_name, path, _), payload in zip(
+            requests,
+            results,
+            strict=True,
+        ):
             if isinstance(payload, Exception):
                 logger.warning(
                     "Public derivatives evidence request failed",
@@ -181,10 +239,17 @@ class BinanceUsdMDerivativesEvidenceCollector:
                         "error_type": type(payload).__name__,
                     },
                 )
+                unavailable.append(metric_name)
                 continue
             try:
                 parsed = self._parse_metric(metric_name, payload)
-            except (KeyError, IndexError, TypeError, ValueError, ZeroDivisionError) as exc:
+            except (
+                KeyError,
+                IndexError,
+                TypeError,
+                ValueError,
+                ZeroDivisionError,
+            ) as exc:
                 logger.warning(
                     "Public derivatives evidence payload was invalid",
                     event_type="DERIVATIVES_EVIDENCE_INVALID",
@@ -194,20 +259,26 @@ class BinanceUsdMDerivativesEvidenceCollector:
                         "error_type": type(exc).__name__,
                     },
                 )
+                unavailable.append(metric_name)
                 continue
             if parsed is None:
+                unavailable.append(metric_name)
                 continue
             value, observed_at, event_payload, quality_score = parsed
             if observed_at > as_of:
-                # Provider data newer than the evaluated candle is never admitted.
                 logger.warning(
                     "Future derivatives evidence rejected",
                     event_type="DERIVATIVES_EVIDENCE_LOOKAHEAD_REJECTED",
-                    metadata={"symbol": symbol, "metric_name": metric_name},
+                    metadata={
+                        "symbol": symbol,
+                        "metric_name": metric_name,
+                    },
                 )
+                unavailable.append(metric_name)
                 continue
             source_event_id = (
-                f"{path}:{symbol}:{metric_name}:{int(observed_at.timestamp() * 1000)}"
+                f"{path}:{symbol}:{metric_name}:"
+                f"{int(observed_at.timestamp() * 1000)}"
             )
             existing = await self._evidence_service.latest(
                 domain="DERIVATIVES",
@@ -215,24 +286,70 @@ class BinanceUsdMDerivativesEvidenceCollector:
                 scope=symbol,
                 as_of=observed_at,
             )
-            if existing is not None and existing.source_event_id == source_event_id:
+            if (
+                existing is not None
+                and existing.source_event_id == source_event_id
+            ):
                 continue
             received_at = max(datetime.now(timezone.utc), observed_at)
-            evidence = SpecialistEvidence(
-                domain="DERIVATIVES",
-                metric_name=metric_name,
-                scope=symbol,
-                source=self.source_name,
-                source_event_id=source_event_id,
-                value=value,
-                unit="ratio",
-                quality_score=quality_score,
-                observed_at=observed_at,
-                received_at=received_at,
-                provenance_uri=f"{self._base_url}{path}",
-                payload_sha256=_payload_sha256(event_payload),
+            candidates.append(
+                (
+                    metric_name,
+                    SpecialistEvidence(
+                        domain="DERIVATIVES",
+                        metric_name=metric_name,
+                        scope=symbol,
+                        source=self.source_name,
+                        source_event_id=source_event_id,
+                        value=value,
+                        unit="ratio",
+                        quality_score=quality_score,
+                        observed_at=observed_at,
+                        received_at=received_at,
+                        provenance_uri=f"{self._base_url}{path}",
+                        payload_sha256=_payload_sha256(event_payload),
+                    ),
+                )
             )
-            await self._evidence_service.ingest(evidence)
+
+        ingest_results = await asyncio.gather(
+            *(
+                self._evidence_service.ingest(evidence)
+                for _, evidence in candidates
+            ),
+            return_exceptions=True,
+        )
+        persisted: list[str] = []
+        for (metric_name, _), result in zip(
+            candidates,
+            ingest_results,
+            strict=True,
+        ):
+            if isinstance(result, Exception):
+                logger.warning(
+                    "Governed derivatives evidence persistence failed",
+                    event_type="DERIVATIVES_EVIDENCE_PERSIST_FAILED",
+                    metadata={
+                        "symbol": symbol,
+                        "metric_name": metric_name,
+                        "error_type": type(result).__name__,
+                    },
+                )
+                unavailable.append(metric_name)
+                continue
+            persisted.append(metric_name)
+
+        logger.info(
+            "Governed derivatives evidence refresh completed",
+            event_type="DERIVATIVES_EVIDENCE_REFRESHED",
+            metadata={
+                "symbol": symbol,
+                "period": period,
+                "persisted_metrics": sorted(persisted),
+                "unavailable_metrics": sorted(set(unavailable)),
+                "candidate_count": len(candidates),
+            },
+        )
 
     async def _get_json(
         self,
@@ -267,10 +384,22 @@ class BinanceUsdMDerivativesEvidenceCollector:
     ) -> tuple[float, datetime, Any, int] | None:
         if not isinstance(payload, list) or not payload:
             return None
-        rows = sorted(payload, key=lambda row: int(row["timestamp"] if "timestamp" in row else row["fundingTime"]))
+        rows = sorted(
+            payload,
+            key=lambda row: int(
+                row["timestamp"]
+                if "timestamp" in row
+                else row["fundingTime"]
+            ),
+        )
         if metric_name == "funding_rate":
             row = rows[-1]
-            return float(row["fundingRate"]), _utc_from_ms(row["fundingTime"]), row, 100
+            return (
+                float(row["fundingRate"]),
+                _utc_from_ms(row["fundingTime"]),
+                row,
+                100,
+            )
         if metric_name == "open_interest_change":
             if len(rows) < 2:
                 return None
@@ -280,7 +409,12 @@ class BinanceUsdMDerivativesEvidenceCollector:
             if previous_value == 0:
                 return None
             value = current_value / previous_value - 1
-            return value, _utc_from_ms(current["timestamp"]), rows[-2:], 95
+            return (
+                value,
+                _utc_from_ms(current["timestamp"]),
+                rows[-2:],
+                95,
+            )
         row = rows[-1]
         if metric_name == "basis":
             value = float(row["basisRate"])
