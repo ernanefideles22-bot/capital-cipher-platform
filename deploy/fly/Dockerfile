@@ -15,6 +15,9 @@ RUN pnpm --filter @capital-cipher/dashboard build
 
 FROM python:3.13-slim
 
+ARG APP_SOURCE_REVISION=""
+ENV APP_SOURCE_REVISION=${APP_SOURCE_REVISION}
+
 WORKDIR /app
 COPY backend/pyproject.toml backend/README.md ./
 COPY backend/app ./app

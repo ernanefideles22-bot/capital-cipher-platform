@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from uuid import NAMESPACE_URL, uuid5
 
@@ -57,6 +58,7 @@ class OMSService:
         worker_id: str = "oms-worker",
         lease_seconds: float = 15.0,
         poll_interval_seconds: float = 0.25,
+        release_guard: Callable[[], Awaitable[bool]] | None = None,
     ) -> None:
         if target_environment == ExecutionEnvironment.TESTNET and repository is None:
             raise SecurityError("TESTNET OMS requires durable database persistence")
@@ -73,6 +75,7 @@ class OMSService:
         self._worker_id = worker_id
         self._lease_seconds = lease_seconds
         self._poll_interval_seconds = poll_interval_seconds
+        self._release_guard = release_guard
         self._orders: dict[str, OMSOrder] = {}
         self._commands: dict[str, ExecutionCommand] = {}
 
@@ -135,6 +138,9 @@ class OMSService:
                 mirrored = durable
             self._orders[mirrored.oms_order_id] = mirrored
             return mirrored
+
+        if not await self._release_authorized():
+            raise SecurityError("TESTNET release is not authorized for this runtime revision")
 
         order = OMSOrder(
             oms_order_id=order_id,
@@ -287,6 +293,16 @@ class OMSService:
                     correlation_id=order.correlation_id,
                 )
             return True
+        if (
+            command.command_type == ExecutionCommandType.SUBMIT
+            and not await self._release_authorized()
+            and not self._risk.kill_switch_active
+        ):
+            await self._risk.trigger_kill_switch(
+                reason="TESTNET release authorization missing, expired or unavailable",
+                actor="oms-worker",
+                correlation_id=order.correlation_id,
+            )
         if (
             command.command_type == ExecutionCommandType.SUBMIT
             and self._risk.kill_switch_active
@@ -451,6 +467,14 @@ class OMSService:
                     correlation_id=updated.correlation_id,
                 )
         return True
+
+    async def _release_authorized(self) -> bool:
+        if self._release_guard is None:
+            return False
+        try:
+            return await self._release_guard() is True
+        except Exception:
+            return False
 
     async def run(self, stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():

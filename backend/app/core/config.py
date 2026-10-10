@@ -21,6 +21,8 @@ PHASE_1_ALLOWED_MODES: tuple[str, ...] = ("OFFLINE", "PAPER")
 class Settings(BaseSettings):
     """Runtime settings loaded from environment / .env file."""
 
+    app_source_revision: str = Field(default="", alias="APP_SOURCE_REVISION")
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     app_env: str = Field(default="local", alias="APP_ENV")

@@ -202,11 +202,11 @@ class BybitTestnetExecutionAdapter(ExchangeExecutionAdapter):
         order_rows = [
             *await self._paged(
                 "/v5/order/realtime",
-                {"category": self._category, "openOnly": 0, "limit": 50},
+                {"category": self._category, "settleCoin": "USDT", "openOnly": 0, "limit": 50},
             ),
             *await self._paged(
                 "/v5/order/realtime",
-                {"category": self._category, "openOnly": 1, "limit": 50},
+                {"category": self._category, "settleCoin": "USDT", "openOnly": 1, "limit": 50},
             ),
             *await self._paged(
                 "/v5/order/history",

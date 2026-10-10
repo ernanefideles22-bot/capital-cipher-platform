@@ -39,15 +39,23 @@ from app.core.errors import CapitalCipherError
 from app.core.event_bus import Topics
 from app.core.logging import ServiceLogger, configure_logging
 from app.core.state_machine import SystemState
-from app.market_data.adapters.binance import BinanceMarketDataAdapter
-from app.schemas.common import Exchange
+from app.market_data.continuity import LiveCandleContinuityProcessor
+from app.market_data.raw_batch import RawMarketEventBatchPersister
+from app.market_data.runtime import (
+    build_runtime_market_adapter,
+    market_data_exchange,
+)
 from app.schemas.api import error_response
 from app.schemas.events import EventTypes
 
 logger = ServiceLogger("main")
 
 
-def create_app(context: AppContext | None = None, *, with_market_data: bool | None = None) -> FastAPI:
+def create_app(
+    context: AppContext | None = None,
+    *,
+    with_market_data: bool | None = None,
+) -> FastAPI:
     settings = context.settings if context is not None else get_settings()
     configure_logging(settings.log_level)
     if with_market_data is None:
@@ -55,7 +63,10 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        ctx = context or build_context(settings, with_database=bool(settings.database_url))
+        ctx = context or build_context(
+            settings,
+            with_database=bool(settings.database_url),
+        )
         app.state.context = ctx
         if ctx.database is not None:
             if settings.app_env == "staging":
@@ -69,6 +80,7 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
             if ctx.oms_service.target_environment.value == "TESTNET":
                 await ctx.database.verify_testnet_oms_schema()
         await ctx.risk_manager.initialize()
+        await ctx.paper_engine.initialize()
         await ctx.oms_service.initialize()
         if ctx.agent_runtime is not None:
             await ctx.agent_runtime.initialize()
@@ -130,7 +142,9 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
                 )
         # State machine boot: OFFLINE -> INITIALIZING -> PAPER (docs/30).
         await ctx.state_machine.transition(
-            SystemState.INITIALIZING, reason="System boot", actor="main"
+            SystemState.INITIALIZING,
+            reason="System boot",
+            actor="main",
         )
         if ctx.risk_manager.control_state.active:
             await ctx.state_machine.transition(
@@ -269,23 +283,51 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
         clock_stop = asyncio.Event()
         clock_task = None
         if with_market_data:
+            feed_exchange = market_data_exchange(ctx.oms_service)
             if ctx.clock_monitor is not None:
                 try:
-                    await ctx.clock_monitor.probe(Exchange.BINANCE)
+                    await ctx.clock_monitor.probe(feed_exchange)
                 except Exception as exc:
                     logger.error(
-                        "Initial Binance clock probe failed; normalized ingestion remains blocked",
+                        "Initial market clock probe failed; normalized ingestion remains blocked",
                         event_type="CLOCK_PROBE_FAILED",
-                        metadata={"error_type": type(exc).__name__},
+                        metadata={
+                            "exchange": feed_exchange.value,
+                            "error_type": type(exc).__name__,
+                        },
                     )
-                clock_task = asyncio.create_task(ctx.clock_monitor.run(clock_stop))
-            adapter = BinanceMarketDataAdapter()
+                clock_task = asyncio.create_task(
+                    ctx.clock_monitor.run(clock_stop)
+                )
+            adapter = build_runtime_market_adapter(ctx.oms_service)
             for symbol in ctx.settings.allowed_symbols_list:
-                await adapter.subscribe_candles(symbol, ctx.settings.default_timeframe)
+                await adapter.subscribe_candles(
+                    symbol,
+                    ctx.settings.default_timeframe,
+                )
+
+            continuity_processor = (
+                LiveCandleContinuityProcessor(
+                    store=ctx.candle_store,
+                    repository=ctx.repository,
+                    backfill_service=ctx.backfill_service,
+                    orchestrator=ctx.orchestrator,
+                )
+                if ctx.repository is not None and ctx.backfill_service is not None
+                else None
+            )
+            raw_batch_persister = (
+                RawMarketEventBatchPersister(ctx.database, ctx.event_bus)
+                if ctx.database is not None
+                else None
+            )
 
             async def on_candle(candle):
                 ctx.market_connected = True
-                await ctx.orchestrator.on_candle_closed(candle)
+                if continuity_processor is not None:
+                    await continuity_processor.handle(candle)
+                else:
+                    await ctx.orchestrator.on_candle_closed(candle)
 
             async def on_raw_event(event):
                 # Store public source data before normalization or analysis.
@@ -300,11 +342,20 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
                     event_id=event.event_id,
                 )
 
+            async def on_raw_events(events):
+                if raw_batch_persister is not None:
+                    await raw_batch_persister.persist(events)
+                    return
+                # In-memory/dev fallback preserves the same ordering contract.
+                for event in events:
+                    await on_raw_event(event)
+
             async def on_status(event_type: str, payload: dict):
                 ctx.market_connected = event_type == "MARKET_CONNECTED"
 
             adapter.on_candle = on_candle
             adapter.on_raw_event = on_raw_event
+            adapter.on_raw_events = on_raw_events
             adapter.on_status = on_status
             await adapter.connect()
 
@@ -371,9 +422,17 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
     )
 
     @app.exception_handler(CapitalCipherError)
-    async def domain_error_handler(request: Request, exc: CapitalCipherError) -> JSONResponse:
+    async def domain_error_handler(
+        request: Request,
+        exc: CapitalCipherError,
+    ) -> JSONResponse:
         return JSONResponse(
-            status_code=400, content=error_response(exc.error_code, exc.message, exc.metadata)
+            status_code=400,
+            content=error_response(
+                exc.error_code,
+                exc.message,
+                exc.metadata,
+            ),
         )
 
     # Root-level health (docs/13).
@@ -395,12 +454,6 @@ def create_app(context: AppContext | None = None, *, with_market_data: bool | No
     app.include_router(strategies.router, prefix=api_prefix)
     app.include_router(reports.router, prefix=api_prefix)
 
-    # The hosted image includes the built dashboard at this path. Keeping the
-    # mount conditional preserves the API-only development/test entrypoint
-    # while allowing the production-shaped PAPER container to serve the UI
-    # from the same origin (and therefore without a new CORS trust boundary).
-    # `main.py` lives in `/app/app`; the image copies the build artifact to
-    # `/app/frontend-dist`, one parent above the package directory.
     dashboard_dir = Path(__file__).resolve().parents[1] / "frontend-dist"
     if dashboard_dir.is_dir():
         app.mount(

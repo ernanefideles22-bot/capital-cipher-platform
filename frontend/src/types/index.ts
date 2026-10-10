@@ -14,6 +14,19 @@ export interface SystemStatus {
   orchestrator: string;
   risk: string;
   database: string;
+  source_revision: string | null;
+  release_evidence: {
+    status: string;
+    source_revision: string | null;
+    bundle_id: string | null;
+    bundle_sha256: string | null;
+    matches_runtime_revision: boolean;
+  };
+  oms: {
+    environment: string;
+    exchange: string;
+    live_execution_available: false;
+  };
 }
 
 export interface AgentHealth {
@@ -153,6 +166,87 @@ export interface AgentRankingRow {
   total_runs: number;
   total_failures: number;
   note: string;
+}
+
+export interface SpecialistScorecard {
+  schema_version: string;
+  agent_name: string;
+  agent_version: string;
+  sample_count: number;
+  directional_sample_count: number;
+  accuracy: number | null;
+  mean_brier_loss: number | null;
+  mean_marginal_contribution: number | null;
+  status: "INSUFFICIENT_SAMPLE" | "EVALUATED";
+  minimum_samples: number;
+  evaluated_at: string;
+}
+
+export interface SpecialistCandidate {
+  agent_name: string;
+  agent_version: string;
+  status: "CANDIDATE_FOR_REGIME_SHADOW" | "OBSERVING" | "EVALUATED_NOT_QUALIFIED";
+  eligible_for_regime_shadow_test: boolean;
+  decision_authority: false;
+  automatic_weight_adjustment: false;
+  sample_count: number;
+  minimum_samples: number;
+  accuracy: number | null;
+  mean_brier_loss: number | null;
+  mean_marginal_contribution: number | null;
+  criteria: {
+    minimum_sample_reached: boolean;
+    accuracy_above_50_percent: boolean;
+    brier_below_random_baseline: boolean;
+    positive_marginal_contribution: boolean;
+  };
+}
+
+export interface RegimeShadowCriteria {
+  minimum_sample_reached: boolean;
+  accuracy_above_50_percent: boolean;
+  brier_below_random_baseline: boolean;
+  positive_marginal_contribution: boolean;
+}
+
+export interface RegimeShadowRow {
+  agent_name: string;
+  agent_version: string;
+  market_regime: "BULL_TREND" | "BEAR_TREND" | "RANGE" | "HIGH_VOLATILITY" | "LOW_VOLATILITY" | "UNDEFINED";
+  sample_count: number;
+  directional_sample_count: number;
+  accuracy: number | null;
+  mean_brier_loss: number;
+  mean_marginal_contribution: number;
+  sample_sufficient: boolean;
+  minimum_samples: number;
+  status: "COLLECTING" | "SHADOW_SPECIALIST" | "OBSERVED_NOT_QUALIFIED";
+  qualified_shadow_specialist: boolean;
+  progress_percent: number;
+  rank_within_regime: number;
+  criteria: RegimeShadowCriteria;
+  decision_authority: false;
+  automatic_weight_adjustment: false;
+}
+
+export interface RegimeShadowReport {
+  rows: RegimeShadowRow[];
+  unavailable_historical_forecasts: number;
+  shadow_specialist_count: number;
+  collecting_count: number;
+  observed_not_qualified_count: number;
+  decision_authority: false;
+  automatic_weight_adjustment: false;
+  lookahead_protection: string;
+  classifier: string;
+  qualification: {
+    minimum_samples: number;
+    accuracy_above: number;
+    brier_below: number;
+    marginal_contribution_above: number;
+  };
+  candidate_count: number;
+  candidate_names: string[];
 }
 
 export interface PerformanceReport {

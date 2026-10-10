@@ -178,6 +178,10 @@ class AmbiguousAdapter(FakeTestnetAdapter):
         raise AmbiguousExecutionError("unknown")
 
 
+async def allow_test_release():
+    return True
+
+
 async def oms_stack(tmp_path, *, adapter=None):
     database = Database(
         f"sqlite+aiosqlite:///{tmp_path / 'month-7.db'}"
@@ -203,6 +207,7 @@ async def oms_stack(tmp_path, *, adapter=None):
         audit_service=audit,
         adapters={(Exchange.BINANCE, ExecutionEnvironment.TESTNET): adapter},
         repository=repository,
+        release_guard=allow_test_release,
     )
     decision = make_decision(CandidateAction.BUY)
     check = await risk.check(decision, entry_price=100, atr=1)
@@ -508,6 +513,7 @@ async def test_adapters_fetch_all_open_orders_for_orphan_detection():
 
     async def bybit_handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/v5/order/realtime":
+            assert request.url.params["settleCoin"] == "USDT"
             open_only = dict(parse_qsl(request.url.query.decode()))[
                 "openOnly"
             ]
@@ -565,6 +571,33 @@ async def test_adapters_fetch_all_open_orders_for_orphan_detection():
     assert sorted(bybit_open_modes) == ["0", "1"]
     assert bybit_state.orders[0].client_order_id == "manual-bybit-order"
     await bybit_client.aclose()
+
+
+async def test_empty_bybit_positions_are_compared_and_halt():
+    sm = await operational_state_machine()
+    audit = AuditService()
+    risk = RiskManager(RiskLimits(), sm, audit)
+    order = sample_oms_order(exchange=Exchange.BYBIT).model_copy(update={
+        "status": OMSOrderStatus.FILLED, "venue_order_id": "venue-1",
+        "cumulative_filled_quantity": 0.01,
+    })
+    adapter = FakeTestnetAdapter()
+    adapter.exchange = Exchange.BYBIT
+    adapter.snapshot = VenueStateSnapshot(
+        exchange=Exchange.BYBIT, environment=ExecutionEnvironment.TESTNET,
+        positions=[], orders=[VenueOrderSnapshot(
+            exchange=Exchange.BYBIT, environment=ExecutionEnvironment.TESTNET,
+            venue_order_id="venue-1", client_order_id=order.client_order_id,
+            symbol=order.symbol, side=order.side, order_type=order.order_type,
+            status=OMSOrderStatus.FILLED, quantity=order.quantity,
+            cumulative_filled_quantity=order.quantity,
+        )],
+    )
+    service = ReconciliationService(adapter=adapter, risk_manager=risk, audit_service=audit)
+    service._orders[order.oms_order_id] = order
+    run = await service.reconcile_once()
+    assert run.critical_mismatch_count == 1
+    assert risk.kill_switch_active
 
 
 async def test_bybit_hedge_mode_fails_closed():

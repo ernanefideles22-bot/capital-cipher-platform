@@ -6,6 +6,9 @@ import statistics
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
+from pydantic import ValidationError as PydanticValidationError
+
+from app.core.logging import ServiceLogger
 from app.schemas.agents import AgentOutput, AgentRegistration
 from app.schemas.common import Signal
 from app.schemas.market import Candle
@@ -16,6 +19,8 @@ from app.schemas.specialist_evaluation import (
     SpecialistEvidence,
     SpecialistDomain,
 )
+
+logger = ServiceLogger("specialist_evidence")
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -33,16 +38,51 @@ class SpecialistEvidenceService:
         self._repository = repository
         self._items: dict[str, SpecialistEvidence] = {}
         self._source_events: dict[tuple[str, str], str] = {}
+        self.historical_integrity_rejected: bool = False
 
     async def initialize(self) -> None:
-        if self._repository is not None:
-            for evidence in await self._repository.list_specialist_evidence(
-                limit=10_000
-            ):
-                self._items[evidence.evidence_id] = evidence
-                self._source_events[
-                    (evidence.source, evidence.source_event_id)
-                ] = evidence.evidence_id
+        if self._repository is None:
+            return
+        rejected: list[dict[str, str]] = []
+        quarantine_loader = getattr(
+            self._repository,
+            "list_specialist_evidence_with_rejections",
+            None,
+        )
+        if quarantine_loader is not None:
+            historical, rejected = await quarantine_loader(limit=10_000)
+        else:
+            try:
+                historical = await self._repository.list_specialist_evidence(
+                    limit=10_000
+                )
+            except PydanticValidationError as exc:
+                historical = []
+                rejected = [
+                    {
+                        "evidence_id": "unknown",
+                        "source": "unknown",
+                        "source_event_id": "unknown",
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    }
+                ]
+        if rejected:
+            self.historical_integrity_rejected = True
+            logger.error(
+                "Persisted specialist evidence failed immutable identity validation; "
+                "invalid rows quarantined from runtime",
+                event_type="SPECIALIST_EVIDENCE_INTEGRITY_REJECTED",
+                metadata={
+                    "rejected_count": len(rejected),
+                    "rejected": rejected[:20],
+                },
+            )
+        for evidence in historical:
+            self._items[evidence.evidence_id] = evidence
+            self._source_events[
+                (evidence.source, evidence.source_event_id)
+            ] = evidence.evidence_id
 
     async def ingest(self, evidence: SpecialistEvidence) -> SpecialistEvidence:
         source_key = (evidence.source, evidence.source_event_id)
