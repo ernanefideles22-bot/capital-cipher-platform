@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -10,7 +11,9 @@ from app.core.logging import ServiceLogger
 from app.core.publication import PublicationCoordinator
 from app.core.transports.base import EventTransport
 from app.database.repositories.outbox_batch import (
+    list_pending_bus_messages as durable_pending_bus_messages,
     list_published_bus_message_ids as durable_published_bus_message_ids,
+    list_untracked_bus_messages as durable_untracked_bus_messages,
 )
 from app.schemas.events import BusMessage
 
@@ -67,6 +70,42 @@ class OutboxDispatcher:
         self._poll_interval_seconds = poll_interval_seconds
         self._publication_coordinator = (
             publication_coordinator or PublicationCoordinator()
+        )
+        # Normal polling follows the partial event_outbox index. A separate,
+        # infrequent cardinality/anti-join check preserves recovery from the
+        # narrow crash window between journaling and recording broker state.
+        self._next_untracked_scan_at = 0.0
+        self._untracked_scan_interval_seconds = 60.0
+
+    async def _pending_messages(self) -> list[BusMessage]:
+        now = time.monotonic()
+        if now >= self._next_untracked_scan_at:
+            untracked = await durable_untracked_bus_messages(
+                self._repository,
+                self._batch_size,
+            )
+            if untracked is not None:
+                if untracked:
+                    # Keep scanning crash-gap rows on successive drains until
+                    # the journal and outbox cardinalities converge.
+                    self._next_untracked_scan_at = 0.0
+                    return untracked
+                self._next_untracked_scan_at = (
+                    now + self._untracked_scan_interval_seconds
+                )
+            else:
+                self._next_untracked_scan_at = (
+                    now + self._untracked_scan_interval_seconds
+                )
+
+        durable_pending = await durable_pending_bus_messages(
+            self._repository,
+            self._batch_size,
+        )
+        if durable_pending is not None:
+            return durable_pending
+        return await self._repository.list_pending_bus_messages(
+            self._batch_size
         )
 
     async def _published_ids(self, event_ids: list[str]) -> set[str]:
@@ -146,9 +185,7 @@ class OutboxDispatcher:
         source.
         """
 
-        pending = await self._repository.list_pending_bus_messages(
-            self._batch_size
-        )
+        pending = await self._pending_messages()
         if not pending:
             return OutboxDrainResult(attempted=0, published=0, failed=0)
 

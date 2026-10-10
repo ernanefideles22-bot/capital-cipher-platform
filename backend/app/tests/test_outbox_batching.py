@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
 import app.core.outbox as outbox_module
 from app.core.outbox import OutboxDispatcher
+from app.database.repositories.outbox_batch import _pending_bus_messages_statement
 from app.schemas.events import BusMessage
 
 
@@ -63,6 +65,22 @@ class _Transport:
         raise AssertionError("legacy single publish must not run")
 
 
+def test_pending_query_uses_outbox_index_order_without_wide_journal_sort():
+    statement = _pending_bus_messages_statement(4096)
+    sql = str(
+        statement.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    order_by = sql.split(" ORDER BY ", 1)[1].split(" LIMIT ", 1)[0]
+
+    assert "FROM capital_cipher.event_outbox JOIN capital_cipher.event_journal" in sql
+    assert "capital_cipher.event_outbox.published_at IS NULL" in sql
+    assert "capital_cipher.event_outbox.created_at" in order_by
+    assert "capital_cipher.event_journal.message_id" not in order_by
+
+
 @pytest.mark.asyncio
 async def test_outbox_rechecks_and_publishes_cohort_in_batches(monkeypatch):
     repository = _Repository([_message("e1"), _message("e2"), _message("e3")])
@@ -117,3 +135,57 @@ async def test_outbox_marks_broker_failure_for_replay_cohort(monkeypatch):
     assert result.attempted == 3
     assert result.published == 0
     assert result.failed == 2
+
+
+@pytest.mark.asyncio
+async def test_outbox_recovers_crash_gap_before_indexed_pending(monkeypatch):
+    repository = _Repository([])
+    transport = _Transport()
+    untracked_calls = 0
+
+    async def _untracked(_repository, limit):
+        nonlocal untracked_calls
+        assert limit == 100
+        untracked_calls += 1
+        if untracked_calls == 1:
+            return [_message("crash-gap")]
+        return []
+
+    async def _pending(_repository, limit):
+        assert limit == 100
+        return [_message("pending")]
+
+    async def _published_ids(_repository, event_ids):
+        return set()
+
+    monkeypatch.setattr(
+        outbox_module,
+        "durable_untracked_bus_messages",
+        _untracked,
+    )
+    monkeypatch.setattr(
+        outbox_module,
+        "durable_pending_bus_messages",
+        _pending,
+    )
+    monkeypatch.setattr(
+        outbox_module,
+        "durable_published_bus_message_ids",
+        _published_ids,
+    )
+
+    dispatcher = OutboxDispatcher(repository, transport)
+    first = await dispatcher.drain_once()
+    second = await dispatcher.drain_once()
+
+    assert transport.batches == [["crash-gap"], ["pending"]]
+    assert first == outbox_module.OutboxDrainResult(
+        attempted=1,
+        published=1,
+        failed=0,
+    )
+    assert second == outbox_module.OutboxDrainResult(
+        attempted=1,
+        published=1,
+        failed=0,
+    )
