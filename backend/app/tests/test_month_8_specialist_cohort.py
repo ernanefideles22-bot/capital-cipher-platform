@@ -11,7 +11,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from jsonschema import Draft202012Validator
 from pydantic import ValidationError as PydanticValidationError
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.exc import DatabaseError as SQLAlchemyDatabaseError
 
 from app.agents.evaluation import (
@@ -388,8 +388,45 @@ async def test_sqlite_persistence_is_idempotent_and_append_only(tmp_path):
     )
     assert len(await repository.list_agent_forecasts()) == 2
     assert len(await repository.list_agent_forecast_outcomes()) == 2
-    assert await repository.save_agent_forecasts(forecasts) == forecasts
-    assert await repository.save_agent_forecast_outcomes(outcomes) == outcomes
+    select_statements: list[str] = []
+
+    def capture_selects(
+        _connection,
+        _cursor,
+        statement,
+        _parameters,
+        _context,
+        _executemany,
+    ):
+        if statement.lstrip().upper().startswith("SELECT"):
+            select_statements.append(statement)
+
+    event.listen(
+        database.engine.sync_engine,
+        "before_cursor_execute",
+        capture_selects,
+    )
+    try:
+        assert await repository.save_agent_forecasts(forecasts) == forecasts
+        assert sum(
+            "agent_forecasts" in statement
+            for statement in select_statements
+        ) == 1
+        select_statements.clear()
+        assert (
+            await repository.save_agent_forecast_outcomes(outcomes)
+            == outcomes
+        )
+        assert sum(
+            "agent_forecast_outcomes" in statement
+            for statement in select_statements
+        ) == 1
+    finally:
+        event.remove(
+            database.engine.sync_engine,
+            "before_cursor_execute",
+            capture_selects,
+        )
 
     async with database.engine.begin() as connection:
         with pytest.raises(SQLAlchemyDatabaseError, match="append-only"):

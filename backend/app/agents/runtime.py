@@ -12,13 +12,15 @@ import uuid
 from datetime import timedelta
 from typing import Protocol
 
+from app.agents.base import BaseAgent
 from app.agents.registry import AgentRegistry
 from app.core.errors import DatabaseError, ValidationError
-from app.core.event_bus import EventBus, Topics
+from app.core.event_bus import EventBus, EventPublication, Topics
 from app.core.logging import ServiceLogger
 from app.core.payload_security import ensure_payload_has_no_secrets
 from app.schemas.agents import (
     AgentExecutionAttempt,
+    AgentExecutionFinish,
     AgentExecutionJob,
     AgentExecutionRequest,
     AgentExecutionTrace,
@@ -30,6 +32,21 @@ from app.schemas.common import AgentStatus, Signal, utcnow
 from app.schemas.events import EventTypes
 
 logger = ServiceLogger("agent-runtime")
+_LIFECYCLE_EVENT_NAMESPACE = uuid.UUID("fe2048d3-e905-5dd7-9a0b-57bf7a3b08c8")
+
+
+def agent_lifecycle_event_id(
+    execution_id: str,
+    event_type: str,
+    attempt_number: int,
+) -> str:
+    """Return a deterministic UUID that fits the durable event journal."""
+
+    identity = (
+        f"capital-cipher:agent-runtime:{execution_id}:"
+        f"{event_type}:{attempt_number}"
+    )
+    return str(uuid.uuid5(_LIFECYCLE_EVENT_NAMESPACE, identity))
 
 
 class AgentRuntimeRepository(Protocol):
@@ -38,6 +55,11 @@ class AgentRuntimeRepository(Protocol):
         job: AgentExecutionJob,
         input_memory: AgentMemoryEntry,
     ) -> AgentExecutionJob: ...
+
+    async def create_agent_executions(
+        self,
+        submissions: list[tuple[AgentExecutionJob, AgentMemoryEntry]],
+    ) -> list[AgentExecutionJob]: ...
 
     async def claim_agent_execution(
         self,
@@ -54,6 +76,14 @@ class AgentRuntimeRepository(Protocol):
         lease_seconds: int,
     ) -> AgentExecutionJob | None: ...
 
+    async def claim_next_agent_executions(
+        self,
+        *,
+        worker_id: str,
+        lease_seconds: int,
+        limit: int,
+    ) -> list[AgentExecutionJob]: ...
+
     async def finish_agent_execution(
         self,
         *,
@@ -66,10 +96,20 @@ class AgentRuntimeRepository(Protocol):
         terminal_memory: AgentMemoryEntry | None,
     ) -> AgentExecutionJob: ...
 
+    async def finish_agent_executions(
+        self,
+        finishes: list[AgentExecutionFinish],
+    ) -> list[AgentExecutionJob]: ...
+
     async def load_agent_execution_trace(
         self,
         execution_id: str,
     ) -> AgentExecutionTrace | None: ...
+
+    async def load_agent_execution_traces(
+        self,
+        execution_ids: list[str],
+    ) -> dict[str, AgentExecutionTrace]: ...
 
     async def list_agent_execution_jobs(
         self,
@@ -119,24 +159,41 @@ class InMemoryAgentRuntimeRepository:
         job: AgentExecutionJob,
         input_memory: AgentMemoryEntry,
     ) -> AgentExecutionJob:
-        key = (job.agent_name, job.agent_version, job.idempotency_key)
         async with self._lock:
-            existing_id = self._idempotency.get(key)
-            if existing_id is not None:
-                existing = self._jobs[existing_id]
-                if existing.request_fingerprint != job.request_fingerprint:
-                    raise ValidationError(
-                        "Agent execution idempotency key conflicts with "
-                        "different input"
-                    )
-                return existing
-            self._jobs[job.execution_id] = job
-            self._idempotency[key] = job.execution_id
-            self._attempts[job.execution_id] = []
-            self._memory[job.execution_id] = [input_memory]
-            return job
+            return self._create_agent_execution(job, input_memory)
 
-    async def _claim(
+    def _create_agent_execution(
+        self,
+        job: AgentExecutionJob,
+        input_memory: AgentMemoryEntry,
+    ) -> AgentExecutionJob:
+        key = (job.agent_name, job.agent_version, job.idempotency_key)
+        existing_id = self._idempotency.get(key)
+        if existing_id is not None:
+            existing = self._jobs[existing_id]
+            if existing.request_fingerprint != job.request_fingerprint:
+                raise ValidationError(
+                    "Agent execution idempotency key conflicts with "
+                    "different input"
+                )
+            return existing
+        self._jobs[job.execution_id] = job
+        self._idempotency[key] = job.execution_id
+        self._attempts[job.execution_id] = []
+        self._memory[job.execution_id] = [input_memory]
+        return job
+
+    async def create_agent_executions(
+        self,
+        submissions: list[tuple[AgentExecutionJob, AgentMemoryEntry]],
+    ) -> list[AgentExecutionJob]:
+        async with self._lock:
+            return [
+                self._create_agent_execution(job, input_memory)
+                for job, input_memory in submissions
+            ]
+
+    def _claim(
         self,
         execution_id: str,
         *,
@@ -185,7 +242,7 @@ class InMemoryAgentRuntimeRepository:
         lease_seconds: int,
     ) -> AgentExecutionJob | None:
         async with self._lock:
-            return await self._claim(
+            return self._claim(
                 execution_id,
                 worker_id=worker_id,
                 lease_seconds=lease_seconds,
@@ -197,20 +254,39 @@ class InMemoryAgentRuntimeRepository:
         worker_id: str,
         lease_seconds: int,
     ) -> AgentExecutionJob | None:
+        claimed = await self.claim_next_agent_executions(
+            worker_id=worker_id,
+            lease_seconds=lease_seconds,
+            limit=1,
+        )
+        return claimed[0] if claimed else None
+
+    async def claim_next_agent_executions(
+        self,
+        *,
+        worker_id: str,
+        lease_seconds: int,
+        limit: int,
+    ) -> list[AgentExecutionJob]:
+        if not 1 <= limit <= 1_000:
+            raise ValueError("Agent claim limit must be 1..1000")
         async with self._lock:
             ordered = sorted(
                 self._jobs.values(),
                 key=lambda item: (item.available_at, item.created_at),
             )
+            claimed_jobs: list[AgentExecutionJob] = []
             for job in ordered:
-                claimed = await self._claim(
+                claimed = self._claim(
                     job.execution_id,
                     worker_id=worker_id,
                     lease_seconds=lease_seconds,
                 )
                 if claimed is not None:
-                    return claimed
-            return None
+                    claimed_jobs.append(claimed)
+                    if len(claimed_jobs) == limit:
+                        break
+            return claimed_jobs
 
     async def finish_agent_execution(
         self,
@@ -223,79 +299,139 @@ class InMemoryAgentRuntimeRepository:
         retry_delay_seconds: float,
         terminal_memory: AgentMemoryEntry | None,
     ) -> AgentExecutionJob:
+        finishes = [
+            AgentExecutionFinish(
+                attempt=attempt,
+                attempt_memory=attempt_memory,
+                worker_id=worker_id,
+                output=output,
+                retryable=retryable,
+                retry_delay_seconds=retry_delay_seconds,
+                terminal_memory=terminal_memory,
+            )
+        ]
+        updated = await self.finish_agent_executions(finishes)
+        return updated[0]
+
+    def _validate_finish(
+        self,
+        finish: AgentExecutionFinish,
+    ) -> None:
+        execution_id = finish.attempt.execution_id
+        job = self._jobs[execution_id]
+        if job.status != "LEASED" or job.leased_by != finish.worker_id:
+            raise ValidationError("Agent execution lease ownership lost")
+        attempts = self._attempts[execution_id]
+        expected = len(attempts) + 1
+        if (
+            finish.attempt.attempt_number != expected
+            or job.attempt_count != finish.attempt.attempt_number
+        ):
+            raise ValidationError("Agent attempts must be append-only")
+
+    def _finish(
+        self,
+        finish: AgentExecutionFinish,
+        *,
+        now,
+    ) -> AgentExecutionJob:
+        execution_id = finish.attempt.execution_id
+        job = self._jobs[execution_id]
+        attempts = self._attempts[execution_id]
+        attempts.append(finish.attempt)
+        self._memory[execution_id].append(finish.attempt_memory)
+        successful = finish.output.status not in {
+            AgentStatus.FAILED,
+            AgentStatus.TIMEOUT,
+        }
+        will_retry = (
+            not successful
+            and finish.retryable
+            and job.attempt_count < job.max_attempts
+        )
+        status = (
+            "COMPLETED"
+            if successful
+            else "RETRY"
+            if will_retry
+            else "DEAD_LETTER"
+        )
+        error_code = (
+            None
+            if successful
+            else "AGENT_TIMEOUT"
+            if finish.output.status == AgentStatus.TIMEOUT
+            else "AGENT_FAILED"
+        )
+        updated = job.model_copy(
+            update={
+                "status": status,
+                "available_at": (
+                    now
+                    + timedelta(seconds=finish.retry_delay_seconds)
+                    if will_retry
+                    else now
+                ),
+                "leased_by": None,
+                "lease_expires_at": None,
+                "last_error_code": error_code,
+                "output": finish.output,
+                "updated_at": now,
+                "completed_at": (
+                    now if status in {"COMPLETED", "DEAD_LETTER"} else None
+                ),
+            }
+        )
+        self._jobs[execution_id] = updated
+        if finish.terminal_memory is not None:
+            self._memory[execution_id].append(finish.terminal_memory)
+        return updated
+
+    async def finish_agent_executions(
+        self,
+        finishes: list[AgentExecutionFinish],
+    ) -> list[AgentExecutionJob]:
+        if not finishes:
+            return []
+        execution_ids = [
+            finish.attempt.execution_id for finish in finishes
+        ]
+        if len(set(execution_ids)) != len(execution_ids):
+            raise ValueError("Agent finish execution_ids must be unique")
         now = utcnow()
         async with self._lock:
-            execution_id = attempt.execution_id
-            job = self._jobs[execution_id]
-            if job.status != "LEASED" or job.leased_by != worker_id:
-                raise ValidationError("Agent execution lease ownership lost")
-            attempts = self._attempts[execution_id]
-            expected = len(attempts) + 1
-            if attempt.attempt_number != expected:
-                raise ValidationError("Agent attempts must be append-only")
-            if attempt_memory.sequence != attempt.attempt_number * 2:
-                raise ValidationError("Agent attempt memory sequence is invalid")
-            attempts.append(attempt)
-            self._memory[execution_id].append(attempt_memory)
-            successful = output.status not in {
-                AgentStatus.FAILED,
-                AgentStatus.TIMEOUT,
-            }
-            will_retry = (
-                not successful
-                and retryable
-                and job.attempt_count < job.max_attempts
-            )
-            status = (
-                "COMPLETED"
-                if successful
-                else "RETRY"
-                if will_retry
-                else "DEAD_LETTER"
-            )
-            error_code = (
-                None
-                if successful
-                else "AGENT_TIMEOUT"
-                if output.status == AgentStatus.TIMEOUT
-                else "AGENT_FAILED"
-            )
-            updated = job.model_copy(
-                update={
-                    "status": status,
-                    "available_at": (
-                        now + timedelta(seconds=retry_delay_seconds)
-                        if will_retry
-                        else now
-                    ),
-                    "leased_by": None,
-                    "lease_expires_at": None,
-                    "last_error_code": error_code,
-                    "output": output,
-                    "updated_at": now,
-                    "completed_at": (
-                        now if status in {"COMPLETED", "DEAD_LETTER"} else None
-                    ),
-                }
-            )
-            self._jobs[execution_id] = updated
-            if terminal_memory is not None:
-                self._memory[execution_id].append(terminal_memory)
-            return updated
+            for finish in finishes:
+                self._validate_finish(finish)
+            return [
+                self._finish(finish, now=now)
+                for finish in finishes
+            ]
 
     async def load_agent_execution_trace(
         self,
         execution_id: str,
     ) -> AgentExecutionTrace | None:
+        traces = await self.load_agent_execution_traces([execution_id])
+        return traces.get(execution_id)
+
+    async def load_agent_execution_traces(
+        self,
+        execution_ids: list[str],
+    ) -> dict[str, AgentExecutionTrace]:
+        if not execution_ids:
+            return {}
+        if len(set(execution_ids)) != len(execution_ids):
+            raise ValueError("Agent trace execution_ids must be unique")
         async with self._lock:
-            job = self._jobs.get(execution_id)
-            if job is None:
-                return None
-            return AgentExecutionTrace(
-                job=job,
-                attempts=list(self._attempts[execution_id]),
-                memory=list(self._memory[execution_id]),
-            )
+            return {
+                execution_id: AgentExecutionTrace(
+                    job=self._jobs[execution_id],
+                    attempts=list(self._attempts[execution_id]),
+                    memory=list(self._memory[execution_id]),
+                )
+                for execution_id in execution_ids
+                if execution_id in self._jobs
+            }
 
     async def list_agent_execution_jobs(
         self,
@@ -339,12 +475,56 @@ class AgentRuntime:
         self._retry_base_seconds = retry_base_seconds
         self._retry_max_seconds = retry_max_seconds
         self._semaphore = asyncio.Semaphore(max_concurrency)
+        self._submission_semaphore = asyncio.Semaphore(max_concurrency)
         self._agent_locks: dict[str, asyncio.Lock] = {
             name: asyncio.Lock() for name in registry.agents
         }
+        self._active_background_workers = 0
+        self._completion_waiters: dict[str, set[asyncio.Event]] = {}
 
     async def initialize(self) -> None:
         await self.registry.initialize_all()
+
+    @property
+    def background_worker_active(self) -> bool:
+        return self._active_background_workers > 0
+
+    def _background_worker_started(self) -> None:
+        self._active_background_workers += 1
+
+    def _background_worker_stopped(self) -> None:
+        self._active_background_workers = max(
+            0,
+            self._active_background_workers - 1,
+        )
+        if self._active_background_workers == 0:
+            for waiters in self._completion_waiters.values():
+                for waiter in waiters:
+                    waiter.set()
+
+    def _register_completion_waiter(
+        self,
+        execution_id: str,
+    ) -> asyncio.Event:
+        waiter = asyncio.Event()
+        self._completion_waiters.setdefault(execution_id, set()).add(waiter)
+        return waiter
+
+    def _remove_completion_waiter(
+        self,
+        execution_id: str,
+        waiter: asyncio.Event,
+    ) -> None:
+        waiters = self._completion_waiters.get(execution_id)
+        if waiters is None:
+            return
+        waiters.discard(waiter)
+        if not waiters:
+            self._completion_waiters.pop(execution_id, None)
+
+    def _notify_completion(self, execution_id: str) -> None:
+        for waiter in self._completion_waiters.get(execution_id, set()):
+            waiter.set()
 
     @staticmethod
     def _worker_id(prefix: str) -> str:
@@ -358,6 +538,18 @@ class AgentRuntime:
         self,
         request: AgentExecutionRequest,
     ) -> AgentExecutionJob:
+        job, input_memory = self._prepare_submission(request)
+        stored = await self.repository.create_agent_execution(
+            job,
+            input_memory,
+        )
+        await self._publish_requested(stored)
+        return stored
+
+    def _prepare_submission(
+        self,
+        request: AgentExecutionRequest,
+    ) -> tuple[AgentExecutionJob, AgentMemoryEntry]:
         ensure_payload_has_no_secrets(
             request.model_dump(mode="json")
         )
@@ -387,7 +579,7 @@ class AgentRuntime:
             created_at=now,
             updated_at=now,
         )
-        stored = await self.repository.create_agent_execution(
+        return (
             job,
             _memory(
                 execution_id=fingerprint,
@@ -396,12 +588,47 @@ class AgentRuntime:
                 payload=request.model_dump(mode="json"),
             ),
         )
+
+    async def _publish_requested(self, job: AgentExecutionJob) -> None:
         await self._publish(
             EventTypes.AGENT_REQUESTED,
-            stored,
-            event_id=fingerprint,
+            job,
+            event_id=agent_lifecycle_event_id(
+                job.execution_id,
+                EventTypes.AGENT_REQUESTED,
+                0,
+            ),
         )
-        return stored
+
+    async def submit_many(
+        self,
+        requests: list[AgentExecutionRequest],
+    ) -> list[AgentExecutionJob]:
+        submissions = [
+            self._prepare_submission(request) for request in requests
+        ]
+        jobs = await self.repository.create_agent_executions(submissions)
+        unique_jobs = list(
+            {
+                job.execution_id: job
+                for job in jobs
+            }.values()
+        )
+        await self._publish_many(
+            [
+                self._event_publication(
+                    EventTypes.AGENT_REQUESTED,
+                    job,
+                    event_id=agent_lifecycle_event_id(
+                        job.execution_id,
+                        EventTypes.AGENT_REQUESTED,
+                        0,
+                    ),
+                )
+                for job in unique_jobs
+            ]
+        )
+        return jobs
 
     async def enqueue(
         self,
@@ -409,57 +636,95 @@ class AgentRuntime:
     ) -> AgentExecutionJob:
         return await self.submit(request)
 
+    async def _submit_bounded(
+        self,
+        request: AgentExecutionRequest,
+    ) -> AgentExecutionJob:
+        async with self._submission_semaphore:
+            return await self.submit(request)
+
     async def execute(
         self,
         request: AgentExecutionRequest,
     ) -> AgentExecutionTrace:
-        job = await self.submit(request)
+        job = await self._submit_bounded(request)
+        return await self._execute_submitted(job)
+
+    async def _execute_submitted(
+        self,
+        job: AgentExecutionJob,
+    ) -> AgentExecutionTrace:
         worker_id = self._worker_id("inline-agent")
-        while True:
-            trace = await self.repository.load_agent_execution_trace(
-                job.execution_id
-            )
-            if trace is None:
-                raise DatabaseError("Agent execution disappeared")
-            if trace.job.status in {"COMPLETED", "DEAD_LETTER"}:
-                return trace
-            now = utcnow()
-            if (
-                trace.job.status == "LEASED"
-                and (
-                    trace.job.lease_expires_at is None
-                    or trace.job.lease_expires_at > now
+        completion_waiter = self._register_completion_waiter(
+            job.execution_id
+        )
+        try:
+            while True:
+                trace = await self.repository.load_agent_execution_trace(
+                    job.execution_id
                 )
-            ):
-                await asyncio.sleep(0.01)
-                continue
-            if trace.job.available_at > now:
-                await asyncio.sleep(
-                    min(
-                        0.2,
-                        (
-                            trace.job.available_at - now
-                        ).total_seconds(),
+                if trace is None:
+                    raise DatabaseError("Agent execution disappeared")
+                if trace.job.status in {"COMPLETED", "DEAD_LETTER"}:
+                    return trace
+                if self.background_worker_active:
+                    # Local workers notify exact waiters on terminal writes.
+                    # A lease-duration timeout covers distributed completion
+                    # without recreating the database polling thundering herd.
+                    try:
+                        await asyncio.wait_for(
+                            completion_waiter.wait(),
+                            timeout=float(self._lease_seconds),
+                        )
+                    except TimeoutError:
+                        pass
+                    continue
+                now = utcnow()
+                if (
+                    trace.job.status == "LEASED"
+                    and (
+                        trace.job.lease_expires_at is None
+                        or trace.job.lease_expires_at > now
                     )
+                ):
+                    await asyncio.sleep(0.01)
+                    continue
+                if trace.job.available_at > now:
+                    await asyncio.sleep(
+                        min(
+                            0.2,
+                            (
+                                trace.job.available_at - now
+                            ).total_seconds(),
+                        )
+                    )
+                    continue
+                claimed = await self.repository.claim_agent_execution(
+                    job.execution_id,
+                    worker_id=worker_id,
+                    lease_seconds=self._lease_seconds,
                 )
-                continue
-            claimed = await self.repository.claim_agent_execution(
+                if claimed is None:
+                    await asyncio.sleep(0)
+                    continue
+                await self.execute_claimed(claimed, worker_id=worker_id)
+        finally:
+            self._remove_completion_waiter(
                 job.execution_id,
-                worker_id=worker_id,
-                lease_seconds=self._lease_seconds,
+                completion_waiter,
             )
-            if claimed is None:
-                await asyncio.sleep(0)
-                continue
-            await self.execute_claimed(claimed, worker_id=worker_id)
 
     async def execute_many(
         self,
         requests: list[AgentExecutionRequest],
     ) -> list[AgentOutput]:
-        traces = await asyncio.gather(
-            *(self.execute(request) for request in requests)
-        )
+        jobs = await self.submit_many(requests)
+        if self.background_worker_active:
+            traces = await self._wait_for_submitted_many(jobs)
+        else:
+            traces = await asyncio.gather(
+                *(self._execute_submitted(job) for job in jobs)
+            )
         outputs: list[AgentOutput] = []
         for trace in traces:
             if trace.job.output is None:
@@ -467,12 +732,125 @@ class AgentRuntime:
             outputs.append(trace.job.output)
         return outputs
 
+    async def _wait_for_submitted_many(
+        self,
+        jobs: list[AgentExecutionJob],
+    ) -> list[AgentExecutionTrace]:
+        execution_ids = [job.execution_id for job in jobs]
+        unique_execution_ids = list(dict.fromkeys(execution_ids))
+        waiters = {
+            execution_id: self._register_completion_waiter(execution_id)
+            for execution_id in unique_execution_ids
+        }
+        terminal: dict[str, AgentExecutionTrace] = {}
+        try:
+            while len(terminal) < len(unique_execution_ids):
+                pending_ids = [
+                    execution_id
+                    for execution_id in unique_execution_ids
+                    if execution_id not in terminal
+                ]
+                traces = (
+                    await self.repository.load_agent_execution_traces(
+                        pending_ids
+                    )
+                )
+                missing = [
+                    execution_id
+                    for execution_id in pending_ids
+                    if execution_id not in traces
+                ]
+                if missing:
+                    raise DatabaseError(
+                        "One or more agent executions disappeared"
+                    )
+                for execution_id, trace in traces.items():
+                    if trace.job.status in {
+                        "COMPLETED",
+                        "DEAD_LETTER",
+                    }:
+                        terminal[execution_id] = trace
+                pending_ids = [
+                    execution_id
+                    for execution_id in pending_ids
+                    if execution_id not in terminal
+                ]
+                if not pending_ids:
+                    break
+                if not self.background_worker_active:
+                    fallback = await asyncio.gather(
+                        *(
+                            self._execute_submitted(
+                                traces[execution_id].job
+                            )
+                            for execution_id in pending_ids
+                        )
+                    )
+                    terminal.update(
+                        {
+                            trace.job.execution_id: trace
+                            for trace in fallback
+                        }
+                    )
+                    break
+                waiter_tasks = [
+                    asyncio.create_task(waiters[execution_id].wait())
+                    for execution_id in pending_ids
+                ]
+                try:
+                    await asyncio.wait(
+                        waiter_tasks,
+                        timeout=float(self._lease_seconds),
+                    )
+                finally:
+                    for task in waiter_tasks:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(
+                        *waiter_tasks,
+                        return_exceptions=True,
+                    )
+            return [terminal[execution_id] for execution_id in execution_ids]
+        finally:
+            for execution_id, waiter in waiters.items():
+                self._remove_completion_waiter(execution_id, waiter)
+
     async def execute_claimed(
         self,
         job: AgentExecutionJob,
         *,
         worker_id: str,
     ) -> AgentExecutionJob:
+        agent, unavailable_output = self._resolve_agent(job)
+        if unavailable_output is not None:
+            return await self._record_and_finish(
+                job,
+                worker_id=worker_id,
+                output=unavailable_output,
+                retryable=False,
+            )
+        assert agent is not None
+        await self._publish(
+            EventTypes.AGENT_STARTED,
+            job,
+            event_id=agent_lifecycle_event_id(
+                job.execution_id,
+                EventTypes.AGENT_STARTED,
+                job.attempt_count,
+            ),
+        )
+        output, retryable = await self._run_agent(job, agent)
+        return await self._record_and_finish(
+            job,
+            worker_id=worker_id,
+            output=output,
+            retryable=retryable,
+        )
+
+    def _resolve_agent(
+        self,
+        job: AgentExecutionJob,
+    ) -> tuple[BaseAgent | None, AgentOutput | None]:
         try:
             agent = self.registry.get(
                 job.agent_name,
@@ -488,12 +866,7 @@ class AgentRuntime:
                     reason="Queued agent definition no longer matches registry",
                     warnings=["AGENT_DEFINITION_MISMATCH"],
                 )
-                return await self._record_and_finish(
-                    job,
-                    worker_id=worker_id,
-                    output=output,
-                    retryable=False,
-                )
+                return None, output
         except ValidationError:
             output = AgentOutput(
                 agent_name=job.agent_name,
@@ -503,18 +876,14 @@ class AgentRuntime:
                 reason="Queued agent version is unavailable",
                 warnings=["AGENT_VERSION_UNAVAILABLE"],
             )
-            return await self._record_and_finish(
-                job,
-                worker_id=worker_id,
-                output=output,
-                retryable=False,
-            )
+            return None, output
+        return agent, None
 
-        await self._publish(
-            EventTypes.AGENT_STARTED,
-            job,
-            event_id=f"{job.execution_id}:{job.attempt_count}:started",
-        )
+    async def _run_agent(
+        self,
+        job: AgentExecutionJob,
+        agent: BaseAgent,
+    ) -> tuple[AgentOutput, bool]:
         agent_lock = self._agent_locks.setdefault(
             job.agent_name,
             asyncio.Lock(),
@@ -538,12 +907,87 @@ class AgentRuntime:
                 AgentStatus.FAILED,
                 AgentStatus.TIMEOUT,
             }
-        return await self._record_and_finish(
-            job,
-            worker_id=worker_id,
-            output=output,
-            retryable=retryable,
+        return output, retryable
+
+    async def execute_claimed_many(
+        self,
+        jobs: list[AgentExecutionJob],
+        *,
+        worker_id: str,
+    ) -> list[AgentExecutionJob]:
+        """Run and durably acknowledge a small leased job cohort."""
+
+        if not jobs:
+            return []
+        execution_ids = [job.execution_id for job in jobs]
+        if len(set(execution_ids)) != len(execution_ids):
+            raise ValueError("Claimed batch execution_ids must be unique")
+
+        resolved = [
+            (job, *self._resolve_agent(job))
+            for job in jobs
+        ]
+        runnable = [
+            (job, agent)
+            for job, agent, unavailable_output in resolved
+            if agent is not None and unavailable_output is None
+        ]
+        await self._publish_many(
+            [
+                self._event_publication(
+                    EventTypes.AGENT_STARTED,
+                    job,
+                    event_id=agent_lifecycle_event_id(
+                        job.execution_id,
+                        EventTypes.AGENT_STARTED,
+                        job.attempt_count,
+                    ),
+                )
+                for job, _ in runnable
+            ]
         )
+        run_results = await asyncio.gather(
+            *(
+                self._run_agent(job, agent)
+                for job, agent in runnable
+            )
+        )
+        results_by_id = {
+            job.execution_id: result
+            for (job, _), result in zip(
+                runnable,
+                run_results,
+                strict=True,
+            )
+        }
+        finishes: list[AgentExecutionFinish] = []
+        for job, _, unavailable_output in resolved:
+            if unavailable_output is not None:
+                output = unavailable_output
+                retryable = False
+            else:
+                output, retryable = results_by_id[job.execution_id]
+            finishes.append(
+                self._prepare_finish(
+                    job,
+                    worker_id=worker_id,
+                    output=output,
+                    retryable=retryable,
+                )
+            )
+        updated_jobs = await self.repository.finish_agent_executions(
+            finishes
+        )
+        for updated in updated_jobs:
+            if updated.status in {"COMPLETED", "DEAD_LETTER"}:
+                self._notify_completion(updated.execution_id)
+        await self._publish_many(
+            [
+                self._terminal_publication(updated)
+                for updated in updated_jobs
+            ]
+        )
+        return updated_jobs
 
     async def _record_and_finish(
         self,
@@ -553,6 +997,39 @@ class AgentRuntime:
         output: AgentOutput,
         retryable: bool,
     ) -> AgentExecutionJob:
+        finish = self._prepare_finish(
+            job,
+            worker_id=worker_id,
+            output=output,
+            retryable=retryable,
+        )
+        updated = await self.repository.finish_agent_execution(
+            attempt=finish.attempt,
+            attempt_memory=finish.attempt_memory,
+            worker_id=finish.worker_id,
+            output=finish.output,
+            retryable=finish.retryable,
+            retry_delay_seconds=finish.retry_delay_seconds,
+            terminal_memory=finish.terminal_memory,
+        )
+        if updated.status in {"COMPLETED", "DEAD_LETTER"}:
+            self._notify_completion(updated.execution_id)
+        publication = self._terminal_publication(updated)
+        await self._publish(
+            publication.event_type,
+            updated,
+            event_id=publication.event_id,
+        )
+        return updated
+
+    def _prepare_finish(
+        self,
+        job: AgentExecutionJob,
+        *,
+        worker_id: str,
+        output: AgentOutput,
+        retryable: bool,
+    ) -> AgentExecutionFinish:
         completed_at = utcnow()
         started_at = job.updated_at
         attempt = AgentExecutionAttempt(
@@ -597,7 +1074,7 @@ class AgentRuntime:
             if terminal_type is not None
             else None
         )
-        updated = await self.repository.finish_agent_execution(
+        return AgentExecutionFinish(
             attempt=attempt,
             attempt_memory=attempt_memory,
             worker_id=worker_id,
@@ -606,21 +1083,27 @@ class AgentRuntime:
             retry_delay_seconds=retry_delay,
             terminal_memory=terminal_memory,
         )
+
+    def _terminal_publication(
+        self,
+        job: AgentExecutionJob,
+    ) -> EventPublication:
         event_type = (
             EventTypes.AGENT_RETRY_SCHEDULED
-            if updated.status == "RETRY"
+            if job.status == "RETRY"
             else EventTypes.AGENT_DEAD_LETTERED
-            if updated.status == "DEAD_LETTER"
+            if job.status == "DEAD_LETTER"
             else EventTypes.AGENT_COMPLETED
         )
-        await self._publish(
+        return self._event_publication(
             event_type,
-            updated,
-            event_id=(
-                f"{job.execution_id}:{job.attempt_count}:{updated.status}"
+            job,
+            event_id=agent_lifecycle_event_id(
+                job.execution_id,
+                event_type,
+                job.attempt_count,
             ),
         )
-        return updated
 
     async def trace(
         self,
@@ -644,6 +1127,35 @@ class AgentRuntime:
     ) -> None:
         if self._event_bus is None:
             return
+        publication = self._event_publication(
+            event_type,
+            job,
+            event_id=event_id,
+        )
+        await self._event_bus.publish(
+            publication.topic,
+            publication.event_type,
+            publication.payload,
+            source=publication.source,
+            correlation_id=publication.correlation_id,
+            event_id=publication.event_id,
+        )
+
+    async def _publish_many(
+        self,
+        publications: list[EventPublication],
+    ) -> None:
+        if self._event_bus is None or not publications:
+            return
+        await self._event_bus.publish_many(publications)
+
+    @staticmethod
+    def _event_publication(
+        event_type: str,
+        job: AgentExecutionJob,
+        *,
+        event_id: str,
+    ) -> EventPublication:
         payload = {
             "execution_id": job.execution_id,
             "agent_name": job.agent_name,
@@ -664,12 +1176,14 @@ class AgentRuntime:
             and job.output is not None
         ):
             payload["output"] = job.output.model_dump(mode="json")
-        await self._event_bus.publish(
-            Topics.AGENT_REQUESTS
-            if event_type == EventTypes.AGENT_REQUESTED
-            else Topics.AGENT_OUTPUTS,
-            event_type,
-            payload,
+        return EventPublication(
+            topic=(
+                Topics.AGENT_REQUESTS
+                if event_type == EventTypes.AGENT_REQUESTED
+                else Topics.AGENT_OUTPUTS
+            ),
+            event_type=event_type,
+            payload=payload,
             source="AgentRuntime",
             correlation_id=job.correlation_id,
             event_id=event_id,
@@ -686,29 +1200,39 @@ class AgentRuntimeWorker:
         worker_id: str | None = None,
         poll_interval_seconds: float = 0.25,
         lease_seconds: int = 30,
+        max_concurrency: int = 1,
+        claim_batch_size: int = 4,
     ) -> None:
         if poll_interval_seconds <= 0:
             raise ValueError("Agent worker poll interval must be positive")
         if lease_seconds < 1:
             raise ValueError("Agent worker lease must be positive")
+        if max_concurrency < 1:
+            raise ValueError("Agent worker max_concurrency must be positive")
+        if not 1 <= claim_batch_size <= 32:
+            raise ValueError("Agent worker claim_batch_size must be 1..32")
         self.runtime = runtime
         self.worker_id = worker_id or runtime._worker_id("agent-worker")
         self._poll_interval_seconds = poll_interval_seconds
         self._lease_seconds = lease_seconds
+        self._max_concurrency = max_concurrency
+        self._claim_batch_size = claim_batch_size
 
     async def run_once(self) -> AgentExecutionJob | None:
-        job = await self.runtime.repository.claim_next_agent_execution(
+        jobs = await self.runtime.repository.claim_next_agent_executions(
             worker_id=self.worker_id,
             lease_seconds=self._lease_seconds,
+            limit=self._claim_batch_size,
         )
-        if job is None:
+        if not jobs:
             return None
-        return await self.runtime.execute_claimed(
-            job,
+        processed = await self.runtime.execute_claimed_many(
+            jobs,
             worker_id=self.worker_id,
         )
+        return processed[0]
 
-    async def run(self, stop_event: asyncio.Event) -> None:
+    async def _run_slot(self, stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():
             try:
                 processed = await self.run_once()
@@ -728,3 +1252,14 @@ class AgentRuntimeWorker:
                 )
             except TimeoutError:
                 pass
+
+    async def run(self, stop_event: asyncio.Event) -> None:
+        """Drain jobs with bounded process-local parallelism."""
+
+        self.runtime._background_worker_started()
+        try:
+            async with asyncio.TaskGroup() as slots:
+                for _ in range(self._max_concurrency):
+                    slots.create_task(self._run_slot(stop_event))
+        finally:
+            self.runtime._background_worker_stopped()

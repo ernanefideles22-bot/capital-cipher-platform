@@ -17,18 +17,28 @@ from app.schemas.market import Candle, RawMarketEvent
 
 logger = ServiceLogger("binance_adapter")
 
-BINANCE_WS_BASE = "wss://stream.binance.com:9443/ws"
+BINANCE_WS_BASE = "wss://stream.binance.com:9443"
 
 # Binance interval strings match our timeframes for the supported set.
 SUPPORTED_TIMEFRAMES = {"1m", "5m", "15m", "1h", "4h", "1d"}
 
 
+def _stream_payload(message: dict) -> dict:
+    """Return data from an official combined-stream envelope."""
+
+    data = message.get("data")
+    if isinstance(message.get("stream"), str) and isinstance(data, dict):
+        return data
+    return message
+
+
 def build_raw_kline_event(payload: dict) -> RawMarketEvent | None:
     """Wrap the untouched Binance payload in the versioned ingestion contract."""
-    kline = payload.get("k")
+    stream_payload = _stream_payload(payload)
+    kline = stream_payload.get("k")
     if not isinstance(kline, dict):
         return None
-    event_millis = payload.get("E") or kline.get("T")
+    event_millis = stream_payload.get("E") or kline.get("T")
     occurred_at = None
     if event_millis is not None:
         occurred_at = datetime.fromtimestamp(int(event_millis) / 1000, tz=timezone.utc)
@@ -49,7 +59,7 @@ def normalize_kline(payload: dict) -> Candle | None:
     Only closed candles (k.x == true) become CANDLE_CLOSED events.
     Field mapping (docs/33): s->symbol, o->open, h->high, l->low, c->close, v->volume.
     """
-    kline = payload.get("k") or {}
+    kline = _stream_payload(payload).get("k") or {}
     if not kline.get("x"):  # candle not closed yet
         return None
     return Candle(
@@ -96,7 +106,7 @@ class BinanceMarketDataAdapter(MarketDataAdapter):
         streams = "/".join(
             f"{symbol.lower()}@kline_{tf}" for symbol, tf in sorted(self._subscriptions)
         )
-        return f"{BINANCE_WS_BASE}/{streams}"
+        return f"{BINANCE_WS_BASE}/stream?streams={streams}"
 
     async def _run(self) -> None:
         import websockets  # local import: optional dependency at test time

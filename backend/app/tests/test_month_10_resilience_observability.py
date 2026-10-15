@@ -238,6 +238,54 @@ def test_metric_registry_enforces_the_configured_time_window():
     )
 
 
+def test_orchestrator_stage_metrics_have_bounded_names():
+    context = _context()
+    assert context.agent_registry is not None
+    service = OperationsService(
+        context.agent_registry,
+        metric_capacity=100,
+    )
+
+    service.observe_orchestrator_stage(
+        "agent_evaluation",
+        duration_ms=125,
+    )
+    service.observe_orchestrator_stage(
+        "agent_evaluation",
+        duration_ms=75,
+    )
+    snapshot = service.metrics.snapshot(
+        correlation_id="month10-stage-metrics",
+        window_seconds=300,
+        registered_agents=300,
+        active_agents=300,
+    )
+    points = {item.name: item for item in snapshot.metrics}
+
+    assert (
+        points[
+            "orchestrator.stage.agent_evaluation.duration_ms.avg"
+        ].value
+        == 100
+    )
+    assert (
+        points[
+            "orchestrator.stage.agent_evaluation.duration_ms.max"
+        ].value
+        == 125
+    )
+    with pytest.raises(ValueError, match="Unknown orchestrator stage"):
+        service.observe_orchestrator_stage(
+            "agent_name_from_request",
+            duration_ms=1,
+        )
+    with pytest.raises(ValueError, match="cannot be negative"):
+        service.observe_orchestrator_stage(
+            "consensus",
+            duration_ms=-1,
+        )
+
+
 def test_recovery_is_fail_closed_degraded_and_conservative():
     recovery = RecoveryCoordinator(recovery_successes_required=3)
     recovery.observe("BROKER", healthy=False, reason="optional outage")

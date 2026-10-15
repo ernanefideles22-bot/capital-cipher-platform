@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from app.core.logging import ServiceLogger
+from app.core.publication import PublicationCoordinator
 from app.core.transports.base import EventTransport
 from app.schemas.events import BusMessage
 
@@ -15,6 +16,8 @@ logger = ServiceLogger("event_outbox")
 
 class OutboxRepository(Protocol):
     async def list_pending_bus_messages(self, limit: int = 100) -> list[BusMessage]: ...
+
+    async def is_bus_message_published(self, event_id: str) -> bool: ...
 
     async def mark_bus_message_published(
         self, event_id: str, broker_message_id: str
@@ -38,7 +41,7 @@ class OutboxDispatcher:
         *,
         batch_size: int = 100,
         poll_interval_seconds: float = 1.0,
-        publication_lock: asyncio.Lock | None = None,
+        publication_coordinator: PublicationCoordinator | None = None,
     ) -> None:
         if batch_size < 1 or batch_size > 10_000:
             raise ValueError("batch_size must be between 1 and 10000")
@@ -48,39 +51,47 @@ class OutboxDispatcher:
         self._transport = transport
         self._batch_size = batch_size
         self._poll_interval_seconds = poll_interval_seconds
-        self._publication_lock = publication_lock or asyncio.Lock()
+        self._publication_coordinator = (
+            publication_coordinator or PublicationCoordinator()
+        )
 
     async def drain_once(self) -> OutboxDrainResult:
-        async with self._publication_lock:
-            pending = await self._repository.list_pending_bus_messages(self._batch_size)
-            published = 0
-            failed = 0
-            for message in pending:
-                try:
-                    broker_id = await self._transport.publish(message)
-                    await self._repository.mark_bus_message_published(
-                        message.event_id, broker_id
-                    )
-                    published += 1
-                except Exception as exc:
-                    failed += 1
-                    await self._repository.mark_bus_message_failed(
-                        message.event_id, type(exc).__name__
-                    )
-                    logger.error(
-                        "Outbox publish failed",
-                        event_type="OUTBOX_PUBLISH_FAILED",
-                        correlation_id=message.correlation_id,
-                        metadata={
-                            "event_id": message.event_id,
-                            "error_type": type(exc).__name__,
-                        },
-                    )
+        pending = await self._repository.list_pending_bus_messages(self._batch_size)
+        results = await asyncio.gather(
+            *(self._publish_one(message) for message in pending)
+        )
         return OutboxDrainResult(
             attempted=len(pending),
-            published=published,
-            failed=failed,
+            published=results.count("published"),
+            failed=results.count("failed"),
         )
+
+    async def _publish_one(self, message: BusMessage) -> str:
+        async with self._publication_coordinator.hold(message.event_id):
+            # The pending list can become stale while a direct publisher is
+            # completing. Recheck under the same event lock before xadd.
+            if await self._repository.is_bus_message_published(message.event_id):
+                return "skipped"
+            try:
+                broker_id = await self._transport.publish(message)
+                await self._repository.mark_bus_message_published(
+                    message.event_id, broker_id
+                )
+                return "published"
+            except Exception as exc:
+                await self._repository.mark_bus_message_failed(
+                    message.event_id, type(exc).__name__
+                )
+                logger.error(
+                    "Outbox publish failed",
+                    event_type="OUTBOX_PUBLISH_FAILED",
+                    correlation_id=message.correlation_id,
+                    metadata={
+                        "event_id": message.event_id,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                return "failed"
 
     async def run(self, stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():

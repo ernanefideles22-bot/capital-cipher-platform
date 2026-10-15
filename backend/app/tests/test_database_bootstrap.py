@@ -4,8 +4,9 @@ import re
 from pathlib import Path
 
 import pytest
+from sqlalchemy import Text
 
-from app.database.models import Base, INTERNAL_SCHEMA
+from app.database.models import AuditLogModel, Base, INTERNAL_SCHEMA
 from app.database.session import Database
 
 
@@ -91,3 +92,17 @@ def test_staging_startup_verifies_instead_of_creating_schema() -> None:
     )
 
     assert staging_branch in main_source
+
+
+def test_audit_entity_ids_preserve_content_addressed_identifiers() -> None:
+    repository_root = Path(__file__).resolve().parents[3]
+    migration = (
+        repository_root
+        / "supabase"
+        / "migrations"
+        / "20260723063511_expand_audit_entity_id.sql"
+    ).read_text(encoding="utf-8").lower()
+
+    assert isinstance(AuditLogModel.__table__.c.entity_id.type, Text)
+    assert "alter table capital_cipher.audit_logs" in migration
+    assert "alter column entity_id type text" in migration

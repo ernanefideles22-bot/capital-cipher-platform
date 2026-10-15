@@ -1,0 +1,104 @@
+# Separate Bybit V5 TESTNET app. This file is intentionally not a variant of
+# fly.toml: it has its own app name, resource namespace and runtime command.
+# Do not deploy until the external PostgreSQL/Redis resources are provisioned
+# and the monthly-cost gate has been approved.
+app = "capital-cipher-bybit-testnet"
+primary_region = "gru"
+kill_signal = "SIGTERM"
+kill_timeout = "45s"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[deploy]
+  strategy = "rolling"
+  release_command = "python scripts/validate_testnet.py"
+
+[processes]
+  backend = "python scripts/run_testnet_backend.py"
+
+[env]
+  APP_ENV = "test"
+  SYSTEM_MODE = "PAPER"
+  TESTNET_DEPLOYMENT_TARGET = "HOSTED"
+  TESTNET_RESOURCE_NAMESPACE = "capital-cipher-bybit-testnet"
+  # These identifiers are metadata, not credentials. Populate them only after
+  # creating resources dedicated to TESTNET; preflight rejects empty values.
+  TESTNET_DATABASE_RESOURCE_ID = ""
+  TESTNET_REDIS_RESOURCE_ID = ""
+  TESTNET_DATABASE_EXPECTED_HOST = ""
+  TESTNET_REDIS_EXPECTED_HOST = ""
+  STAGING_DATABASE_RESOURCE_ID = "capital-cipher-paper-staging-supabase"
+  STAGING_REDIS_RESOURCE_ID = "capital-cipher-paper-staging-redis"
+  DATABASE_POOL_SIZE = "3"
+  DATABASE_MAX_OVERFLOW = "0"
+  DATABASE_POOL_TIMEOUT_SECONDS = "15"
+  DATABASE_POOL_RECYCLE_SECONDS = "300"
+  EVENT_BROKER_REQUIRED = "1"
+  REDIS_STREAM_PREFIX = "capital-cipher-testnet"
+  REDIS_STREAM_MAX_LENGTH = "100000"
+  EVENT_PUBLICATION_MAX_CONCURRENCY = "16"
+  ENABLE_MARKET_DATA = "1"
+  DATA_LAKE_ROOT = "/var/lib/capital-cipher/data-lake"
+  CORS_ALLOWED_ORIGINS = "https://capital-cipher-bybit-testnet.fly.dev"
+  OMS_EXECUTION_ENVIRONMENT = "TESTNET"
+  OMS_TESTNET_ENABLED = "1"
+  OMS_TESTNET_ACKNOWLEDGEMENT = "TESTNET_ONLY_NO_REAL_FUNDS"
+  OMS_TESTNET_EXCHANGE = "BYBIT"
+  BYBIT_TESTNET_REST_URL = "https://api-testnet.bybit.com"
+  BYBIT_TESTNET_CATEGORY = "linear"
+  OMS_WORKER_ENABLED = "1"
+  OMS_RECONCILIATION_ENABLED = "1"
+  OMS_HALT_ON_CRITICAL_DRIFT = "1"
+  OPERATIONS_MONITOR_ENABLED = "1"
+  OPERATIONS_MONITOR_INTERVAL_SECONDS = "30"
+  OPERATIONS_DAILY_BUDGET_USD = "10"
+  OPERATIONS_BUDGET_WARNING_PERCENT = "80"
+  AGENT_EXECUTION_UNIT_COST_USD = "0"
+  AGENT_WORKER_ENABLED = "1"
+  AGENT_MAX_CONCURRENCY = "8"
+  AGENT_WORKER_MAX_CONCURRENCY = "3"
+  AGENT_WORKER_BATCH_SIZE = "16"
+  BACKFILL_WORKER_ENABLED = "1"
+  REQUIRE_TRUSTED_MARKET_CLOCK = "1"
+  ALLOWED_SYMBOLS = "BTCUSDT,ETHUSDT,SOLUSDT"
+  DEFAULT_TIMEFRAME = "15m"
+  DEFAULT_EXCHANGE = "BYBIT"
+  DEFAULT_LEVERAGE = "1"
+  MAX_LEVERAGE_SIMULATED = "1"
+  RISK_PER_TRADE_PERCENT = "0.10"
+  MAX_DAILY_DRAWDOWN_PERCENT = "1"
+  MAX_TOTAL_DRAWDOWN_PERCENT = "3"
+  MAX_OPEN_POSITIONS = "2"
+  API_RATE_LIMIT_PER_MINUTE = "300"
+  LOG_LEVEL = "INFO"
+
+[[files]]
+  guest_path = "/run/secrets/supabase-testnet-ca.crt"
+  secret_name = "SUPABASE_TESTNET_CA_CERT_B64"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["backend"]
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 40
+    hard_limit = 60
+
+  [[http_service.checks]]
+    grace_period = "90s"
+    interval = "15s"
+    method = "GET"
+    timeout = "7s"
+    path = "/ready"
+    protocol = "http"
+
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "2gb"
+  processes = ["backend"]

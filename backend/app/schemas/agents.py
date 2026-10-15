@@ -203,6 +203,51 @@ class AgentMemoryEntry(StrictAgentModel):
     created_at: AwareDatetime = Field(default_factory=utcnow)
 
 
+class AgentExecutionFinish(StrictAgentModel):
+    """Validated evidence required to finish one leased execution."""
+
+    attempt: AgentExecutionAttempt
+    attempt_memory: AgentMemoryEntry
+    worker_id: str = Field(min_length=1, max_length=128)
+    output: AgentOutput
+    retryable: bool
+    retry_delay_seconds: float = Field(ge=0)
+    terminal_memory: AgentMemoryEntry | None = None
+
+    @model_validator(mode="after")
+    def validate_evidence(self) -> "AgentExecutionFinish":
+        execution_id = self.attempt.execution_id
+        if (
+            self.attempt_memory.execution_id != execution_id
+            or self.attempt.output != self.output
+            or self.attempt.worker_id != self.worker_id
+            or self.attempt_memory.sequence
+            != self.attempt.attempt_number * 2
+            or self.attempt_memory.entry_type != "ATTEMPT"
+        ):
+            raise ValueError("Agent attempt evidence is inconsistent")
+        if self.terminal_memory is not None:
+            expected_type = (
+                "DEAD_LETTER"
+                if self.output.status
+                in {AgentStatus.FAILED, AgentStatus.TIMEOUT}
+                else "OUTPUT"
+            )
+            if (
+                self.terminal_memory.execution_id != execution_id
+                or self.terminal_memory.sequence
+                != self.attempt.attempt_number * 2 + 1
+                or self.terminal_memory.entry_type != expected_type
+            ):
+                raise ValueError("Terminal agent memory is inconsistent")
+        elif self.output.status not in {
+            AgentStatus.FAILED,
+            AgentStatus.TIMEOUT,
+        }:
+            raise ValueError("Successful execution requires terminal memory")
+        return self
+
+
 class AgentExecutionJob(StrictAgentModel):
     """Durable queue state; only the runtime may mutate lifecycle fields."""
 

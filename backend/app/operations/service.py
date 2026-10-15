@@ -84,6 +84,20 @@ class OperationalRepository(Protocol):
 
 ProbeCallback = Callable[[], Awaitable[dict[DependencyName, tuple[bool, str]]]]
 
+ORCHESTRATOR_STAGES = frozenset(
+    {
+        "pre_agent",
+        "agent_runtime",
+        "agent_evaluation",
+        "decision_engine",
+        "consensus",
+        "portfolio",
+        "decision_persistence",
+        "risk",
+        "execution",
+    }
+)
+
 
 class OperationsService:
     """Single operational boundary; it has no order or risk authority."""
@@ -238,6 +252,23 @@ class OperationsService:
         if not success:
             self.metrics.increment("orchestrator.failures")
         self.metrics.observe("orchestrator.cycle_latency_ms", duration_ms)
+
+    def observe_orchestrator_stage(
+        self,
+        stage: str,
+        *,
+        duration_ms: float,
+    ) -> None:
+        """Record one bounded stage name without introducing metric cardinality."""
+
+        if stage not in ORCHESTRATOR_STAGES:
+            raise ValueError(f"Unknown orchestrator stage: {stage}")
+        if duration_ms < 0:
+            raise ValueError("Orchestrator stage duration cannot be negative")
+        self.metrics.observe(
+            f"orchestrator.stage.{stage}.duration_ms",
+            duration_ms,
+        )
 
     async def record_cost(
         self,

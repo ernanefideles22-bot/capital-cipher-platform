@@ -28,6 +28,9 @@ HOSTED_STAGING_SUPABASE_PROJECT_REF = "phkligpkcitbbefrrotk"
 HOSTED_DATABASE_PORT = 5432
 HOSTED_DATABASE_SSL_MODE = "verify-full"
 HOSTED_DATABASE_CA_PATH = "/run/secrets/supabase-ca.crt"
+FLY_PRIVATE_REDIS_NETWORK = "FLY_6PN"
+FLY_PRIVATE_REDIS_HOST_SUFFIX = ".upstash.io"
+HOSTED_REDIS_PORT = 6379
 
 
 @dataclass(frozen=True)
@@ -40,6 +43,8 @@ class StagingPreflightReport:
     operations_monitor_enabled: bool
     database_tls_required: bool
     broker_tls_required: bool
+    broker_private_network_required: bool
+    broker_transport_encrypted: bool
     hosted_database_project_pinned: bool
     hosted_broker_host_pinned: bool
     testnet_credentials_present: bool
@@ -112,6 +117,22 @@ def _url_port(value: str, default: int) -> int | None:
         return None
 
 
+def _uses_fly_private_redis_network(
+    broker_url: str,
+    environment: Mapping[str, str],
+) -> bool:
+    broker = urlsplit(broker_url)
+    hostname = (broker.hostname or "").lower()
+    return (
+        environment.get("STAGING_REDIS_PRIVATE_NETWORK", "").strip().upper()
+        == FLY_PRIVATE_REDIS_NETWORK
+        and broker.scheme == "redis"
+        and hostname.startswith("fly-")
+        and hostname.endswith(FLY_PRIVATE_REDIS_HOST_SUFFIX)
+        and _url_port(broker_url, HOSTED_REDIS_PORT) == HOSTED_REDIS_PORT
+    )
+
+
 def validate_staging_environment(
     settings: Settings,
     environment: Mapping[str, str] | None = None,
@@ -139,6 +160,10 @@ def validate_staging_environment(
     broker = urlsplit(settings.redis_url or "")
     database_tls = _database_tls_enabled(settings.database_url)
     broker_tls = broker.scheme == "rediss"
+    broker_private_network = _uses_fly_private_redis_network(
+        settings.redis_url or "",
+        values,
+    )
     if target == "LOCAL_COMPOSE":
         if _is_weak_secret(values.get("STAGING_POSTGRES_PASSWORD")):
             violations.append("WEAK_POSTGRES_PASSWORD")
@@ -153,8 +178,14 @@ def validate_staging_environment(
             violations.append("HOSTED_DATABASE_REQUIRES_TLS")
         if not _database_ca_is_pinned(settings.database_url):
             violations.append("HOSTED_DATABASE_CA_REQUIRED")
-        if not broker_tls:
+        if not broker_tls and not broker_private_network:
             violations.append("HOSTED_REDIS_REQUIRES_TLS")
+        private_network_setting = values.get(
+            "STAGING_REDIS_PRIVATE_NETWORK",
+            "",
+        ).strip()
+        if private_network_setting and not broker_private_network:
+            violations.append("HOSTED_REDIS_PRIVATE_NETWORK_INVALID")
         if _database_role(settings.database_url) in FORBIDDEN_HOSTED_DATABASE_USERS:
             violations.append("HOSTED_DATABASE_PRIVILEGED_USER_FORBIDDEN")
         if _url_port(settings.database_url, HOSTED_DATABASE_PORT) != HOSTED_DATABASE_PORT:
@@ -198,7 +229,13 @@ def validate_staging_environment(
         event_broker_required=settings.event_broker_required,
         operations_monitor_enabled=settings.operations_monitor_enabled,
         database_tls_required=target == "HOSTED",
-        broker_tls_required=target == "HOSTED",
+        broker_tls_required=target == "HOSTED" and broker_tls,
+        broker_private_network_required=(
+            target == "HOSTED" and broker_private_network
+        ),
+        broker_transport_encrypted=(
+            target != "HOSTED" or broker_tls or broker_private_network
+        ),
         hosted_database_project_pinned=(
             target == "HOSTED"
             and _database_targets_hosted_staging(settings.database_url)

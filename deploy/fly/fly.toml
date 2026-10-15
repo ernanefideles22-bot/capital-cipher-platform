@@ -1,0 +1,105 @@
+app = "capital-cipher-paper-staging"
+primary_region = "gru"
+kill_signal = "SIGTERM"
+kill_timeout = "45s"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[deploy]
+  strategy = "rolling"
+  release_command = "python scripts/validate_staging_paper.py"
+
+[processes]
+  backend = "python scripts/run_staging_backend.py"
+  watchdog = "python scripts/run_staging_watchdog.py"
+
+[env]
+  APP_ENV = "staging"
+  SYSTEM_MODE = "PAPER"
+  STAGING_DEPLOYMENT_TARGET = "HOSTED"
+  DATABASE_POOL_SIZE = "3"
+  DATABASE_MAX_OVERFLOW = "0"
+  DATABASE_POOL_TIMEOUT_SECONDS = "15"
+  DATABASE_POOL_RECYCLE_SECONDS = "300"
+  EVENT_BROKER_REQUIRED = "1"
+  REDIS_STREAM_PREFIX = "capital-cipher-staging"
+  REDIS_STREAM_MAX_LENGTH = "100000"
+  EVENT_PUBLICATION_MAX_CONCURRENCY = "16"
+  STAGING_REDIS_PRIVATE_NETWORK = "FLY_6PN"
+  ENABLE_MARKET_DATA = "1"
+  DATA_LAKE_ROOT = "/var/lib/capital-cipher/data-lake"
+  CORS_ALLOWED_ORIGINS = "https://capital-cipher-paper-staging.fly.dev"
+  OMS_EXECUTION_ENVIRONMENT = "PAPER"
+  OMS_TESTNET_ENABLED = "0"
+  OMS_TESTNET_ACKNOWLEDGEMENT = ""
+  OMS_WORKER_ENABLED = "0"
+  OMS_RECONCILIATION_ENABLED = "0"
+  OMS_HALT_ON_CRITICAL_DRIFT = "1"
+  OPERATIONS_MONITOR_ENABLED = "1"
+  OPERATIONS_MONITOR_INTERVAL_SECONDS = "30"
+  OPERATIONS_DAILY_BUDGET_USD = "10"
+  OPERATIONS_BUDGET_WARNING_PERCENT = "80"
+  AGENT_EXECUTION_UNIT_COST_USD = "0"
+  AGENT_WORKER_ENABLED = "1"
+  AGENT_MAX_CONCURRENCY = "8"
+  AGENT_WORKER_MAX_CONCURRENCY = "3"
+  AGENT_WORKER_BATCH_SIZE = "16"
+  BACKFILL_WORKER_ENABLED = "1"
+  REQUIRE_TRUSTED_MARKET_CLOCK = "1"
+  ALLOWED_SYMBOLS = "BTCUSDT,ETHUSDT,SOLUSDT"
+  DEFAULT_TIMEFRAME = "15m"
+  DEFAULT_EXCHANGE = "BINANCE"
+  DEFAULT_LEVERAGE = "1"
+  MAX_LEVERAGE_SIMULATED = "1"
+  RISK_PER_TRADE_PERCENT = "0.25"
+  MAX_DAILY_DRAWDOWN_PERCENT = "2"
+  MAX_TOTAL_DRAWDOWN_PERCENT = "5"
+  MAX_OPEN_POSITIONS = "3"
+  API_RATE_LIMIT_PER_MINUTE = "300"
+  LOG_LEVEL = "INFO"
+  STAGING_BACKEND_URL = "https://capital-cipher-paper-staging.fly.dev"
+  STAGING_WATCHDOG_INTERVAL_SECONDS = "30"
+  STAGING_WATCHDOG_FAILURE_THRESHOLD = "3"
+
+[[files]]
+  guest_path = "/run/secrets/supabase-ca.crt"
+  secret_name = "SUPABASE_CA_CERT_B64"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = false
+  min_machines_running = 1
+  processes = ["backend"]
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 80
+    hard_limit = 100
+
+  [[http_service.checks]]
+    grace_period = "60s"
+    interval = "15s"
+    method = "GET"
+    timeout = "7s"
+    path = "/ready"
+    protocol = "http"
+
+[[mounts]]
+  source = "hosted_data_lake"
+  destination = "/var/lib/capital-cipher/data-lake"
+  processes = ["backend"]
+  initial_size = "20gb"
+  snapshot_retention = 14
+
+[[vm]]
+  size = "shared-cpu-4x"
+  memory = "4gb"
+  processes = ["backend"]
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+  processes = ["watchdog"]
