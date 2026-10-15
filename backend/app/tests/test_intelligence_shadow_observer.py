@@ -12,7 +12,7 @@ def make_trace(name="QuantAgent", role="PRIMARY"):
         agent_name=name, correlation_id="test", symbol="BTCUSDT", timeframe="15m"
     )
     output = AgentOutput(
-        agent_name=name, status="ACTIVE", signal="NEUTRAL",
+        agent_name=name, status="COMPLETED", signal="NEUTRAL",
         confidence=50, reason="test", evidence={"secret_raw": "not copied"}
     )
     job = AgentExecutionJob(
