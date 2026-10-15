@@ -215,6 +215,19 @@ class RiskManager:
             "var": current_var.model_dump(mode="json"),
         }
 
+    def restore_realized_history(self, orders: list[PaperOrder], initial_balance: float) -> None:
+        """Rebuild realized drawdown and today's limits before accepting work."""
+        self._peak_equity = initial_balance
+        self.state.total_drawdown_percent = 0.0
+        self.reset_daily()
+        today = datetime.now(timezone.utc).date()
+        balance = initial_balance
+        for order in orders:
+            balance += order.pnl or 0.0
+            self.update_equity(balance)
+            if order.closed_at is not None and _as_utc(order.closed_at).date() == today:
+                self.register_trade_result(order.pnl or 0.0)
+
     def register_trade_result(self, pnl: float) -> None:
         if pnl < 0:
             self.state.consecutive_losses += 1

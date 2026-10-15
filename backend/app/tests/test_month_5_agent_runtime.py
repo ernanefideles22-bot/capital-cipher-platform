@@ -921,8 +921,8 @@ async def test_expired_lease_is_recovered_without_consuming_new_attempt():
     assert len(recovered_trace.attempts) == 1
 
 
-async def test_sqlite_runtime_persists_trace_and_immutable_evidence():
-    database = Database("sqlite+aiosqlite:///:memory:")
+async def test_sqlite_runtime_persists_trace_and_immutable_evidence(tmp_path):
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'trace.db'}")
     await database.create_all()
     repository = Repository(database)
     agent = FlakyAgent(failures=1)
@@ -964,8 +964,8 @@ async def test_sqlite_runtime_persists_trace_and_immutable_evidence():
     await database.dispose()
 
 
-async def test_sqlite_runtime_batches_cohort_creation_idempotently():
-    database = Database("sqlite+aiosqlite:///:memory:")
+async def test_sqlite_runtime_batches_cohort_creation_idempotently(tmp_path):
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'cohort.db'}")
     await database.create_all()
     repository = Repository(database)
     agent = SuccessfulAgent()

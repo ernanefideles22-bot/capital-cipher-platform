@@ -96,7 +96,7 @@ class ReconciliationService:
         mismatches, reconciled = _compare_orders(local_orders, snapshot)
         if (
             snapshot.environment == ExecutionEnvironment.TESTNET
-            and snapshot.positions
+            and snapshot.exchange.value == "BYBIT"
         ):
             reconciled_by_id = {
                 order.oms_order_id: order for order in reconciled
@@ -326,6 +326,10 @@ def _compare_orders(
                 )
             continue
         status_drift = venue.status != local.status
+        fill_regression = (
+            venue.cumulative_filled_quantity + 1e-10
+            < local.cumulative_filled_quantity
+        )
         quantity_drift = (
             abs(
                 venue.cumulative_filled_quantity
@@ -366,7 +370,11 @@ def _compare_orders(
                     mismatch_type=(
                         ReconciliationMismatchType.FILLED_QUANTITY_DRIFT
                     ),
-                    severity=ReconciliationSeverity.WARNING,
+                    severity=(
+                        ReconciliationSeverity.CRITICAL
+                        if fill_regression
+                        else ReconciliationSeverity.WARNING
+                    ),
                     exchange=local.exchange,
                     environment=local.environment,
                     oms_order_id=local.oms_order_id,
@@ -415,8 +423,9 @@ def _compare_orders(
                     update={
                         "status": venue.status,
                         "venue_order_id": venue.venue_order_id,
-                        "cumulative_filled_quantity": (
-                            venue.cumulative_filled_quantity
+                        "cumulative_filled_quantity": max(
+                            local.cumulative_filled_quantity,
+                            venue.cumulative_filled_quantity,
                         ),
                         "average_fill_price": venue.average_fill_price,
                         "state_version": local.state_version + 1,

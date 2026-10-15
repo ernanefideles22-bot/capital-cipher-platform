@@ -13,7 +13,10 @@ from app.schemas.market import Candle, RawMarketEvent
 
 logger = ServiceLogger("bybit_adapter")
 
-BYBIT_WS_URL = "wss://stream.bybit.com/v5/public/linear"
+BYBIT_MAINNET_WS_URL = "wss://stream.bybit.com/v5/public/linear"
+BYBIT_TESTNET_WS_URL = "wss://stream-testnet.bybit.com/v5/public/linear"
+BYBIT_WS_URL = BYBIT_MAINNET_WS_URL
+_ALLOWED_WS_URLS = frozenset({BYBIT_MAINNET_WS_URL, BYBIT_TESTNET_WS_URL})
 
 TIMEFRAME_TO_BYBIT = {"1m": "1", "5m": "5", "15m": "15", "1h": "60", "4h": "240", "1d": "D"}
 BYBIT_TO_TIMEFRAME = {v: k for k, v in TIMEFRAME_TO_BYBIT.items()}
@@ -43,9 +46,9 @@ def build_raw_kline_event(message: dict) -> RawMarketEvent | None:
 
 
 def normalize_kline(message: dict) -> list[Candle]:
-    """Normalize Bybit v5 kline messages into internal Candle contracts."""
+    """Normalize confirmed Bybit v5 kline messages into internal candles."""
     topic = message.get("topic", "")
-    if not topic.startswith("kline."):
+    if not isinstance(topic, str) or not topic.startswith("kline."):
         return []
     parts = topic.split(".")
     if len(parts) != 3:
@@ -68,7 +71,10 @@ def normalize_kline(message: dict) -> list[Candle]:
                 low=float(item["low"]),
                 close=float(item["close"]),
                 volume=float(item["volume"]),
-                closed_at=datetime.fromtimestamp(int(item["end"]) / 1000, tz=timezone.utc),
+                closed_at=datetime.fromtimestamp(
+                    int(item["end"]) / 1000,
+                    tz=timezone.utc,
+                ),
             )
         )
     return candles
@@ -77,12 +83,31 @@ def normalize_kline(message: dict) -> list[Candle]:
 class BybitMarketDataAdapter(MarketDataAdapter):
     exchange_name = "BYBIT"
 
-    def __init__(self, max_retries: int = 10) -> None:
+    def __init__(
+        self,
+        max_retries: int = 10,
+        *,
+        ws_url: str = BYBIT_MAINNET_WS_URL,
+        heartbeat_seconds: float = 20.0,
+    ) -> None:
         super().__init__()
+        normalized_url = ws_url.rstrip("/")
+        if normalized_url not in _ALLOWED_WS_URLS:
+            raise ValueError("Bybit WebSocket URL must be an official linear endpoint")
+        if max_retries < 0:
+            raise ValueError("max_retries must be non-negative")
+        if heartbeat_seconds <= 0:
+            raise ValueError("heartbeat_seconds must be positive")
+        self._ws_url = normalized_url
         self._subscriptions: set[tuple[str, str]] = set()
         self._task: asyncio.Task | None = None
         self._max_retries = max_retries
+        self._heartbeat_seconds = heartbeat_seconds
         self._stop = asyncio.Event()
+
+    @property
+    def ws_url(self) -> str:
+        return self._ws_url
 
     async def connect(self) -> None:
         self._stop.clear()
@@ -92,6 +117,10 @@ class BybitMarketDataAdapter(MarketDataAdapter):
         self._stop.set()
         if self._task:
             self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
             self._task = None
         self.connected = False
         await self._emit_status("MARKET_DISCONNECTED", {"exchange": self.exchange_name})
@@ -101,23 +130,44 @@ class BybitMarketDataAdapter(MarketDataAdapter):
             raise ValueError(f"Unsupported timeframe: {timeframe}")
         self._subscriptions.add((symbol.upper(), timeframe))
 
-    async def _run(self) -> None:
+    def _connect(self):
         import websockets
 
+        # Bybit documents an application-level JSON ping. Disable the library's
+        # independent protocol-ping timer to avoid competing heartbeat policies.
+        return websockets.connect(self._ws_url, ping_interval=None)
+
+    async def _heartbeat(self, ws) -> None:
+        while not self._stop.is_set():
+            await asyncio.sleep(self._heartbeat_seconds)
+            if self._stop.is_set():
+                return
+            await ws.send(json.dumps({"op": "ping"}))
+
+    async def _run(self) -> None:
         retries = 0
         while not self._stop.is_set() and retries <= self._max_retries:
+            heartbeat_task: asyncio.Task | None = None
             try:
-                async with websockets.connect(BYBIT_WS_URL, ping_interval=20) as ws:
+                async with self._connect() as ws:
                     retries = 0
                     self.connected = True
                     args = [
                         f"kline.{TIMEFRAME_TO_BYBIT[tf]}.{symbol}"
                         for symbol, tf in sorted(self._subscriptions)
                     ]
+                    if not args:
+                        raise RuntimeError("Bybit market adapter has no subscriptions")
                     await ws.send(json.dumps({"op": "subscribe", "args": args}))
-                    await self._emit_status("MARKET_CONNECTED", {"exchange": self.exchange_name})
+                    heartbeat_task = asyncio.create_task(self._heartbeat(ws))
+                    await self._emit_status(
+                        "MARKET_CONNECTED",
+                        {"exchange": self.exchange_name},
+                    )
                     async for raw in ws:
                         message = json.loads(raw)
+                        # Subscription acknowledgements and pong frames carry no
+                        # market-data topic and are deliberately ignored here.
                         raw_event = build_raw_kline_event(message)
                         if raw_event is not None:
                             await self._emit_raw_event(raw_event)
@@ -128,6 +178,21 @@ class BybitMarketDataAdapter(MarketDataAdapter):
             except Exception as exc:
                 self.connected = False
                 retries += 1
+                if retries > self._max_retries:
+                    logger.error(
+                        "Bybit WS retry budget exhausted",
+                        event_type="MARKET_DISCONNECTED",
+                        metadata={"retries": retries, "error": str(exc)},
+                    )
+                    await self._emit_status(
+                        "MARKET_DISCONNECTED",
+                        {
+                            "exchange": self.exchange_name,
+                            "error": str(exc),
+                            "retry_exhausted": True,
+                        },
+                    )
+                    return
                 backoff = min(2 ** retries, 60)
                 logger.warning(
                     f"Bybit WS error, reconnecting in {backoff}s",
@@ -135,6 +200,14 @@ class BybitMarketDataAdapter(MarketDataAdapter):
                     metadata={"retries": retries, "error": str(exc)},
                 )
                 await self._emit_status(
-                    "MARKET_DISCONNECTED", {"exchange": self.exchange_name, "error": str(exc)}
+                    "MARKET_DISCONNECTED",
+                    {"exchange": self.exchange_name, "error": str(exc)},
                 )
-                await asyncio.sleep(backoff)
+                try:
+                    await asyncio.wait_for(self._stop.wait(), timeout=backoff)
+                except TimeoutError:
+                    pass
+            finally:
+                if heartbeat_task is not None:
+                    heartbeat_task.cancel()
+                    await asyncio.gather(heartbeat_task, return_exceptions=True)

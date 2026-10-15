@@ -65,6 +65,53 @@ class PaperTradingEngine:
             )
         ]
 
+    async def initialize(self) -> None:
+        """Restore before enabling ingestion; never silently reset a durable account."""
+        if self._repository is None:
+            return
+        orders = await self._repository.load_paper_orders()
+        # Detailed execution ledgers are currently research-only, not persisted.
+        if orders and self._execution_model is not None:
+            raise ValidationError("Durable execution ledger recovery is not supported")
+        if any(
+            order.status not in (PaperOrderStatus.FILLED, PaperOrderStatus.CLOSED)
+            or order.opened_at is None
+            or order.entry_price <= 0
+            or (order.status == PaperOrderStatus.CLOSED and (
+                order.closed_at is None or order.pnl is None
+            ))
+            for order in orders
+        ):
+            raise ValidationError("Incomplete durable PAPER account; recovery required")
+        closed = sorted(
+            (order for order in orders if order.status == PaperOrderStatus.CLOSED),
+            key=lambda order: (order.closed_at, order.paper_order_id),
+        )
+        self.open_orders = {
+            order.paper_order_id: order for order in orders
+            if order.status == PaperOrderStatus.FILLED
+        }
+        self.closed_orders = closed
+        self._processed_keys = {(order.decision_id, order.risk_check_id) for order in orders}
+        self.balance = self.initial_balance
+        self._peak_equity = self.initial_balance
+        self._max_drawdown_percent = 0.0
+        self.equity_curve = [EquityPoint(
+            timestamp=min((order.created_at for order in orders), default=datetime.now(timezone.utc)).isoformat(),
+            balance=self.initial_balance,
+        )]
+        for order in closed:
+            self.balance += order.pnl
+            self._peak_equity = max(self._peak_equity, self.balance)
+            self._max_drawdown_percent = max(
+                self._max_drawdown_percent,
+                (self._peak_equity - self.balance) / self._peak_equity * 100,
+            )
+            self.equity_curve.append(EquityPoint(
+                timestamp=order.closed_at.isoformat(), balance=round(self.balance, 4),
+            ))
+        self._risk.restore_realized_history(closed, self.initial_balance)
+
     @property
     def simulated_leverage(self) -> float:
         if self._margin_model is not None:
@@ -226,12 +273,12 @@ class PaperTradingEngine:
                     exit_reason = "LIQUIDATION"
             if exit_price is None and order.side == OrderSide.BUY:
                 if order.stop_loss is not None and candle.low <= order.stop_loss:
-                    exit_price, exit_reason = order.stop_loss, "STOP_LOSS"
+                    exit_price, exit_reason = min(order.stop_loss, candle.open), "STOP_LOSS"
                 elif order.take_profit is not None and candle.high >= order.take_profit:
                     exit_price, exit_reason = order.take_profit, "TAKE_PROFIT"
             elif exit_price is None:
                 if order.stop_loss is not None and candle.high >= order.stop_loss:
-                    exit_price, exit_reason = order.stop_loss, "STOP_LOSS"
+                    exit_price, exit_reason = max(order.stop_loss, candle.open), "STOP_LOSS"
                 elif order.take_profit is not None and candle.low <= order.take_profit:
                     exit_price, exit_reason = order.take_profit, "TAKE_PROFIT"
             if exit_price is not None:
@@ -343,9 +390,9 @@ class PaperTradingEngine:
             self._last_funding_at.pop(paper_order_id, None)
         self.open_orders.pop(paper_order_id)
         self.closed_orders.append(closed)
-        self.balance += net_pnl
+        self.balance += closed.pnl
         self._risk.unregister_position(paper_order_id)
-        self._risk.register_trade_result(net_pnl)
+        self._risk.register_trade_result(closed.pnl)
         self._peak_equity = max(self._peak_equity, self.balance)
         drawdown = (self._peak_equity - self.balance) / self._peak_equity * 100
         self._max_drawdown_percent = max(self._max_drawdown_percent, drawdown)

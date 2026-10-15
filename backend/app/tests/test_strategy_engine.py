@@ -29,6 +29,12 @@ def test_high_volatility_blocks():
     assert result.allowed is False
 
 
+def test_regimes_outside_explicit_allowlist_fail_closed():
+    engine = StrategyEngine()
+    for regime in (MarketRegime.UNDEFINED, MarketRegime.LOW_VOLATILITY):
+        assert not engine.evaluate(symbol="BTCUSDT", timeframe="15m", regime=regime).allowed
+
+
 def test_range_reduces_aggressiveness():
     engine = StrategyEngine()
     normal = engine.evaluate(symbol="BTCUSDT", timeframe="15m", regime=MarketRegime.BULL_TREND)

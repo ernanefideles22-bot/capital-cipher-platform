@@ -5,9 +5,11 @@ from __future__ import annotations
 import math
 import statistics
 from dataclasses import dataclass
-from datetime import timedelta
 
 from app.agents.base import BaseAgent
+from app.agents.binance_derivatives_evidence import (
+    BinanceUsdMDerivativesEvidenceCollector,
+)
 from app.agents.specialists import CandleSpecialistAgent
 from app.market_data.store import CandleStore
 from app.schemas.agents import AgentInput, AgentOutput
@@ -64,55 +66,259 @@ class ExternalDefinition:
 
 
 DERIVATIVES_DEFINITIONS = (
-    ExternalDefinition("FundingRateAgent", "DERIVATIVES", "funding_rate", 0.0, Signal.SELL),
-    ExternalDefinition("OpenInterestChangeAgent", "DERIVATIVES", "open_interest_change", 0.0),
+    ExternalDefinition(
+        "FundingRateAgent",
+        "DERIVATIVES",
+        "funding_rate",
+        0.0,
+        Signal.SELL,
+        max_age_seconds=32_400,
+    ),
+    ExternalDefinition(
+        "OpenInterestChangeAgent",
+        "DERIVATIVES",
+        "open_interest_change",
+        0.0,
+    ),
     ExternalDefinition("BasisAgent", "DERIVATIVES", "basis", 0.0),
-    ExternalDefinition("LongShortRatioAgent", "DERIVATIVES", "long_short_ratio", 1.0),
-    ExternalDefinition("LiquidationImbalanceAgent", "DERIVATIVES", "liquidation_imbalance", 0.0),
-    ExternalDefinition("TakerFlowAgent", "DERIVATIVES", "taker_buy_sell_ratio", 1.0),
-    ExternalDefinition("PerpetualSpotSpreadAgent", "DERIVATIVES", "perpetual_spot_spread", 0.0),
-    ExternalDefinition("OptionsSkewAgent", "DERIVATIVES", "options_skew", 0.0, Signal.SELL),
-    ExternalDefinition("ImpliedVolatilityAgent", "DERIVATIVES", "implied_volatility", 0.0, Signal.SELL),
-    ExternalDefinition("VolatilityTermStructureAgent", "DERIVATIVES", "term_structure", 0.0),
-    ExternalDefinition("GammaExposureAgent", "DERIVATIVES", "gamma_exposure", 0.0),
-    ExternalDefinition("PutCallRatioAgent", "DERIVATIVES", "put_call_ratio", 1.0, Signal.SELL),
-    ExternalDefinition("OIConcentrationAgent", "DERIVATIVES", "open_interest_concentration", 0.5, Signal.SELL),
-    ExternalDefinition("FundingDivergenceAgent", "DERIVATIVES", "funding_divergence", 0.0, Signal.SELL),
-    ExternalDefinition("LiquidationIntensityAgent", "DERIVATIVES", "liquidation_intensity", 0.0, Signal.SELL),
+    ExternalDefinition(
+        "LongShortRatioAgent",
+        "DERIVATIVES",
+        "long_short_ratio",
+        1.0,
+    ),
+    ExternalDefinition(
+        "LiquidationImbalanceAgent",
+        "DERIVATIVES",
+        "liquidation_imbalance",
+        0.0,
+    ),
+    ExternalDefinition(
+        "TakerFlowAgent",
+        "DERIVATIVES",
+        "taker_buy_sell_ratio",
+        1.0,
+    ),
+    ExternalDefinition(
+        "PerpetualSpotSpreadAgent",
+        "DERIVATIVES",
+        "perpetual_spot_spread",
+        0.0,
+    ),
+    ExternalDefinition(
+        "OptionsSkewAgent",
+        "DERIVATIVES",
+        "options_skew",
+        0.0,
+        Signal.SELL,
+    ),
+    ExternalDefinition(
+        "ImpliedVolatilityAgent",
+        "DERIVATIVES",
+        "implied_volatility",
+        0.0,
+        Signal.SELL,
+    ),
+    ExternalDefinition(
+        "VolatilityTermStructureAgent",
+        "DERIVATIVES",
+        "term_structure",
+        0.0,
+    ),
+    ExternalDefinition(
+        "GammaExposureAgent",
+        "DERIVATIVES",
+        "gamma_exposure",
+        0.0,
+    ),
+    ExternalDefinition(
+        "PutCallRatioAgent",
+        "DERIVATIVES",
+        "put_call_ratio",
+        1.0,
+        Signal.SELL,
+    ),
+    ExternalDefinition(
+        "OIConcentrationAgent",
+        "DERIVATIVES",
+        "open_interest_concentration",
+        0.5,
+        Signal.SELL,
+    ),
+    ExternalDefinition(
+        "FundingDivergenceAgent",
+        "DERIVATIVES",
+        "funding_divergence",
+        0.0,
+        Signal.SELL,
+    ),
+    ExternalDefinition(
+        "LiquidationIntensityAgent",
+        "DERIVATIVES",
+        "liquidation_intensity",
+        0.0,
+        Signal.SELL,
+    ),
 )
 
 MACRO_DEFINITIONS = (
-    ExternalDefinition("DXYChangeAgent", "MACRO", "dxy_change", 0.0, Signal.SELL, "GLOBAL", 86_400),
-    ExternalDefinition("PolicyRateChangeAgent", "MACRO", "policy_rate_change", 0.0, Signal.SELL, "GLOBAL", 2_678_400),
-    ExternalDefinition("RealYieldChangeAgent", "MACRO", "real_yield_change", 0.0, Signal.SELL, "GLOBAL", 86_400),
-    ExternalDefinition("VIXChangeAgent", "MACRO", "vix_change", 0.0, Signal.SELL, "GLOBAL", 86_400),
-    ExternalDefinition("NasdaqChangeAgent", "MACRO", "nasdaq_change", 0.0, Signal.BUY, "GLOBAL", 86_400),
-    ExternalDefinition("GlobalM2ChangeAgent", "MACRO", "global_m2_change", 0.0, Signal.BUY, "GLOBAL", 2_678_400),
-    ExternalDefinition("CreditSpreadChangeAgent", "MACRO", "credit_spread_change", 0.0, Signal.SELL, "GLOBAL", 86_400),
-    ExternalDefinition("OilChangeAgent", "MACRO", "oil_change", 0.0, Signal.SELL, "GLOBAL", 86_400),
-    ExternalDefinition("GoldChangeAgent", "MACRO", "gold_change", 0.0, Signal.BUY, "GLOBAL", 86_400),
-    ExternalDefinition("CryptoETFFlowAgent", "MACRO", "crypto_etf_flow", 0.0, Signal.BUY, "GLOBAL", 86_400),
+    ExternalDefinition(
+        "DXYChangeAgent", "MACRO", "dxy_change", 0.0, Signal.SELL, "GLOBAL", 86_400
+    ),
+    ExternalDefinition(
+        "PolicyRateChangeAgent",
+        "MACRO",
+        "policy_rate_change",
+        0.0,
+        Signal.SELL,
+        "GLOBAL",
+        2_678_400,
+    ),
+    ExternalDefinition(
+        "RealYieldChangeAgent",
+        "MACRO",
+        "real_yield_change",
+        0.0,
+        Signal.SELL,
+        "GLOBAL",
+        86_400,
+    ),
+    ExternalDefinition(
+        "VIXChangeAgent", "MACRO", "vix_change", 0.0, Signal.SELL, "GLOBAL", 86_400
+    ),
+    ExternalDefinition(
+        "NasdaqChangeAgent",
+        "MACRO",
+        "nasdaq_change",
+        0.0,
+        Signal.BUY,
+        "GLOBAL",
+        86_400,
+    ),
+    ExternalDefinition(
+        "GlobalM2ChangeAgent",
+        "MACRO",
+        "global_m2_change",
+        0.0,
+        Signal.BUY,
+        "GLOBAL",
+        2_678_400,
+    ),
+    ExternalDefinition(
+        "CreditSpreadChangeAgent",
+        "MACRO",
+        "credit_spread_change",
+        0.0,
+        Signal.SELL,
+        "GLOBAL",
+        86_400,
+    ),
+    ExternalDefinition(
+        "OilChangeAgent", "MACRO", "oil_change", 0.0, Signal.SELL, "GLOBAL", 86_400
+    ),
+    ExternalDefinition(
+        "GoldChangeAgent", "MACRO", "gold_change", 0.0, Signal.BUY, "GLOBAL", 86_400
+    ),
+    ExternalDefinition(
+        "CryptoETFFlowAgent",
+        "MACRO",
+        "crypto_etf_flow",
+        0.0,
+        Signal.BUY,
+        "GLOBAL",
+        86_400,
+    ),
 )
 
 ONCHAIN_DEFINITIONS = (
-    ExternalDefinition("ExchangeNetflowAgent", "ONCHAIN", "exchange_netflow", 0.0, Signal.SELL, max_age_seconds=86_400),
-    ExternalDefinition("ActiveAddressesAgent", "ONCHAIN", "active_addresses_change", 0.0, max_age_seconds=86_400),
-    ExternalDefinition("MVRVAgent", "ONCHAIN", "mvrv", 1.0, max_age_seconds=86_400),
-    ExternalDefinition("SOPRAgent", "ONCHAIN", "sopr", 1.0, max_age_seconds=86_400),
-    ExternalDefinition("WhaleNetflowAgent", "ONCHAIN", "whale_netflow", 0.0, Signal.SELL, max_age_seconds=86_400),
-    ExternalDefinition("RealizedCapAgent", "ONCHAIN", "realized_cap_change", 0.0, max_age_seconds=86_400),
-    ExternalDefinition("StablecoinSupplyAgent", "ONCHAIN", "stablecoin_supply_change", 0.0, max_age_seconds=86_400),
-    ExternalDefinition("MinerReserveAgent", "ONCHAIN", "miner_reserve_change", 0.0, max_age_seconds=86_400),
-    ExternalDefinition("DormancyAgent", "ONCHAIN", "dormancy", 0.0, Signal.SELL, max_age_seconds=86_400),
-    ExternalDefinition("NVTAgent", "ONCHAIN", "nvt", 0.0, Signal.SELL, max_age_seconds=86_400),
+    ExternalDefinition(
+        "ExchangeNetflowAgent",
+        "ONCHAIN",
+        "exchange_netflow",
+        0.0,
+        Signal.SELL,
+        max_age_seconds=86_400,
+    ),
+    ExternalDefinition(
+        "ActiveAddressesAgent",
+        "ONCHAIN",
+        "active_addresses_change",
+        0.0,
+        max_age_seconds=86_400,
+    ),
+    ExternalDefinition(
+        "MVRVAgent", "ONCHAIN", "mvrv", 1.0, max_age_seconds=86_400
+    ),
+    ExternalDefinition(
+        "SOPRAgent", "ONCHAIN", "sopr", 1.0, max_age_seconds=86_400
+    ),
+    ExternalDefinition(
+        "WhaleNetflowAgent",
+        "ONCHAIN",
+        "whale_netflow",
+        0.0,
+        Signal.SELL,
+        max_age_seconds=86_400,
+    ),
+    ExternalDefinition(
+        "RealizedCapAgent",
+        "ONCHAIN",
+        "realized_cap_change",
+        0.0,
+        max_age_seconds=86_400,
+    ),
+    ExternalDefinition(
+        "StablecoinSupplyAgent",
+        "ONCHAIN",
+        "stablecoin_supply_change",
+        0.0,
+        max_age_seconds=86_400,
+    ),
+    ExternalDefinition(
+        "MinerReserveAgent",
+        "ONCHAIN",
+        "miner_reserve_change",
+        0.0,
+        max_age_seconds=86_400,
+    ),
+    ExternalDefinition(
+        "DormancyAgent",
+        "ONCHAIN",
+        "dormancy",
+        0.0,
+        Signal.SELL,
+        max_age_seconds=86_400,
+    ),
+    ExternalDefinition(
+        "NVTAgent",
+        "ONCHAIN",
+        "nvt",
+        0.0,
+        Signal.SELL,
+        max_age_seconds=86_400,
+    ),
 )
 
 NEWS_DEFINITIONS = (
-    ExternalDefinition("NewsSentimentAgent", "NEWS", "sentiment", 0.0, max_age_seconds=21_600),
-    ExternalDefinition("NewsRelevanceAgent", "NEWS", "relevance", 0.5, max_age_seconds=21_600),
-    ExternalDefinition("NewsNoveltyAgent", "NEWS", "novelty", 0.5, max_age_seconds=21_600),
-    ExternalDefinition("NewsConsensusAgent", "NEWS", "source_consensus", 0.0, max_age_seconds=21_600),
-    ExternalDefinition("NewsImpactAgent", "NEWS", "impact", 0.0, max_age_seconds=21_600),
+    ExternalDefinition(
+        "NewsSentimentAgent", "NEWS", "sentiment", 0.0, max_age_seconds=21_600
+    ),
+    ExternalDefinition(
+        "NewsRelevanceAgent", "NEWS", "relevance", 0.5, max_age_seconds=21_600
+    ),
+    ExternalDefinition(
+        "NewsNoveltyAgent", "NEWS", "novelty", 0.5, max_age_seconds=21_600
+    ),
+    ExternalDefinition(
+        "NewsConsensusAgent",
+        "NEWS",
+        "source_consensus",
+        0.0,
+        max_age_seconds=21_600,
+    ),
+    ExternalDefinition(
+        "NewsImpactAgent", "NEWS", "impact", 0.0, max_age_seconds=21_600
+    ),
 )
 
 EXTERNAL_DEFINITIONS = (
@@ -138,7 +344,13 @@ class Month8TechnicalSpecialist(CandleSpecialistAgent):
             return self._insufficient(actual=len(candles), required=30)
         window = candles[-30:]
         metric = self._metric(window)
-        signal = Signal.BUY if metric > 0.05 else Signal.SELL if metric < -0.05 else Signal.HOLD
+        signal = (
+            Signal.BUY
+            if metric > 0.05
+            else Signal.SELL
+            if metric < -0.05
+            else Signal.HOLD
+        )
         confidence = min(90, max(40, int(50 + min(abs(metric), 2) * 20)))
         return self._output(
             AgentStatus.COMPLETED,
@@ -163,10 +375,15 @@ class Month8TechnicalSpecialist(CandleSpecialistAgent):
         mean = statistics.fmean(closes)
         stdev = statistics.pstdev(closes) or 1e-12
         last = candles[-1]
-        position = (last.close - min(lows)) / (max(highs) - min(lows) + 1e-12)
+        position = (last.close - min(lows)) / (
+            max(highs) - min(lows) + 1e-12
+        )
         index = self._metric_index
         if index == 0:
-            return (abs(closes[-1] - closes[0]) / (sum(abs(v) for v in returns) * mean + 1e-12)) - 0.5
+            return (
+                abs(closes[-1] - closes[0])
+                / (sum(abs(v) for v in returns) * mean + 1e-12)
+            ) - 0.5
         if index == 1:
             return (last.close - mean) / (2 * stdev)
         if index in {2, 3, 5}:
@@ -178,43 +395,76 @@ class Month8TechnicalSpecialist(CandleSpecialistAgent):
             atr = statistics.fmean(c.high - c.low for c in candles)
             return (last.close - mean) / (2 * atr + 1e-12)
         if index == 7:
-            obv = sum(v if r >= 0 else -v for v, r in zip(volumes[1:], returns))
+            obv = sum(
+                v if r >= 0 else -v
+                for v, r in zip(volumes[1:], returns)
+            )
             return obv / (sum(volumes[1:]) + 1e-12)
         if index == 8:
-            flow = sum((((2*c.close-c.high-c.low)/(c.high-c.low+1e-12))*c.volume) for c in candles)
+            flow = sum(
+                (((2 * c.close - c.high - c.low) / (c.high - c.low + 1e-12)) * c.volume)
+                for c in candles
+            )
             return flow / (sum(volumes) + 1e-12)
         if index == 9:
             positive = sum(v for v, r in zip(volumes[1:], returns) if r > 0)
             negative = sum(v for v, r in zip(volumes[1:], returns) if r < 0)
             return (positive - negative) / (positive + negative + 1e-12)
         if index == 10:
-            return -math.sqrt(statistics.fmean(math.log(h/l) ** 2 for h, l in zip(highs, lows)))
+            return -math.sqrt(
+                statistics.fmean(math.log(h / l) ** 2 for h, l in zip(highs, lows))
+            )
         if index == 11:
-            return -math.sqrt(abs(statistics.fmean(0.5*math.log(c.high/c.low)**2-(2*math.log(2)-1)*math.log(c.close/c.open)**2 for c in candles)))
+            return -math.sqrt(
+                abs(
+                    statistics.fmean(
+                        0.5 * math.log(c.high / c.low) ** 2
+                        - (2 * math.log(2) - 1) * math.log(c.close / c.open) ** 2
+                        for c in candles
+                    )
+                )
+            )
         if index == 12:
             peak = closes[0]
             drawdowns = []
             for close in closes:
                 peak = max(peak, close)
                 drawdowns.append((close / peak - 1) * 100)
-            return -math.sqrt(statistics.fmean(value**2 for value in drawdowns)) / 10
+            return -math.sqrt(
+                statistics.fmean(value**2 for value in drawdowns)
+            ) / 10
         if index == 13:
             half = len(returns) // 2
-            return statistics.pstdev(returns) / (statistics.pstdev(returns[:half]) + 1e-12) - 1
+            return (
+                statistics.pstdev(returns)
+                / (statistics.pstdev(returns[:half]) + 1e-12)
+                - 1
+            )
         if index == 14:
             one = statistics.pvariance(returns) or 1e-12
-            two = [returns[i] + returns[i-1] for i in range(1, len(returns))]
+            two = [
+                returns[i] + returns[i - 1]
+                for i in range(1, len(returns))
+            ]
             return statistics.pvariance(two) / (2 * one) - 1
         if index == 15:
             pivot = (last.high + last.low + last.close) / 3
             return (last.close - pivot) / (last.high - last.low + 1e-12)
         if index == 16:
-            return statistics.fmean(returns[-5:]) / (statistics.fmean(abs(v) for v in returns[-5:]) + 1e-12)
+            return statistics.fmean(returns[-5:]) / (
+                statistics.fmean(abs(v) for v in returns[-5:]) + 1e-12
+            )
         if index == 17:
-            return (closes[-1] / closes[-11] - 1) + (closes[-1] / closes[0] - 1)
+            return (closes[-1] / closes[-11] - 1) + (
+                closes[-1] / closes[0] - 1
+            )
         if index == 18:
-            high_age = len(highs) - 1 - max(range(len(highs)), key=highs.__getitem__)
-            low_age = len(lows) - 1 - min(range(len(lows)), key=lows.__getitem__)
+            high_age = len(highs) - 1 - max(
+                range(len(highs)), key=highs.__getitem__
+            )
+            low_age = len(lows) - 1 - min(
+                range(len(lows)), key=lows.__getitem__
+            )
             return (low_age - high_age) / len(candles)
         return (returns[-1] - statistics.fmean(returns[-5:-1])) * 100
 
@@ -225,15 +475,36 @@ class ExternalEvidenceSpecialist(BaseAgent):
     description = "Read-only external evidence specialist"
     required_inputs = ("governed-specialist-evidence",)
 
-    def __init__(self, evidence_service, definition: ExternalDefinition) -> None:
+    def __init__(
+        self,
+        evidence_service,
+        definition: ExternalDefinition,
+        *,
+        derivatives_collector: BinanceUsdMDerivativesEvidenceCollector | None = None,
+    ) -> None:
         super().__init__()
         self.name = definition.name
         self.capabilities = (definition.capability,)
         self._evidence_service = evidence_service
         self._definition = definition
+        self._derivatives_collector = derivatives_collector
 
     async def _analyze(self, agent_input: AgentInput) -> AgentOutput:
-        scope = "GLOBAL" if self._definition.scope == "GLOBAL" else agent_input.symbol
+        scope = (
+            "GLOBAL"
+            if self._definition.scope == "GLOBAL"
+            else agent_input.symbol
+        )
+        if (
+            self._definition.domain == "DERIVATIVES"
+            and self._derivatives_collector is not None
+            and scope != "GLOBAL"
+        ):
+            await self._derivatives_collector.refresh(
+                scope=scope,
+                as_of=agent_input.timestamp,
+                timeframe=agent_input.timeframe,
+            )
         evidence = await self._evidence_service.latest(
             domain=self._definition.domain,
             metric_name=self._definition.metric_name,
@@ -254,14 +525,19 @@ class ExternalEvidenceSpecialist(BaseAgent):
                 },
                 warnings=["MISSING_EVIDENCE"],
             )
-        age_seconds = (agent_input.timestamp - evidence.observed_at).total_seconds()
+        age_seconds = (
+            agent_input.timestamp - evidence.observed_at
+        ).total_seconds()
         if age_seconds > self._definition.max_age_seconds:
             return self._output(
                 AgentStatus.COMPLETED,
                 Signal.WAIT,
                 0,
                 "Governed evidence is stale",
-                evidence={"evidence_id": evidence.evidence_id, "age_seconds": age_seconds},
+                evidence={
+                    "evidence_id": evidence.evidence_id,
+                    "age_seconds": age_seconds,
+                },
                 warnings=["STALE_EVIDENCE"],
             )
         if evidence.quality_score < self._definition.minimum_quality:
@@ -301,7 +577,17 @@ class ExternalEvidenceSpecialist(BaseAgent):
                 else Signal.BUY
             )
         distance = abs(evidence.value - self._definition.threshold)
-        confidence = min(90, max(40, int(40 + evidence.quality_score * 0.4 + min(distance, 1) * 10)))
+        confidence = min(
+            90,
+            max(
+                40,
+                int(
+                    40
+                    + evidence.quality_score * 0.4
+                    + min(distance, 1) * 10
+                ),
+            ),
+        )
         return self._output(
             AgentStatus.COMPLETED,
             signal,
@@ -322,13 +608,27 @@ class ExternalEvidenceSpecialist(BaseAgent):
         )
 
 
-def build_month8_shadow_specialists(store: CandleStore, evidence_service) -> list[BaseAgent]:
+def build_month8_shadow_specialists(
+    store: CandleStore,
+    evidence_service,
+) -> list[BaseAgent]:
     technical = [
         Month8TechnicalSpecialist(store, definition)
         for definition in TECHNICAL_DEFINITIONS
     ]
+    derivatives_collector = BinanceUsdMDerivativesEvidenceCollector(
+        evidence_service
+    )
     external = [
-        ExternalEvidenceSpecialist(evidence_service, definition)
+        ExternalEvidenceSpecialist(
+            evidence_service,
+            definition,
+            derivatives_collector=(
+                derivatives_collector
+                if definition.domain == "DERIVATIVES"
+                else None
+            ),
+        )
         for definition in EXTERNAL_DEFINITIONS
     ]
     return [*technical, *external]

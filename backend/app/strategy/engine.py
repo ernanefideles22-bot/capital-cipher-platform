@@ -101,7 +101,10 @@ class StrategyEngine:
                 risk_profile=RiskProfileName.CONSERVATIVE,
                 reason=f"No enabled strategy for {symbol} {timeframe}",
             )
-        if regime in strategy.blocked_regimes:
+        if regime in strategy.blocked_regimes or (
+            regime not in strategy.allowed_regimes
+            and regime not in strategy.reduced_regimes
+        ):
             return StrategyEvaluation(
                 strategy_id=strategy.strategy_id,
                 versioned_id=strategy.versioned_id,

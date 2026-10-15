@@ -38,8 +38,8 @@ from app.execution.adapters.base import ExchangeExecutionAdapter
 from app.execution.adapters.binance_testnet import (
     BinanceTestnetExecutionAdapter,
 )
-from app.execution.adapters.bybit_testnet import (
-    BybitTestnetExecutionAdapter,
+from app.execution.adapters.bybit_testnet_protected import (
+    ProtectedBybitTestnetExecutionAdapter,
 )
 from app.execution.adapters.paper import PaperExecutionAdapter
 from app.execution.credentials import EnvironmentTestnetCredentialProvider
@@ -64,12 +64,17 @@ from app.orchestrator.portfolio_consensus import (
     WeightedConsensusService,
 )
 from app.orchestrator.service import Orchestrator
+from app.oms.bybit_testnet_exit import BybitTestnetExitService
 from app.oms.reconciliation import ReconciliationService
 from app.oms.service import OMSService
 from app.operations.service import OperationsService
 from app.paper_trading.engine import PaperTradingEngine
 from app.release_readiness.service import ReleaseReadinessService
 from app.risk.manager import RiskManager
+from app.risk.venue_aware import (
+    VenueAwarePortfolioConstructionService,
+    VenueAwareRiskManager,
+)
 from app.shadow_validation.service import ShadowValidationService
 from app.schemas.common import Exchange
 from app.schemas.oms import ExecutionEnvironment
@@ -119,12 +124,21 @@ class AppContext:
     operations_service: OperationsService | None = None
     shadow_validation_service: ShadowValidationService | None = None
     release_readiness_service: ReleaseReadinessService | None = None
+    bybit_testnet_exit_service: BybitTestnetExitService | None = None
     market_connected: bool = False
 
 
 def build_context(settings: Settings, *, with_database: bool = False) -> AppContext:
     state_machine = SystemStateMachine()
     candle_store = CandleStore()
+    target_environment = ExecutionEnvironment(
+        settings.oms_execution_environment
+    )
+    target_exchange = (
+        Exchange.BINANCE
+        if target_environment == ExecutionEnvironment.PAPER
+        else Exchange(settings.oms_testnet_exchange)
+    )
 
     database: Database | None = None
     repository: Repository | None = None
@@ -151,13 +165,21 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
     if repository is not None and data_catalog is not None and gap_service is not None:
         raw_blob_store = LocalContentAddressedBlobStore(settings.data_lake_root)
         raw_data_lake = RawDataLake(repository, raw_blob_store)
+        bybit_public_base_url = (
+            settings.bybit_testnet_rest_url
+            if (
+                target_environment == ExecutionEnvironment.TESTNET
+                and target_exchange == Exchange.BYBIT
+            )
+            else settings.bybit_public_rest_url
+        )
         public_market_clients = {
             Exchange.BINANCE: BinancePublicRestClient(
                 base_url=settings.binance_public_rest_url,
                 timeout_seconds=settings.public_market_http_timeout_seconds,
             ),
             Exchange.BYBIT: BybitPublicRestClient(
-                base_url=settings.bybit_public_rest_url,
+                base_url=bybit_public_base_url,
                 timeout_seconds=settings.public_market_http_timeout_seconds,
             ),
         }
@@ -184,9 +206,7 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         backfill_worker = HistoricalBackfillWorker(
             repository=repository,
             service=backfill_service,
-            poll_interval_seconds=(
-                settings.backfill_worker_poll_interval_seconds
-            ),
+            poll_interval_seconds=settings.backfill_worker_poll_interval_seconds,
             lease_seconds=settings.backfill_lease_seconds,
             retry_base_seconds=settings.backfill_retry_base_seconds,
             retry_max_seconds=settings.backfill_retry_max_seconds,
@@ -263,14 +283,28 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         approval_ttl_seconds=settings.risk_approval_ttl_seconds,
         max_entry_deviation_bps=settings.max_entry_deviation_bps,
     )
-    risk_manager = RiskManager(
-        limits,
-        state_machine,
-        audit_service,
-        initial_balance=settings.paper_initial_balance,
-        repository=repository,
-        candle_store=candle_store,
-    )
+    if (
+        target_environment == ExecutionEnvironment.TESTNET
+        and target_exchange == Exchange.BYBIT
+    ):
+        risk_manager: RiskManager = VenueAwareRiskManager(
+            limits,
+            state_machine,
+            audit_service,
+            execution_environment=target_environment,
+            initial_balance=settings.paper_initial_balance,
+            repository=repository,
+            candle_store=candle_store,
+        )
+    else:
+        risk_manager = RiskManager(
+            limits,
+            state_machine,
+            audit_service,
+            initial_balance=settings.paper_initial_balance,
+            repository=repository,
+            candle_store=candle_store,
+        )
     paper_engine = PaperTradingEngine(
         audit_service,
         risk_manager,
@@ -278,14 +312,6 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         fee_rate_percent=settings.fee_rate_percent,
         slippage_rate_percent=settings.slippage_rate_percent,
         repository=repository,
-    )
-    target_environment = ExecutionEnvironment(
-        settings.oms_execution_environment
-    )
-    target_exchange = (
-        Exchange.BINANCE
-        if target_environment == ExecutionEnvironment.PAPER
-        else Exchange(settings.oms_testnet_exchange)
     )
     execution_adapters: dict[
         tuple[Exchange, ExecutionEnvironment],
@@ -318,16 +344,25 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
                 )
             )
         else:
-            testnet_adapter = BybitTestnetExecutionAdapter(
+            protected_bybit_adapter = ProtectedBybitTestnetExecutionAdapter(
                 credentials,
                 base_url=settings.bybit_testnet_rest_url,
                 category=settings.bybit_testnet_category,
                 timeout_seconds=settings.oms_http_timeout_seconds,
                 receive_window_ms=settings.oms_receive_window_ms,
             )
+            testnet_adapter = protected_bybit_adapter
+            if not isinstance(risk_manager, VenueAwareRiskManager):
+                raise ValueError(
+                    "Bybit TESTNET requires venue-aware central risk"
+                )
+            risk_manager.set_testnet_equity_provider(
+                protected_bybit_adapter.fetch_account_equity
+            )
         execution_adapters[
             (target_exchange, ExecutionEnvironment.TESTNET)
         ] = testnet_adapter
+    release_readiness_service = ReleaseReadinessService(repository)
     oms_service = OMSService(
         target_environment=target_environment,
         target_exchange=target_exchange,
@@ -338,6 +373,9 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         repository=repository,
         lease_seconds=settings.oms_command_lease_seconds,
         poll_interval_seconds=settings.oms_worker_poll_interval_seconds,
+        release_guard=lambda: release_readiness_service.runtime_authorized(
+            settings.app_source_revision
+        ),
     )
     reconciliation_service = ReconciliationService(
         adapter=oms_service.adapter,
@@ -347,11 +385,25 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         halt_on_critical_drift=settings.oms_halt_on_critical_drift,
         interval_seconds=settings.oms_reconciliation_interval_seconds,
     )
+    bybit_testnet_exit_service = None
+    if (
+        target_environment == ExecutionEnvironment.TESTNET
+        and target_exchange == Exchange.BYBIT
+    ):
+        bybit_testnet_exit_service = BybitTestnetExitService(
+            adapter=oms_service.adapter,
+            risk_manager=risk_manager,
+            audit_service=audit_service,
+        )
     context_holder: dict = {}
     market_data_agent = MarketDataAgent(
-        candle_store, connection_status_fn=lambda: (
-            "CONNECTED" if context_holder.get("ctx") and context_holder["ctx"].market_connected else "DISCONNECTED"
-        )
+        candle_store,
+        connection_status_fn=lambda: (
+            "CONNECTED"
+            if context_holder.get("ctx")
+            and context_holder["ctx"].market_connected
+            else "DISCONNECTED"
+        ),
     )
     quant_agent = QuantAgent(candle_store)
     trend_agent = TrendAgent(candle_store)
@@ -425,7 +477,6 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         paper_engine=paper_engine,
         repository=repository,
     )
-    release_readiness_service = ReleaseReadinessService(repository)
     decision_engine = DecisionEngine(
         minimum_candidate_confidence=settings.minimum_candidate_confidence
     )
@@ -440,7 +491,12 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         drift_monitor,
         repository,
     )
-    portfolio_construction_service = PortfolioConstructionService(
+    portfolio_service_class = (
+        VenueAwarePortfolioConstructionService
+        if isinstance(risk_manager, VenueAwareRiskManager)
+        else PortfolioConstructionService
+    )
+    portfolio_construction_service = portfolio_service_class(
         limits,
         risk_manager,
         repository,
@@ -525,6 +581,7 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         operations_service=operations_service,
         shadow_validation_service=shadow_validation_service,
         release_readiness_service=release_readiness_service,
+        bybit_testnet_exit_service=bybit_testnet_exit_service,
     )
     context_holder["ctx"] = ctx
     return ctx
