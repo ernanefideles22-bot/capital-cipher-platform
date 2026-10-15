@@ -52,7 +52,7 @@ def summarize_trace(trace: AgentExecutionTrace) -> AgentEvidenceSummary:
         symbol=job.input.symbol,
         timeframe=job.input.timeframe,
         status=job.status,
-        signal=str(job.output.signal),
+        signal=job.output.signal.value,
         confidence=job.output.confidence,
         evidence_digest=digest,
     )
