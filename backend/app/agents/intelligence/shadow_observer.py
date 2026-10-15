@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from hashlib import sha256
+import json
 from typing import Iterable
 
 from app.schemas.agents import AgentExecutionTrace
@@ -37,13 +38,14 @@ def summarize_trace(trace: AgentExecutionTrace) -> AgentEvidenceSummary:
         raise ValueError("Only terminal traces with an output can be observed")
     if job.output.agent_name != job.agent_name:
         raise ValueError("Agent identity mismatch")
-    # The digest binds the immutable runtime execution ID and terminal
-    # outcome, without copying raw market_context, evidence or secrets.
-    digest = sha256(
-        (job.execution_id + "|" + job.output.model_dump_json(
-            exclude={"evidence", "reason", "warnings"}
-        )).encode("utf-8")
-    ).hexdigest()
+    # Bind the full output to its digest, including evidence, without
+    # persisting any raw payload, reason or warning text.
+    canonical = json.dumps(
+        {"execution_id": job.execution_id,
+         "output": job.output.model_dump(mode="json")},
+        sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    )
+    digest = sha256(canonical.encode("utf-8")).hexdigest()
     return AgentEvidenceSummary(
         execution_id=job.execution_id,
         agent_name=job.agent_name,
