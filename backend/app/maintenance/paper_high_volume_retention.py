@@ -191,9 +191,8 @@ class HighVolumePaperRetentionService:
         return summary
 
     async def _verify_admin_connection(self) -> None:
-        target_tables = ",".join(
-            f"'capital_cipher.{target.table_name}'" for target in HIGH_VOLUME_TARGETS
-        )
+        expected = {target.table_name for target in HIGH_VOLUME_TARGETS}
+        target_tables = ",".join(f"'{name}'" for name in sorted(expected))
         async with self._engine.connect() as conn:
             rows = (
                 await conn.execute(
@@ -217,7 +216,6 @@ class HighVolumePaperRetentionService:
         if current_user == "capital_cipher_app":
             raise RuntimeError("High-volume PAPER retention refuses application login")
         seen = {str(row["table_name"]): bool(row["can_delete"]) for row in rows}
-        expected = {target.table_name for target in HIGH_VOLUME_TARGETS}
         if set(seen) != expected or not all(seen.values()):
             raise RuntimeError(
                 "High-volume PAPER retention requires DELETE on every target table"
