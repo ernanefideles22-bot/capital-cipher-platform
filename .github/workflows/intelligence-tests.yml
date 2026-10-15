@@ -40,4 +40,4 @@ jobs:
         run: python -m pip install -e '.[dev]'
       - name: Run intelligence contract tests
         working-directory: backend
-        run: python -m pytest app/tests/test_intelligence_reasoning.py app/tests/test_intelligence_forecast_scoring.py app/tests/test_intelligence_forecast_memory_sqlite.py app/tests/test_intelligence_shadow_observer.py app/tests/test_intelligence_evidence_collector.py -q
+        run: python -m pytest app/tests/test_intelligence_reasoning.py app/tests/test_intelligence_forecast_scoring.py app/tests/test_intelligence_forecast_memory_sqlite.py app/tests/test_intelligence_shadow_observer.py app/tests/test_intelligence_evidence_collector.py app/tests/test_intelligence_research_sync.py -q
