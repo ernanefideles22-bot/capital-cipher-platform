@@ -29,12 +29,12 @@ export default function Overview() {
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <MetricCard label="System mode" value={status ? <StatusBadge value={status.mode} /> : "…"} detail="Execution environment" />
           <MetricCard label="Market data" value={status?.market_data ?? "…"} detail="Public data adapter" />
-          <MetricCard label="Database" value={status?.database ?? "…"} detail="Persistence health" />
+          <MetricCard label="Database" value={status?.database ?? "…"} detail="Persistence configuration (not a live database health check)" />
           <MetricCard
             label="Kill switch"
-            value={risk?.kill_switch_active ? <span className="text-red-400">ACTIVE</span> : <span className="text-emerald-400">Clear</span>}
-            detail={risk?.kill_switch_active ? risk.kill_switch_reason ?? "No reason supplied" : "Risk controls allow paper operations"}
-            tone={risk?.kill_switch_active ? "negative" : "positive"}
+            value={!risk ? "Unknown" : risk.kill_switch_active ? <span className="text-red-400">ACTIVE</span> : <span className="text-emerald-400">Clear</span>}
+            detail={!risk ? "Risk status unavailable; do not assume trading is permitted" : risk.kill_switch_active ? risk.kill_switch_reason ?? "No reason supplied" : "Risk controls allow paper operations"}
+            tone={!risk ? "warning" : risk.kill_switch_active ? "negative" : "positive"}
           />
         </div>
       </section>
