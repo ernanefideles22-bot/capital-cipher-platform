@@ -41,4 +41,5 @@ jobs:
             app/tests/test_month_6_central_risk.py \
             app/tests/test_month_7_oms.py \
             app/tests/test_month_5_agent_runtime.py \
-            app/tests/test_orchestrator_e2e.py
+            app/tests/test_orchestrator_e2e.py \
+            app/tests/test_dashboard_contract.py
