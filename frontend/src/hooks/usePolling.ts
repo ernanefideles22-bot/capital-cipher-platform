@@ -9,7 +9,8 @@ export function usePolling<T>(fn: () => Promise<T>, intervalMs = 5000): T | null
         const result = await fn();
         if (active) setData(result);
       } catch {
-        /* surfaced via UI empty states; errors must not crash the dashboard */
+        // Fail closed: never display a stale successful response as current state.
+        if (active) setData(null);
       }
     };
     tick();
