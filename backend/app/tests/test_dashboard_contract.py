@@ -40,3 +40,27 @@ async def test_dashboard_readonly_contract(path, required_keys):
     if path == "/api/v1/status":
         assert body["data"]["mode"] == "PAPER"
         assert body["data"]["oms"]["live_execution_available"] is False
+
+
+async def test_kill_switch_is_reflected_in_dashboard_status_and_blocks_risk():
+    from app.schemas.common import RiskStatus
+    from app.tests.conftest import make_decision
+
+    context = build_context(Settings(DATABASE_URL="sqlite+aiosqlite:///:memory:"), with_database=False)
+    app = create_app(context, with_market_data=False)
+    async with app.router.lifespan_context(app):
+        await context.state_machine.trigger_kill_switch(reason="dashboard safety test", actor="test")
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            status = (await client.get("/api/v1/status")).json()
+            risk = (await client.get("/api/v1/risk/status")).json()
+            orders = (await client.get("/api/v1/paper/orders")).json()
+
+        check = await context.risk_manager.check(make_decision(), entry_price=100.0, atr=1.0)
+
+    assert status["data"]["mode"] != "LIVE"
+    assert status["data"]["kill_switch_active"] is True
+    assert status["data"]["oms"]["live_execution_available"] is False
+    assert risk["data"]["kill_switch_active"] is True
+    assert orders["data"]["orders"] == []
+    assert check.approved is False
+    assert check.risk_status == RiskStatus.KILL_SWITCH
