@@ -261,5 +261,6 @@ async def test_protected_catalog_api_materializes_and_reads_manifest():
 
     assert denied.status_code == 401
     assert created.status_code == 200
-    assert loaded.status_code == 200
+    assert loaded.status_code == 200, loaded.text
+    assert loaded.json().get("data") is not None, loaded.text
     assert loaded.json()["data"]["manifest"]["dataset_hash"] == dataset_hash
