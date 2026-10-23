@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 from app.core.config import Settings
+from app.operations.railway_supabase import prepare_ca, validate_supabase_database
 
 FORBIDDEN_TESTNET_CREDENTIALS = (
     "CAPITAL_CIPHER_BINANCE_TESTNET_KEY_ID",
@@ -70,12 +71,19 @@ def validate() -> dict[str, object]:
     if violations:
         raise RuntimeError("Railway PAPER preflight failed: " + ",".join(sorted(violations)))
 
-    _require_private_endpoint(
-        settings.database_url,
-        os.getenv("STAGING_EXPECTED_DATABASE_HOST", ""),
-        5432,
-        "DATABASE",
-    )
+    provider = os.getenv("STAGING_DATABASE_PROVIDER", "railway").strip().lower()
+    if provider == "supabase":
+        prepare_ca(os.environ)
+        validate_supabase_database(settings, os.environ)
+    elif provider == "railway":
+        _require_private_endpoint(
+            settings.database_url,
+            os.getenv("STAGING_EXPECTED_DATABASE_HOST", ""),
+            5432,
+            "DATABASE",
+        )
+    else:
+        raise RuntimeError("RAILWAY_DATABASE_PROVIDER_INVALID")
     _require_private_endpoint(
         settings.redis_url or "",
         os.getenv("STAGING_EXPECTED_REDIS_HOST", ""),
