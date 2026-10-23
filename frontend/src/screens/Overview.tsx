@@ -12,6 +12,7 @@ export default function Overview() {
   const activeAgents = agents?.agents.filter((agent) => agent.enabled).length;
   const pnlTone = !perf ? "neutral" : perf.net_pnl < 0 ? "negative" : "positive";
   const drawdownTone = perf && perf.max_drawdown_percent > 0 ? "warning" : "neutral";
+  const safePaperMode = status?.mode === "PAPER" && status.oms?.environment === "PAPER" && status.oms.live_execution_available === false;
 
   return (
     <div className="space-y-7">
@@ -22,6 +23,12 @@ export default function Overview() {
           <p className="mt-1 text-sm text-slate-500">Live operational state from the platform APIs. Values are never fabricated in the interface.</p>
         </div>
         <p className="text-xs text-slate-500">Refreshes automatically</p>
+      </section>
+
+      <section aria-live="polite" className={safePaperMode && risk && !risk.kill_switch_active ? "rounded-lg border border-emerald-800 bg-emerald-950/30 p-3 text-sm text-emerald-300" : "rounded-lg border border-amber-800 bg-amber-950/30 p-3 text-sm text-amber-200"}>
+        {safePaperMode && risk && !risk.kill_switch_active
+          ? "PAPER mode confirmed by backend. Live execution is disabled."
+          : "Operational safety not confirmed: missing backend status, non-PAPER mode, or active/unavailable risk controls. Do not assume orders are permitted."}
       </section>
 
       <section>
