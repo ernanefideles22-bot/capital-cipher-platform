@@ -1,0 +1,32 @@
+name: Isolated PAPER Backend Tests
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'backend/**'
+      - '.github/workflows/isolated-paper-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-paper-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DATABASE_URL: sqlite+aiosqlite:///:memory:
+      REDIS_TEST_URL: ''
+      POSTGRES_TEST_URL: ''
+      SYSTEM_MODE: PAPER
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install backend and test dependencies
+        working-directory: backend
+        run: python -m pip install -e ".[dev,postgres]"
+      - name: Verify isolated time-series and durable lake
+        working-directory: backend
+        run: python -m pytest app/tests/test_durable_data_lake.py app/tests/test_time_series_catalog.py -q
