@@ -2,6 +2,9 @@ name: Isolated PAPER Backend Tests
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - 'fix/isolated-paper-tests-20261022'
   pull_request:
     paths:
       - 'backend/**'
