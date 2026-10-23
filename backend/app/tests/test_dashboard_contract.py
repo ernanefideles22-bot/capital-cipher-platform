@@ -78,4 +78,4 @@ async def test_offline_system_is_not_reported_as_operational():
     check = await context.risk_manager.check(make_decision(), entry_price=100.0, atr=1.0)
     assert check.approved is False
     assert check.risk_status == RiskStatus.BLOCKED
-    assert context.paper_engine.open_orders == []
+    assert not context.paper_engine.open_orders
