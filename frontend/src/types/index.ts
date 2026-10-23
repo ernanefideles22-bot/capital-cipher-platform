@@ -14,6 +14,7 @@ export interface SystemStatus {
   orchestrator: string;
   risk: string;
   database: string;
+  oms: { environment: string; exchange: string; live_execution_available: boolean };
 }
 
 export interface AgentHealth {

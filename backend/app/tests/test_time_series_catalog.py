@@ -219,11 +219,11 @@ def test_warehouse_models_target_internal_postgres_schema():
     assert f"{INTERNAL_SCHEMA}.candle_observations" in ddl
 
 
-async def test_protected_catalog_api_materializes_and_reads_manifest():
+async def test_protected_catalog_api_materializes_and_reads_manifest(tmp_path):
     admin_key = "c" * 32
     settings = Settings(
         ADMIN_API_KEY=admin_key,
-        DATABASE_URL="sqlite+aiosqlite:///:memory:",
+        DATABASE_URL=f"sqlite+aiosqlite:///{tmp_path / 'catalog-api.sqlite3'}",
     )
     context = build_context(settings, with_database=True)
     app = create_app(context, with_market_data=False)
@@ -261,5 +261,6 @@ async def test_protected_catalog_api_materializes_and_reads_manifest():
 
     assert denied.status_code == 401
     assert created.status_code == 200
-    assert loaded.status_code == 200
+    assert loaded.status_code == 200, loaded.text
+    assert loaded.json().get("data") is not None, loaded.text
     assert loaded.json()["data"]["manifest"]["dataset_hash"] == dataset_hash

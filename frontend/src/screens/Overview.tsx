@@ -12,6 +12,7 @@ export default function Overview() {
   const activeAgents = agents?.agents.filter((agent) => agent.enabled).length;
   const pnlTone = !perf ? "neutral" : perf.net_pnl < 0 ? "negative" : "positive";
   const drawdownTone = perf && perf.max_drawdown_percent > 0 ? "warning" : "neutral";
+  const safePaperMode = status?.mode === "PAPER" && status.oms?.environment === "PAPER" && status.oms.live_execution_available === false;
 
   return (
     <div className="space-y-7">
@@ -24,17 +25,23 @@ export default function Overview() {
         <p className="text-xs text-slate-500">Refreshes automatically</p>
       </section>
 
+      <section aria-live="polite" className={safePaperMode && risk && !risk.kill_switch_active ? "rounded-lg border border-emerald-800 bg-emerald-950/30 p-3 text-sm text-emerald-300" : "rounded-lg border border-amber-800 bg-amber-950/30 p-3 text-sm text-amber-200"}>
+        {safePaperMode && risk && !risk.kill_switch_active
+          ? "PAPER mode confirmed by backend. Live execution is disabled."
+          : "Operational safety not confirmed: missing backend status, non-PAPER mode, or active/unavailable risk controls. Do not assume orders are permitted."}
+      </section>
+
       <section>
         <h2 className="mb-3 text-sm font-semibold text-slate-300">Platform health</h2>
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <MetricCard label="System mode" value={status ? <StatusBadge value={status.mode} /> : "…"} detail="Execution environment" />
           <MetricCard label="Market data" value={status?.market_data ?? "…"} detail="Public data adapter" />
-          <MetricCard label="Database" value={status?.database ?? "…"} detail="Persistence health" />
+          <MetricCard label="Database" value={status?.database ?? "…"} detail="Persistence configuration (not a live database health check)" />
           <MetricCard
             label="Kill switch"
-            value={risk?.kill_switch_active ? <span className="text-red-400">ACTIVE</span> : <span className="text-emerald-400">Clear</span>}
-            detail={risk?.kill_switch_active ? risk.kill_switch_reason ?? "No reason supplied" : "Risk controls allow paper operations"}
-            tone={risk?.kill_switch_active ? "negative" : "positive"}
+            value={!risk ? "Unknown" : risk.kill_switch_active ? <span className="text-red-400">ACTIVE</span> : <span className="text-emerald-400">Clear</span>}
+            detail={!risk ? "Risk status unavailable; do not assume trading is permitted" : risk.kill_switch_active ? risk.kill_switch_reason ?? "No reason supplied" : "Risk controls allow paper operations"}
+            tone={!risk ? "warning" : risk.kill_switch_active ? "negative" : "positive"}
           />
         </div>
       </section>
