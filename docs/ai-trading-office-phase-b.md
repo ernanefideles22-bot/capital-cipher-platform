@@ -168,3 +168,11 @@ sem mensagem de exceção, SQL ou URL. O fluxo nativo verifica que as três
 tentativas PRIMARY foram executadas pelo worker reservado, além dos invariantes
 PAPER anteriores. Essa nova versão ainda exige CI e pré-deploy aprovado antes
 de publicar o backend; as cópias anteriores permanecem preservadas.
+
+O CI também expôs uma leitura inconsistente no caminho legado: em READ
+COMMITTED, um worker podia concluir entre a leitura do job e a leitura das
+tentativas/memórias. A leitura de traces PostgreSQL agora usa uma transação
+somente leitura em REPEATABLE READ, com isolamento limitado à conexão dessa
+operação e restaurado ao devolver a conexão ao pool. Um teste nativo força o
+commit exatamente entre os SELECTs e verifica o snapshot anterior coerente e
+o resultado completo numa leitura posterior. Nenhuma invariante é relaxada.

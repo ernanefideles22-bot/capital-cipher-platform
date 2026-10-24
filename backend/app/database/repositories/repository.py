@@ -2529,6 +2529,14 @@ class Repository:
             raise ValueError("Agent trace execution_ids must be unique")
         try:
             async with self._db.session() as session:
+                if self._db.engine.dialect.name == "postgresql":
+                    # The job, attempts and memories must describe one snapshot.
+                    # READ COMMITTED can see a worker finish between SELECTs.
+                    # Scope isolation to this read transaction, before first SQL;
+                    # the pooled connection returns to its normal isolation.
+                    await session.connection(execution_options={
+                        "isolation_level": "REPEATABLE READ", "postgresql_readonly": True,
+                    })
                 rows = list(
                     await session.scalars(
                         select(AgentExecutionJobModel).where(
