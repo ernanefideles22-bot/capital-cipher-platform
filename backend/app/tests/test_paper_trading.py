@@ -89,6 +89,37 @@ async def test_restart_restores_balance_open_positions_and_daily_risk(paper_engi
     assert restored.balance == paper_engine.balance
 
 
+async def test_database_restart_preserves_complete_closed_order(tmp_path, paper_engine, risk_manager):
+    """Exercise the real repository, rather than returning in-memory orders."""
+    from app.database.repositories.repository import Repository
+    from app.database.session import Database
+
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'paper-restart.db'}"
+    database = Database(database_url)
+    await database.create_all()
+    repository = Repository(database)
+    paper_engine._repository = repository
+    try:
+        decision = make_decision()
+        # This regression isolates order serialization from approval issuance.
+        paper_engine._repository = None
+        opened = await paper_engine.create_order(
+            decision, await approved_check(risk_manager, decision), current_price=100
+        )
+        await repository.save_paper_order(opened)
+        paper_engine._repository = repository
+        closed = await paper_engine.close_order(opened.paper_order_id, 103, "TAKE_PROFIT")
+    finally:
+        await database.dispose()
+
+    reopened = Database(database_url)
+    try:
+        restored, = await Repository(reopened).load_paper_orders()
+        assert restored.model_dump() == closed.model_dump()
+    finally:
+        await reopened.dispose()
+
+
 async def test_restart_rejects_incomplete_closed_trade(paper_engine, risk_manager):
     decision = make_decision()
     order = await paper_engine.create_order(decision, await approved_check(risk_manager, decision), current_price=100)

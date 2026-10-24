@@ -83,6 +83,8 @@ const PT = {
   enabledAgents: "Habilitados",
   cohortPercentage: "% da coorte",
   noRunsYet: "Nenhuma execução registrada ainda",
+  noAgentFailures: "Nenhum agente com falha",
+  recordedAgentRuns: "Execuções registradas pelos agentes",
   coverageByFamily: "Cobertura por família",
   familyNote: "Classificação visual derivada do nome do agente",
   familyCore: "Dados e núcleo",
@@ -194,6 +196,8 @@ const PT = {
 
 const EN: Record<keyof typeof PT, string> = {
   ...PT,
+  noAgentFailures: "No agents currently failing",
+  recordedAgentRuns: "Executions recorded by agents",
   brandSubtitle: "Research platform",
   paperEnvironment: "PAPER ENVIRONMENT",
   paperDescription: "Operational telemetry with protected safety controls. Live execution is unavailable.",

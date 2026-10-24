@@ -84,3 +84,9 @@ class AuditService:
         if audit_type:
             results = [r for r in results if r["audit_type"] == audit_type]
         return results[-limit:]
+
+    async def query_durable(self, **filters) -> list[dict[str, Any]]:
+        """HTTP history must survive restarts and the bounded memory buffer."""
+        if self._repository is not None:
+            return await self._repository.load_audit_events(**filters)
+        return self.query(**filters)

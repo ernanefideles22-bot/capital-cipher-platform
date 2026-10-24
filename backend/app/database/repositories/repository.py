@@ -2639,6 +2639,8 @@ class Repository:
                         timeframe=decision.timeframe,
                         candidate_action=decision.candidate_action.value,
                         confidence=decision.confidence,
+                        strategy=decision.strategy,
+                        warnings=decision.warnings,
                         reason=decision.reason,
                         agent_summary=decision.agent_summary,
                         risk_status=decision.risk_status.value,
@@ -2870,6 +2872,8 @@ class Repository:
             "opened_at": order.opened_at,
             "closed_at": order.closed_at,
             "pnl": order.pnl,
+            "exit_price": order.exit_price,
+            "exit_reason": order.exit_reason,
             "created_at": order.created_at,
         }
 
@@ -2974,6 +2978,9 @@ class Repository:
                     existing.closed_at = order.closed_at
                     existing.pnl = order.pnl
                     existing.fees_estimated = order.fees_estimated
+                    existing.slippage_estimated = order.slippage_estimated
+                    existing.exit_price = order.exit_price
+                    existing.exit_reason = order.exit_reason
                 else:
                     session.add(PaperOrderModel(**self._paper_order_values(order)))
         except Exception as exc:
@@ -5610,3 +5617,24 @@ class Repository:
                 .order_by(AuditLogModel.created_at)
             )
             return list(result.scalars())
+
+    async def load_audit_events(
+        self, *, correlation_id: str | None = None,
+        audit_type: str | None = None, limit: int = 100,
+    ) -> list[dict]:
+        if not 1 <= limit <= 500:
+            raise ValueError("Audit query limit must be 1..500")
+        statement = select(AuditLogModel)
+        if correlation_id is not None:
+            statement = statement.where(AuditLogModel.correlation_id == correlation_id)
+        if audit_type is not None:
+            statement = statement.where(AuditLogModel.audit_type == audit_type)
+        statement = statement.order_by(AuditLogModel.created_at.desc(), AuditLogModel.id.desc()).limit(limit)
+        async with self._db.session() as session:
+            rows = list(await session.scalars(statement))
+            return [{
+                "audit_id": row.id, "correlation_id": row.correlation_id,
+                "audit_type": row.audit_type, "entity_type": row.entity_type,
+                "entity_id": row.entity_id, "payload": row.payload,
+                "created_at": _as_utc(row.created_at).isoformat(),
+            } for row in reversed(rows)]

@@ -1706,6 +1706,8 @@ class DecisionModel(Base):
     timeframe: Mapped[str] = mapped_column(Text, nullable=False)
     candidate_action: Mapped[str] = mapped_column(Text, nullable=False)
     confidence: Mapped[int] = mapped_column(Integer, nullable=False)
+    strategy: Mapped[str | None] = mapped_column(Text)
+    warnings: Mapped[list | None] = mapped_column(JsonType)
     reason: Mapped[str | None] = mapped_column(Text)
     agent_summary: Mapped[list] = mapped_column(JsonType, nullable=False)
     risk_status: Mapped[str] = mapped_column(Text, default="PENDING")
@@ -1920,6 +1922,8 @@ class PaperOrderModel(Base):
     opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     pnl: Mapped[float | None] = mapped_column(Numeric)
+    exit_price: Mapped[float | None] = mapped_column(Numeric)
+    exit_reason: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
