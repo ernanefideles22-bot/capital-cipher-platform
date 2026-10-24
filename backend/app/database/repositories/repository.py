@@ -2163,11 +2163,20 @@ class Repository:
         lease_seconds: int,
         execution_id: str | None,
         limit: int,
+        decision_role: str | None = None,
+        execution_ids: list[str] | None = None,
     ) -> list[AgentExecutionJob]:
         if lease_seconds < 1:
             raise ValueError("Agent lease_seconds must be positive")
         if not 1 <= limit <= 1_000:
             raise ValueError("Agent claim limit must be 1..1000")
+        if decision_role not in {None, "PRIMARY", "SHADOW"}:
+            raise ValueError("Invalid agent claim role")
+        if execution_ids is not None:
+            if len(set(execution_ids)) != len(execution_ids):
+                raise ValueError("Agent claim execution_ids must be unique")
+            if not execution_ids:
+                return []
         now = _now()
         ready = and_(
             AgentExecutionJobModel.status.in_(("PENDING", "RETRY")),
@@ -2193,6 +2202,10 @@ class Repository:
             statement = statement.where(
                 AgentExecutionJobModel.execution_id == execution_id
             )
+        if execution_ids is not None:
+            statement = statement.where(AgentExecutionJobModel.execution_id.in_(execution_ids))
+        if decision_role is not None:
+            statement = statement.where(AgentExecutionJobModel.decision_role == decision_role)
         if self._db.engine.dialect.name == "postgresql":
             statement = statement.with_for_update(skip_locked=True)
         else:
@@ -2255,12 +2268,16 @@ class Repository:
         worker_id: str,
         lease_seconds: int,
         limit: int,
+        decision_role: str | None = None,
+        execution_ids: list[str] | None = None,
     ) -> list[AgentExecutionJob]:
         return await self._claim_agent_executions(
             worker_id=worker_id,
             lease_seconds=lease_seconds,
             execution_id=None,
             limit=limit,
+            decision_role=decision_role,
+            execution_ids=execution_ids,
         )
 
     async def finish_agent_execution(

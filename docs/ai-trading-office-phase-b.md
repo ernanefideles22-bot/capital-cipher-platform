@@ -138,3 +138,33 @@ A Fase C não é iniciada nesta entrega. Mudanças de estratégia, novos módulo
 análise técnica, promoção, dashboard e comparação financeira A/B/C/D continuam
 fora do escopo. O resultado desta fase é validado em branch/CI; a latência real
 após deploy só pode ser confirmada depois da publicação autorizada.
+
+## Correção após o pré-deploy hospedado de 24/10/2026
+
+O primeiro job isolado em Railway, commit `bf10707`, aprovou os dois esquemas,
+mas falhou antes de produzir uma ordem. A inspeção somente leitura da cópia
+retida encontrou dois PRIMARY concluídos cerca de 5,25 s após a criação dos jobs
+e o terceiro ainda PENDING, sem decisão ou ordem nova. O código permitia que os
+dois workers analíticos reservassem PRIMARY e que a via inline esperasse pelas
+suas leases; a ordenação por prioridade não reservava a capacidade.
+
+Com Office ativo, o filtro SHADOW agora é aplicado no claim durável do worker,
+tanto em memória quanto em SQL. A via PRIMARY reserva somente os IDs do seu
+próprio lote e reutiliza a execução e conclusão atômica em lote, mantendo leases,
+tentativas, memórias, eventos determinísticos e controle de idempotência. Não
+relê o trace completo de cada job novo. Um consumidor explícito pode retomar os
+mesmos IDs após expirar uma lease; isso registra o resultado do agente, sem
+reexecutar uma ordem. Os workers analíticos não retomam PRIMARY órfãos sozinhos.
+As APIs genéricas de lote continuam aceitando coortes mistas e preservam a ordem.
+O comportamento do modo legado, sem Office, permanece sem filtro de papel.
+
+Os prazos e as checagens de frescor, risco e OMS não foram aumentados ou
+contornados. A latência de rede Europa–banco observada, aproximadamente
+136–151 ms, continua um risco a medir na nova validação. A correção da disputa
+não é uma certificação de que toda a cadeia durável cabe nos prazos hospedados.
+
+O gate agora exporta coordenadas de código e códigos permitidos quando falha,
+sem mensagem de exceção, SQL ou URL. O fluxo nativo verifica que as três
+tentativas PRIMARY foram executadas pelo worker reservado, além dos invariantes
+PAPER anteriores. Essa nova versão ainda exige CI e pré-deploy aprovado antes
+de publicar o backend; as cópias anteriores permanecem preservadas.

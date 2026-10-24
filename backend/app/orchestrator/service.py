@@ -374,6 +374,9 @@ class Orchestrator:
             return decision
         except TimeoutError:
             self.failures.append({"correlation_id": correlation_id, "error": "PRIMARY_DEADLINE_EXCEEDED"})
+            logger.error("Reserved primary deadline exceeded; no order admitted",
+                         event_type="PRIMARY_DEADLINE_EXCEEDED", correlation_id=correlation_id,
+                         metadata={"timeout_seconds": self._primary_timeout})
             return None
         except AuditError:
             # Fail safe: audit failure blocks operations (docs/31).

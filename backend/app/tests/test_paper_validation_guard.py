@@ -108,3 +108,28 @@ async def test_live_migration_hash_drift_stops_readonly_verification(monkeypatch
             return [{"filename": "fixture.sql", "sha256": "wrong"}]
     with pytest.raises(RuntimeError, match="LIVE_MIGRATION_HASH_MISMATCH"):
         await gate.verify_live_compatibility(Connection(), [migration], None)
+
+
+def test_native_failure_diagnostics_identify_checkpoint_without_secret_values(monkeypatch):
+    import json
+    from app.validation.paper_flow import PaperFlowValidationError
+    gate = gate_module(monkeypatch)
+    exc = PaperFlowValidationError([{"error": "PRIMARY_DEADLINE_EXCEEDED"},
+                                   {"error": "postgresql://user:secret@private/db"}], 3010.5)
+    result = gate.failure_report(exc)
+    assert result["stage"] == "decision_cycle"
+    assert result["error_codes"] == ["OTHER", "PRIMARY_DEADLINE_EXCEEDED"]
+    assert result["elapsed_ms"] == 3010.5
+    assert "secret" not in json.dumps(result) and "postgresql" not in json.dumps(result)
+
+
+def test_generic_failure_exposes_source_coordinate_not_exception_or_sql(monkeypatch):
+    import json
+    gate = gate_module(monkeypatch)
+    try:
+        raise AssertionError("postgresql://user:secret@private/db")
+    except AssertionError as exc:
+        result = gate.failure_report(exc)
+    assert result["source_locations"][-1]["function"] == "test_generic_failure_exposes_source_coordinate_not_exception_or_sql"
+    assert result["source_locations"][-1]["line"] > 0
+    assert "secret" not in json.dumps(result) and "postgresql" not in json.dumps(result)

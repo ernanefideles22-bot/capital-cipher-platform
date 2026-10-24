@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import re
+import traceback
 from urllib.parse import urlsplit, urlunsplit
 from unittest.mock import patch
 
@@ -241,11 +242,24 @@ async def main() -> None:
     print(json.dumps(report, sort_keys=True), flush=True)
 
 
+def failure_report(exc: Exception) -> dict:
+    """Source coordinates diagnose a failed assertion without logging secrets."""
+    report = {"event": "CC_PAPER_FULL_FLOW_VALIDATION", "status": "FAILED",
+              "error_type": type(exc).__name__,
+              "source_locations": [{"file": Path(frame.filename).name,
+                                    "function": frame.name, "line": frame.lineno}
+                                   for frame in traceback.extract_tb(exc.__traceback__)[-6:]]}
+    from app.validation.paper_flow import PaperFlowValidationError
+    if isinstance(exc, PaperFlowValidationError):
+        report.update(stage=exc.validation_stage, error_codes=exc.validation_error_codes,
+                      elapsed_ms=exc.validation_elapsed_ms)
+    return report
+
+
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except Exception as exc:
         # Provider URLs/passwords and full SQL parameters must never reach logs.
-        print(json.dumps({"event": "CC_PAPER_FULL_FLOW_VALIDATION", "status": "FAILED",
-                          "error_type": type(exc).__name__}), flush=True)
+        print(json.dumps(failure_report(exc)), flush=True)
         raise SystemExit(1) from None
