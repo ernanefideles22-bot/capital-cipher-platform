@@ -70,6 +70,12 @@ class Database:
             execution_options = {
                 "schema_translate_map": {INTERNAL_SCHEMA: None},
             }
+            if ":memory:" not in url:
+                # SQLite is a single-writer test/local database. Serialize file
+                # sessions instead of racing read-to-write upgrades across the
+                # fast lane and analytical workers. PostgreSQL remains pooled.
+                engine_options = {"pool_size": 1, "max_overflow": 0,
+                                  "pool_timeout": pool_timeout_seconds}
         else:
             engine_url, connect_args = _prepare_asyncpg_connection(url)
             engine_options = {

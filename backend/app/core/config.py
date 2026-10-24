@@ -461,6 +461,10 @@ class Settings(BaseSettings):
     )
 
     # Agent execution (docs/28-agent-lifecycle.md).
+    office_async_enabled: bool = Field(default=False, alias="OFFICE_ASYNC_ENABLED")
+    office_primary_timeout_seconds: float = Field(default=3, alias="OFFICE_PRIMARY_TIMEOUT_SECONDS", gt=0, le=10)
+    office_shadow_timeout_seconds: float = Field(default=5, alias="OFFICE_SHADOW_TIMEOUT_SECONDS", gt=0, le=10)
+    office_shadow_ttl_seconds: int = Field(default=120, alias="OFFICE_SHADOW_TTL_SECONDS", ge=1, le=600)
     agent_timeout_ms: int = Field(
         default=5000,
         alias="AGENT_TIMEOUT_MS",
@@ -621,6 +625,15 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_event_broker_configuration(self) -> "Settings":
+        if self.office_async_enabled and (self.system_mode != "PAPER" or self.oms_execution_environment != "PAPER" or self.oms_testnet_enabled):
+            raise ValueError("AI Trading Office is exclusively PAPER")
+        if self.office_async_enabled:
+            if not self.agent_worker_enabled:
+                raise ValueError("Office analytical jobs require the durable worker")
+            if self.agent_lease_seconds <= max(self.office_primary_timeout_seconds, self.office_shadow_timeout_seconds) + 5:
+                raise ValueError("Office leases must exceed supervised execution and acknowledgement budgets")
+            if self.database_url.startswith("postgresql") and self.database_pool_size < 4:
+                raise ValueError("Office PostgreSQL pool must reserve capacity for critical writes")
         if self.event_broker_required and not self.redis_url:
             raise ValueError("REDIS_URL is required when EVENT_BROKER_REQUIRED is enabled")
         if self.clock_warning_offset_ms > self.clock_unsafe_offset_ms:

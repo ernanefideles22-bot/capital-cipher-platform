@@ -22,6 +22,8 @@ from app.agents.month9_specialists import build_month9_shadow_specialists
 from app.agents.month10_specialists import build_month10_shadow_specialists
 from app.agents.month11_specialists import build_month11_shadow_specialists
 from app.agents.trend import TrendAgent
+from app.office.isolation import IsolatedAgentRunner
+from app.office.scheduler import ShadowOffice
 from app.audit.service import AuditService
 from app.backtesting.engine import BacktestingEngine
 from app.backtesting.walk_forward import WalkForwardEngine
@@ -126,6 +128,7 @@ class AppContext:
     release_readiness_service: ReleaseReadinessService | None = None
     bybit_testnet_exit_service: BybitTestnetExitService | None = None
     market_connected: bool = False
+    shadow_office: ShadowOffice | None = None
 
 
 def build_context(settings: Settings, *, with_database: bool = False) -> AppContext:
@@ -461,12 +464,22 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         retry_max_seconds=settings.agent_retry_max_seconds,
         max_concurrency=settings.agent_max_concurrency,
     )
+    shadow_office = None
+    if settings.office_async_enabled:
+        agent_runtime.primary_runner = IsolatedAgentRunner(
+            concurrency=1, timeout_seconds=settings.office_primary_timeout_seconds)
+        agent_runtime.shadow_runner = IsolatedAgentRunner(
+            concurrency=2, timeout_seconds=settings.office_shadow_timeout_seconds)
+        shadow_office = ShadowOffice(agent_runtime,
+            evaluation=agent_evaluation_service, operations=operations_service,
+            ttl_seconds=settings.office_shadow_ttl_seconds,
+            source_revision=settings.app_source_revision or None)
     agent_runtime_worker = AgentRuntimeWorker(
         agent_runtime,
         poll_interval_seconds=settings.agent_worker_poll_interval_seconds,
         lease_seconds=settings.agent_lease_seconds,
-        max_concurrency=settings.agent_worker_max_concurrency,
-        claim_batch_size=settings.agent_worker_batch_size,
+        max_concurrency=min(2, settings.agent_worker_max_concurrency) if settings.office_async_enabled else settings.agent_worker_max_concurrency,
+        claim_batch_size=1 if settings.office_async_enabled else settings.agent_worker_batch_size,
     )
     shadow_validation_service = ShadowValidationService(
         runtime=agent_runtime,
@@ -526,6 +539,8 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         weighted_consensus_service=weighted_consensus_service,
         portfolio_construction_service=portfolio_construction_service,
         operations_service=operations_service,
+        shadow_office=shadow_office,
+        primary_timeout_seconds=settings.office_primary_timeout_seconds,
     )
     backtesting_engine = BacktestingEngine(
         limits=limits,
@@ -582,6 +597,7 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         shadow_validation_service=shadow_validation_service,
         release_readiness_service=release_readiness_service,
         bybit_testnet_exit_service=bybit_testnet_exit_service,
+        shadow_office=shadow_office,
     )
     context_holder["ctx"] = ctx
     return ctx

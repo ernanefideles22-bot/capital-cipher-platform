@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import os
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -14,7 +15,8 @@ from app.validation.paper_flow import validate_full_paper_flow, validate_paper_s
 
 
 @pytest.mark.skipif(not os.environ.get("POSTGRES_TEST_URL"), reason="POSTGRES_TEST_URL is not configured")
-async def test_native_postgres17_redis_paper_full_flow():
+@pytest.mark.parametrize("office_enabled", [False, True])
+async def test_native_postgres17_redis_paper_full_flow(office_enabled):
     import asyncpg
 
     url = urlsplit(os.environ["POSTGRES_TEST_URL"].replace("postgresql+asyncpg://", "postgresql://"))
@@ -36,6 +38,7 @@ async def test_native_postgres17_redis_paper_full_flow():
     finally:
         await connection.close()
     settings = Settings(
+        OFFICE_ASYNC_ENABLED=office_enabled,
         APP_ENV="local", DATABASE_URL=target_url.replace("postgresql://", "postgresql+asyncpg://"),
         REDIS_URL=os.environ.get("REDIS_TEST_URL"),
         REDIS_STREAM_PREFIX="cc-native-paper-" + uuid4().hex[:12],
@@ -51,3 +54,69 @@ async def test_native_postgres17_redis_paper_full_flow():
     assert all(result["completed_agent_jobs"] == 300 for result in results)
     safety = await validate_paper_safety(settings)
     print(json.dumps({"native_postgres_version": 17, "flows": results, "safety": safety}))
+
+
+@pytest.mark.skipif(not os.environ.get("POSTGRES_TEST_URL"), reason="POSTGRES_TEST_URL is not configured")
+async def test_postgres_trace_is_one_snapshot_during_worker_commit(monkeypatch):
+    import asyncpg
+    from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy import text
+    from app.agents.registry import AgentRegistry
+    from app.agents.runtime import AgentRuntime
+    from app.database.repositories.repository import Repository
+    from app.database.session import Database
+    from app.tests.test_month_5_agent_runtime import SuccessfulAgent, _request
+
+    url = urlsplit(os.environ["POSTGRES_TEST_URL"].replace("postgresql+asyncpg://", "postgresql://"))
+    assert url.hostname in {"localhost", "127.0.0.1", "::1"}
+    name = "capital_cipher_paper_validation_" + uuid4().hex[:12] + "_flow"
+    control = await asyncpg.connect(urlunsplit(url))
+    try:
+        assert int(await control.fetchval("show server_version_num")) // 10000 == 17
+        await control.execute(f'create database "{name}" template template0')
+    finally:
+        await control.close()
+    target = urlunsplit(url._replace(path="/" + name))
+    connection = await asyncpg.connect(target)
+    try:
+        for migration in sorted((Path(__file__).resolve().parents[3] / "supabase/migrations").glob("*.sql")):
+            await connection.execute(migration.read_text())
+    finally:
+        await connection.close()
+    database = Database(target.replace("postgresql://", "postgresql+asyncpg://"), pool_size=2)
+    repository = Repository(database)
+    agent = SuccessfulAgent()
+    runtime = AgentRuntime(AgentRegistry([agent]), repository=repository)
+    await runtime.initialize()
+    request = _request(agent)
+    job = await runtime.submit(request)
+    real_scalars = AsyncSession.scalars
+    paused = False
+    reader_task = None
+
+    async def concurrent_finish(session, statement, *args, **kwargs):
+        nonlocal paused
+        result = await real_scalars(session, statement, *args, **kwargs)
+        if (asyncio.current_task() is reader_task and not paused
+                and "agent_execution_jobs" in str(statement)):
+            paused = True
+            # Force a real commit after the job SELECT and before attempts and
+            # memory SELECTs. A READ COMMITTED reader gets a contradictory trace.
+            completed = await runtime.execute(request)
+            assert completed.job.status == "COMPLETED"
+        return result
+
+    monkeypatch.setattr(AsyncSession, "scalars", concurrent_finish)
+    try:
+        reader_task = asyncio.create_task(repository.load_agent_execution_trace(job.execution_id))
+        before = await asyncio.wait_for(reader_task, 10)
+        assert paused and before.job.status == "PENDING"
+        assert before.job.attempt_count == 0 and not before.attempts and len(before.memory) == 1
+        after = await repository.load_agent_execution_trace(job.execution_id)
+        assert after.job.status == "COMPLETED" and len(after.attempts) == 1 and len(after.memory) == 3
+        async with database.session() as session:
+            conn = await session.connection()
+            assert await conn.get_isolation_level() == "READ COMMITTED"
+            assert await conn.scalar(text("show transaction_read_only")) == "off"
+    finally:
+        await database.dispose()

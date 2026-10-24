@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime, timezone
 from math import exp, sin
 from uuid import uuid4
@@ -18,6 +19,20 @@ from datetime import timedelta
 from app.schemas.market import Candle
 from app.schemas.decisions import Decision
 from app.core.errors import RiskError
+from app.office.scheduler import shadow_correlation
+
+
+class PaperFlowValidationError(RuntimeError):
+    """Export only fixed checkpoint/error codes, never exception payloads."""
+
+    def __init__(self, failures, elapsed_ms):
+        super().__init__("PAPER decision cycle did not complete")
+        self.validation_stage = "decision_cycle"
+        known = {"PRIMARY_DEADLINE_EXCEEDED", "CLOCK_UNTRUSTED", "DATA_QUALITY_ERROR",
+                 "DATABASE_ERROR", "AUDIT_FAILED", "RISK_ERROR"}
+        self.validation_error_codes = sorted({item.get("error") if item.get("error") in known
+                                               else "OTHER" for item in failures})
+        self.validation_elapsed_ms = round(elapsed_ms, 3)
 
 
 def trust_fixture_clock(context):
@@ -32,6 +47,8 @@ async def validate_full_paper_flow(settings: Settings, direction: int, expected_
     context = build_context(settings, with_database=True)
     app = create_app(context, with_market_data=False)
     async with app.router.lifespan_context(app):
+        if settings.office_async_enabled:
+            context.market_connected = True  # Explicit isolated OHLCV fixture, not a live venue.
         assert len(context.agent_registry.registrations()) == 300
         assert settings.require_trusted_market_clock
         assert context.oms_service.target_environment.value == "PAPER"
@@ -53,8 +70,11 @@ async def validate_full_paper_flow(settings: Settings, direction: int, expected_
         for candle in candles[:-1]:
             context.candle_store.add(candle)
         await context.repository.save_candles(candles[:-1])
+        decision_started = time.monotonic()
         decision = await context.orchestrator.on_candle_closed(candles[-1])
-        assert decision is not None, list(context.orchestrator.failures)
+        decision_elapsed_ms = (time.monotonic() - decision_started) * 1000
+        if decision is None:
+            raise PaperFlowValidationError(list(context.orchestrator.failures), decision_elapsed_ms)
         assert decision.candidate_action.value == expected_side, decision.model_dump()
         assert decision.risk_status.value in {"APPROVED", "REDUCED"}, decision.model_dump()
         assert len(context.paper_engine.open_orders) == 1
@@ -67,7 +87,7 @@ async def validate_full_paper_flow(settings: Settings, direction: int, expected_
             deadline = asyncio.get_running_loop().time() + 240
             while True:
                 jobs = [job for job in await context.agent_runtime.list_jobs(limit=1000)
-                        if job.correlation_id == decision.correlation_id]
+                        if job.correlation_id in {decision.correlation_id, shadow_correlation(candles[-1])}]
                 if len(jobs) == 300 and all(job.status == "COMPLETED" for job in jobs):
                     break
                 assert not any(job.status == "DEAD_LETTER" for job in jobs), "Agent entered dead letter"
@@ -76,6 +96,14 @@ async def validate_full_paper_flow(settings: Settings, direction: int, expected_
         else:
             jobs = [job for job in await context.agent_runtime.list_jobs(limit=1000)
                     if job.correlation_id == decision.correlation_id]
+        primary_workers = []
+        if settings.office_async_enabled:
+            for job in jobs:
+                if job.decision_role == "PRIMARY":
+                    trace = await context.agent_runtime.trace(job.execution_id)
+                    primary_workers.extend(attempt.worker_id for attempt in trace.attempts)
+            assert len(primary_workers) == 3
+            assert all(worker.startswith("office-primary-") for worker in primary_workers)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get(f"/api/v1/paper/orders/{opened.paper_order_id}")
             assert response.json()["data"]["order"] == opened.model_dump(mode="json")
@@ -125,6 +153,8 @@ async def validate_full_paper_flow(settings: Settings, direction: int, expected_
         "exit_reason": closed.exit_reason, "exit_price": closed.exit_price,
         "pnl": closed.pnl, "balance": balance, "registered_agents": 300,
         "completed_agent_jobs": sum(job.status == "COMPLETED" for job in jobs),
+        "decision_elapsed_ms": round(decision_elapsed_ms, 3),
+        "primary_reserved_worker_verified": bool(primary_workers),
         "shadow_dependency_skips": sum(job.output is not None and job.output.status.value == "SKIPPED" for job in jobs),
         "open_restart_verified": True, "closed_restart_verified": True,
         "duplicate_rejected": True, "untrusted_clock_rejected": True,

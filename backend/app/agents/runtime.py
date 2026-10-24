@@ -9,7 +9,7 @@ import os
 import re
 import socket
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Protocol
 
 from app.agents.base import BaseAgent
@@ -82,6 +82,8 @@ class AgentRuntimeRepository(Protocol):
         worker_id: str,
         lease_seconds: int,
         limit: int,
+        decision_role: str | None = None,
+        execution_ids: list[str] | None = None,
     ) -> list[AgentExecutionJob]: ...
 
     async def finish_agent_execution(
@@ -267,16 +269,27 @@ class InMemoryAgentRuntimeRepository:
         worker_id: str,
         lease_seconds: int,
         limit: int,
+        decision_role: str | None = None,
+        execution_ids: list[str] | None = None,
     ) -> list[AgentExecutionJob]:
         if not 1 <= limit <= 1_000:
             raise ValueError("Agent claim limit must be 1..1000")
+        if decision_role not in {None, "PRIMARY", "SHADOW"}:
+            raise ValueError("Invalid agent claim role")
+        if execution_ids is not None and len(set(execution_ids)) != len(execution_ids):
+            raise ValueError("Agent claim execution_ids must be unique")
+        selected = set(execution_ids) if execution_ids is not None else None
         async with self._lock:
             ordered = sorted(
                 self._jobs.values(),
-                key=lambda item: (item.available_at, item.created_at),
+                key=lambda item: (item.decision_role != "PRIMARY", item.available_at, item.created_at),
             )
             claimed_jobs: list[AgentExecutionJob] = []
             for job in ordered:
+                if decision_role is not None and job.decision_role != decision_role:
+                    continue
+                if selected is not None and job.execution_id not in selected:
+                    continue
                 claimed = self._claim(
                     job.execution_id,
                     worker_id=worker_id,
@@ -481,6 +494,9 @@ class AgentRuntime:
         }
         self._active_background_workers = 0
         self._completion_waiters: dict[str, set[asyncio.Event]] = {}
+        self.shadow_runner = None
+        self.primary_runner = None
+        self._primary_semaphore = asyncio.Semaphore(3)
 
     async def initialize(self) -> None:
         await self.registry.initialize_all()
@@ -558,6 +574,14 @@ class AgentRuntime:
             version=request.agent_version,
         )
         registration = agent.registration()
+        deadline = request.input.config.get("office_deadline_at")
+        if self.shadow_runner is not None and deadline is not None:
+            try:
+                parsed = datetime.fromisoformat(deadline)
+                if parsed.tzinfo is None or not 0 < (parsed - request.input.timestamp).total_seconds() <= 600:
+                    raise ValueError("Unbounded or naive deadline")
+            except (ValueError, TypeError):
+                raise ValidationError("Invalid analytical deadline") from None
         if request.execution_mode != registration.execution_mode:
             raise ValidationError("Agent execution mode does not match registry")
         fingerprint = agent_execution_fingerprint(request)
@@ -653,7 +677,13 @@ class AgentRuntime:
     async def _execute_submitted(
         self,
         job: AgentExecutionJob,
+        *, force_inline: bool = False,
     ) -> AgentExecutionTrace:
+        # Office PRIMARY jobs have no analytical consumer. Explicit retries
+        # still reclaim their durable lease without submitting a new order.
+        force_inline = force_inline or (
+            self.shadow_runner is not None and job.decision_role == "PRIMARY"
+        )
         worker_id = self._worker_id("inline-agent")
         completion_waiter = self._register_completion_waiter(
             job.execution_id
@@ -667,7 +697,7 @@ class AgentRuntime:
                     raise DatabaseError("Agent execution disappeared")
                 if trace.job.status in {"COMPLETED", "DEAD_LETTER"}:
                     return trace
-                if self.background_worker_active:
+                if self.background_worker_active and not force_inline:
                     # Local workers notify exact waiters on terminal writes.
                     # A lease-duration timeout covers distributed completion
                     # without recreating the database polling thundering herd.
@@ -718,6 +748,16 @@ class AgentRuntime:
         self,
         requests: list[AgentExecutionRequest],
     ) -> list[AgentOutput]:
+        if self.shadow_runner is not None:
+            primary = [i for i, r in enumerate(requests)
+                       if self.registry.get(r.input.agent_name).decision_role == "PRIMARY"]
+            if primary:
+                outputs = await self.execute_primary([requests[i] for i in primary])
+                remaining = [i for i in range(len(requests)) if i not in primary]
+                analytical = await self.execute_many([requests[i] for i in remaining]) if remaining else []
+                ordered = dict(zip(primary, outputs, strict=True))
+                ordered.update(zip(remaining, analytical, strict=True))
+                return [ordered[i] for i in range(len(requests))]
         jobs = await self.submit_many(requests)
         if self.background_worker_active:
             traces = await self._wait_for_submitted_many(jobs)
@@ -730,6 +770,42 @@ class AgentRuntime:
             if trace.job.output is None:
                 raise DatabaseError("Terminal agent execution has no output")
             outputs.append(trace.job.output)
+        return outputs
+
+    async def execute_primary(self, requests: list[AgentExecutionRequest]) -> list[AgentOutput]:
+        """Reserved critical lane; never waits for a SHADOW worker or semaphore."""
+        if any(self.registry.get(r.input.agent_name).decision_role != "PRIMARY" for r in requests):
+            raise ValidationError("Reserved lane only accepts PRIMARY agents")
+        jobs = await self.submit_many(requests)
+        worker_id = self._worker_id("office-primary")
+        terminal = {job.execution_id: job for job in jobs
+                    if job.status in {"COMPLETED", "DEAD_LETTER"}}
+        pending = {job.execution_id for job in jobs} - terminal.keys()
+        while pending:
+            claimed = await self.repository.claim_next_agent_executions(
+                worker_id=worker_id, lease_seconds=self._lease_seconds,
+                limit=len(pending), execution_ids=sorted(pending), decision_role="PRIMARY",
+            )
+            updated = await self.execute_claimed_many(claimed, worker_id=worker_id)
+            for job in updated:
+                if job.status in {"COMPLETED", "DEAD_LETTER"}:
+                    terminal[job.execution_id] = job
+                    pending.discard(job.execution_id)
+            if pending:
+                # Another explicit caller may own this exact cohort, or an
+                # earlier attempt may be waiting for its durable retry/lease.
+                traces = await self.repository.load_agent_execution_traces(sorted(pending))
+                if len(traces) != len(pending):
+                    raise DatabaseError("Primary execution disappeared")
+                for key, trace in traces.items():
+                    if trace.job.status in {"COMPLETED", "DEAD_LETTER"}:
+                        terminal[key] = trace.job
+                        pending.discard(key)
+                if pending:
+                    await asyncio.sleep(.01)
+        outputs = [terminal[job.execution_id].output for job in jobs]
+        if any(output is None for output in outputs):
+            raise DatabaseError("Terminal primary execution has no output")
         return outputs
 
     async def _wait_for_submitted_many(
@@ -888,8 +964,28 @@ class AgentRuntime:
             job.agent_name,
             asyncio.Lock(),
         )
-        async with self._semaphore, agent_lock:
-            output = await agent.run(job.input)
+        semaphore = self._primary_semaphore if self.shadow_runner is not None and job.decision_role == "PRIMARY" else self._semaphore
+        async with semaphore, agent_lock:
+            deadline = job.input.config.get("office_deadline_at") if self.shadow_runner is not None else None
+            if deadline:
+                try:
+                    parsed = datetime.fromisoformat(deadline)
+                    if parsed.tzinfo is None:
+                        raise ValueError("Naive deadline")
+                except (ValueError, TypeError):
+                    return AgentOutput(agent_name=agent.name, status=AgentStatus.FAILED,
+                        signal=Signal.WAIT, confidence=0, reason="Invalid analytical deadline",
+                        warnings=["OFFICE_INVALID_DEADLINE"]), False
+            if deadline and utcnow() >= datetime.fromisoformat(deadline):
+                return AgentOutput(agent_name=agent.name, status=AgentStatus.SKIPPED,
+                    signal=Signal.WAIT, confidence=0, reason="Analytical deadline expired",
+                    warnings=["OFFICE_ANALYSIS_EXPIRED"]), False
+            if self.shadow_runner is not None and job.decision_role == "SHADOW":
+                output = await self.shadow_runner.run(agent, job.input)
+            elif self.primary_runner is not None and job.decision_role == "PRIMARY":
+                output = await self.primary_runner.run(agent, job.input)
+            else:
+                output = await agent.run(job.input)
         try:
             ensure_payload_has_no_secrets(output.model_dump(mode="json"))
         except ValueError:
@@ -1219,10 +1315,12 @@ class AgentRuntimeWorker:
         self._claim_batch_size = claim_batch_size
 
     async def run_once(self) -> AgentExecutionJob | None:
+        claim_scope = {"decision_role": "SHADOW"} if self.runtime.shadow_runner is not None else {}
         jobs = await self.runtime.repository.claim_next_agent_executions(
             worker_id=self.worker_id,
             lease_seconds=self._lease_seconds,
             limit=self._claim_batch_size,
+            **claim_scope,
         )
         if not jobs:
             return None

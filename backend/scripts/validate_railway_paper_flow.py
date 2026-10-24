@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import re
+import traceback
 from urllib.parse import urlsplit, urlunsplit
 from unittest.mock import patch
 
@@ -117,6 +118,50 @@ async def apply_migrations(connection, migrations) -> None:
             )
 
 
+def validation_settings(name: str, revision: str) -> Settings:
+    """Validate the isolated pool before opening a connection or copying a DB.
+
+    Office reserves PostgreSQL capacity and rejects a two-connection pool. With
+    the hosted backend capped at four, four validation connections fit the
+    existing runtime role limit of eight. No overflow or credential changes.
+    """
+    office = Settings(_env_file=None, DATABASE_POOL_SIZE=4).office_async_enabled
+    return Settings(
+        _env_file=None, DATABASE_URL=database_url(os.environ["DATABASE_URL"], name),
+        DATABASE_POOL_SIZE=4 if office else 2, DATABASE_MAX_OVERFLOW=0,
+        AGENT_WORKER_MAX_CONCURRENCY=2, AGENT_WORKER_BATCH_SIZE=1 if office else 32,
+        REDIS_STREAM_PREFIX="cc-paper-validation-" + revision[:12],
+        DATA_LAKE_ROOT="/tmp/cc-paper-validation-" + revision[:12], LOG_LEVEL="ERROR",
+    )
+
+
+async def verify_live_compatibility(connection, migrations, settings) -> dict:
+    """SELECT-only verification of the live main DB, before isolated writes."""
+    async with connection.transaction(readonly=True):
+        schema = await invariants(connection)
+        tracked = {row["filename"]: row["sha256"] for row in await connection.fetch(
+            "select filename, sha256 from public.capital_cipher_schema_migrations")}
+        for migration in migrations:
+            digest = hashlib.sha256(migration.read_bytes()).hexdigest()
+            if tracked.get(migration.name) != digest:
+                raise RuntimeError("PAPER_VALIDATION_LIVE_MIGRATION_HASH_MISMATCH")
+        runtime = await connection.fetchrow("""select rolconnlimit, rolsuper,
+            rolcreatedb, rolcreaterole, rolreplication, rolbypassrls from pg_roles
+            where rolname='capital_cipher_app'""")
+        backend = Settings(_env_file=None)
+        ceiling = backend.database_pool_size + backend.database_max_overflow
+        required = ceiling + settings.database_pool_size
+        if runtime is None or runtime["rolconnlimit"] < required:
+            raise RuntimeError("PAPER_VALIDATION_RUNTIME_CONNECTION_BUDGET_EXCEEDED")
+        if any(runtime[key] for key in ("rolsuper", "rolcreatedb", "rolcreaterole", "rolreplication", "rolbypassrls")):
+            raise RuntimeError("PAPER_VALIDATION_RUNTIME_PRIVILEGE_DRIFT")
+    return {"schema": schema, "tracked_migrations": len(tracked),
+            "backend_connection_ceiling": ceiling,
+            "isolated_connection_ceiling": settings.database_pool_size,
+            "runtime_role_connection_limit": runtime["rolconnlimit"],
+            "main_database_writes": False}
+
+
 async def main() -> None:
     if os.getenv("PAPER_FULL_FLOW_VALIDATION_ENABLED") != "true":
         raise RuntimeError("PAPER_VALIDATION_EXPLICIT_OPT_IN_REQUIRED")
@@ -132,13 +177,15 @@ async def main() -> None:
     migrations = sorted(Path("/app/migrations").glob("*.sql"))
     if len(migrations) != 15:
         raise RuntimeError("PAPER_VALIDATION_EXPECTS_15_MIGRATIONS")
-    control = await asyncpg.connect(admin_url)
     names = {kind: PREFIX + revision[:12] + "_" + kind for kind in ("schema", "flow")}
+    settings = validation_settings(names["flow"], revision)
+    control = await asyncpg.connect(admin_url)
     report = {"event": "CC_PAPER_FULL_FLOW_VALIDATION", "source_revision": revision,
               "execution_environment": "PAPER", "original_volume_modified": False,
               "databases": names, "migrations": len(migrations)}
     try:
         assert int(await control.fetchval("show server_version_num")) // 10000 == 17, "PostgreSQL 17 required"
+        report["live_compatibility"] = await verify_live_compatibility(control, migrations, settings)
         donor_size = await control.fetchval("select pg_database_size($1)", DONOR)
         assert donor_size < 400_000_000, "Donor copy exceeds validation storage budget"
         assert not await control.fetchval(
@@ -186,14 +233,7 @@ async def main() -> None:
         finally:
             await connection.close()
 
-    # Two validation connections plus the backend pool (4) stay below role cap 8.
-    settings = Settings(
-        _env_file=None, DATABASE_URL=database_url(os.environ["DATABASE_URL"], names["flow"]),
-        DATABASE_POOL_SIZE=2, DATABASE_MAX_OVERFLOW=0,
-        AGENT_WORKER_MAX_CONCURRENCY=2, AGENT_WORKER_BATCH_SIZE=32,
-        REDIS_STREAM_PREFIX="cc-paper-validation-" + revision[:12],
-        DATA_LAKE_ROOT="/tmp/cc-paper-validation-" + revision[:12], LOG_LEVEL="ERROR",
-    )
+    # Capacity was checked against the live role before any isolated DB creation.
     with block_external_http():
         report["flows"] = [await validate_full_paper_flow(settings, direction, side)
                            for direction, side in ((1, "BUY"), (-1, "SELL"))]
@@ -202,11 +242,24 @@ async def main() -> None:
     print(json.dumps(report, sort_keys=True), flush=True)
 
 
+def failure_report(exc: Exception) -> dict:
+    """Source coordinates diagnose a failed assertion without logging secrets."""
+    report = {"event": "CC_PAPER_FULL_FLOW_VALIDATION", "status": "FAILED",
+              "error_type": type(exc).__name__,
+              "source_locations": [{"file": Path(frame.filename).name,
+                                    "function": frame.name, "line": frame.lineno}
+                                   for frame in traceback.extract_tb(exc.__traceback__)[-6:]]}
+    from app.validation.paper_flow import PaperFlowValidationError
+    if isinstance(exc, PaperFlowValidationError):
+        report.update(stage=exc.validation_stage, error_codes=exc.validation_error_codes,
+                      elapsed_ms=exc.validation_elapsed_ms)
+    return report
+
+
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except Exception as exc:
         # Provider URLs/passwords and full SQL parameters must never reach logs.
-        print(json.dumps({"event": "CC_PAPER_FULL_FLOW_VALIDATION", "status": "FAILED",
-                          "error_type": type(exc).__name__}), flush=True)
+        print(json.dumps(failure_report(exc)), flush=True)
         raise SystemExit(1) from None
