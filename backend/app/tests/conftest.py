@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
+import httpx
 
 from app.audit.service import AuditService
 from app.core.event_bus import EventBus
@@ -17,6 +18,19 @@ from app.schemas.common import CandidateAction, Exchange
 from app.schemas.decisions import Decision
 from app.schemas.market import Candle
 from app.schemas.risk import RiskLimits
+
+
+@pytest.fixture(autouse=True)
+def block_unmocked_exchange_http(monkeypatch):
+    """Unit tests must use fake transports instead of contacting live providers."""
+    async def blocked_async(_transport, request):
+        raise httpx.ConnectError("External HTTP is disabled in tests; supply MockTransport", request=request)
+
+    def blocked_sync(_transport, request):
+        raise httpx.ConnectError("External HTTP is disabled in tests; supply MockTransport", request=request)
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", blocked_async)
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", blocked_sync)
 
 
 def make_candle(
