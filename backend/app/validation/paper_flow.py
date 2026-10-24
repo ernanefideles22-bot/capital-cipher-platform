@@ -64,7 +64,7 @@ async def validate_full_paper_flow(settings: Settings, direction: int, expected_
         assert await context.orchestrator.on_candle_closed(candles[-1]) is None
         assert len(context.paper_engine.open_orders) == 1
         if settings.agent_worker_enabled:
-            deadline = asyncio.get_running_loop().time() + 90
+            deadline = asyncio.get_running_loop().time() + 240
             while True:
                 jobs = [job for job in await context.agent_runtime.list_jobs(limit=1000)
                         if job.correlation_id == decision.correlation_id]

@@ -186,11 +186,11 @@ async def main() -> None:
         finally:
             await connection.close()
 
-    # One runtime connection plus the existing backend pool stays below role cap 8.
+    # Two validation connections plus the backend pool (4) stay below role cap 8.
     settings = Settings(
         _env_file=None, DATABASE_URL=database_url(os.environ["DATABASE_URL"], names["flow"]),
-        DATABASE_POOL_SIZE=1, DATABASE_MAX_OVERFLOW=0,
-        AGENT_WORKER_MAX_CONCURRENCY=1, AGENT_WORKER_BATCH_SIZE=1,
+        DATABASE_POOL_SIZE=2, DATABASE_MAX_OVERFLOW=0,
+        AGENT_WORKER_MAX_CONCURRENCY=2, AGENT_WORKER_BATCH_SIZE=32,
         REDIS_STREAM_PREFIX="cc-paper-validation-" + revision[:12],
         DATA_LAKE_ROOT="/tmp/cc-paper-validation-" + revision[:12], LOG_LEVEL="ERROR",
     )
