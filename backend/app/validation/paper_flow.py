@@ -18,6 +18,7 @@ from datetime import timedelta
 from app.schemas.market import Candle
 from app.schemas.decisions import Decision
 from app.core.errors import RiskError
+from app.office.scheduler import shadow_correlation
 
 
 def trust_fixture_clock(context):
@@ -32,6 +33,8 @@ async def validate_full_paper_flow(settings: Settings, direction: int, expected_
     context = build_context(settings, with_database=True)
     app = create_app(context, with_market_data=False)
     async with app.router.lifespan_context(app):
+        if settings.office_async_enabled:
+            context.market_connected = True  # Explicit isolated OHLCV fixture, not a live venue.
         assert len(context.agent_registry.registrations()) == 300
         assert settings.require_trusted_market_clock
         assert context.oms_service.target_environment.value == "PAPER"
@@ -67,7 +70,7 @@ async def validate_full_paper_flow(settings: Settings, direction: int, expected_
             deadline = asyncio.get_running_loop().time() + 240
             while True:
                 jobs = [job for job in await context.agent_runtime.list_jobs(limit=1000)
-                        if job.correlation_id == decision.correlation_id]
+                        if job.correlation_id in {decision.correlation_id, shadow_correlation(candles[-1])}]
                 if len(jobs) == 300 and all(job.status == "COMPLETED" for job in jobs):
                     break
                 assert not any(job.status == "DEAD_LETTER" for job in jobs), "Agent entered dead letter"

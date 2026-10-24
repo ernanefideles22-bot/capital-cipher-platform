@@ -14,7 +14,8 @@ from app.validation.paper_flow import validate_full_paper_flow, validate_paper_s
 
 
 @pytest.mark.skipif(not os.environ.get("POSTGRES_TEST_URL"), reason="POSTGRES_TEST_URL is not configured")
-async def test_native_postgres17_redis_paper_full_flow():
+@pytest.mark.parametrize("office_enabled", [False, True])
+async def test_native_postgres17_redis_paper_full_flow(office_enabled):
     import asyncpg
 
     url = urlsplit(os.environ["POSTGRES_TEST_URL"].replace("postgresql+asyncpg://", "postgresql://"))
@@ -36,6 +37,7 @@ async def test_native_postgres17_redis_paper_full_flow():
     finally:
         await connection.close()
     settings = Settings(
+        OFFICE_ASYNC_ENABLED=office_enabled,
         APP_ENV="local", DATABASE_URL=target_url.replace("postgresql://", "postgresql+asyncpg://"),
         REDIS_URL=os.environ.get("REDIS_TEST_URL"),
         REDIS_STREAM_PREFIX="cc-native-paper-" + uuid4().hex[:12],

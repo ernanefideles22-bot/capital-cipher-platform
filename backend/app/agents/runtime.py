@@ -9,7 +9,7 @@ import os
 import re
 import socket
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Protocol
 
 from app.agents.base import BaseAgent
@@ -273,7 +273,7 @@ class InMemoryAgentRuntimeRepository:
         async with self._lock:
             ordered = sorted(
                 self._jobs.values(),
-                key=lambda item: (item.available_at, item.created_at),
+                key=lambda item: (item.decision_role != "PRIMARY", item.available_at, item.created_at),
             )
             claimed_jobs: list[AgentExecutionJob] = []
             for job in ordered:
@@ -481,6 +481,9 @@ class AgentRuntime:
         }
         self._active_background_workers = 0
         self._completion_waiters: dict[str, set[asyncio.Event]] = {}
+        self.shadow_runner = None
+        self.primary_runner = None
+        self._primary_semaphore = asyncio.Semaphore(3)
 
     async def initialize(self) -> None:
         await self.registry.initialize_all()
@@ -558,6 +561,14 @@ class AgentRuntime:
             version=request.agent_version,
         )
         registration = agent.registration()
+        deadline = request.input.config.get("office_deadline_at")
+        if self.shadow_runner is not None and deadline is not None:
+            try:
+                parsed = datetime.fromisoformat(deadline)
+                if parsed.tzinfo is None or not 0 < (parsed - request.input.timestamp).total_seconds() <= 600:
+                    raise ValueError("Unbounded or naive deadline")
+            except (ValueError, TypeError):
+                raise ValidationError("Invalid analytical deadline") from None
         if request.execution_mode != registration.execution_mode:
             raise ValidationError("Agent execution mode does not match registry")
         fingerprint = agent_execution_fingerprint(request)
@@ -653,6 +664,7 @@ class AgentRuntime:
     async def _execute_submitted(
         self,
         job: AgentExecutionJob,
+        *, force_inline: bool = False,
     ) -> AgentExecutionTrace:
         worker_id = self._worker_id("inline-agent")
         completion_waiter = self._register_completion_waiter(
@@ -667,7 +679,7 @@ class AgentRuntime:
                     raise DatabaseError("Agent execution disappeared")
                 if trace.job.status in {"COMPLETED", "DEAD_LETTER"}:
                     return trace
-                if self.background_worker_active:
+                if self.background_worker_active and not force_inline:
                     # Local workers notify exact waiters on terminal writes.
                     # A lease-duration timeout covers distributed completion
                     # without recreating the database polling thundering herd.
@@ -731,6 +743,14 @@ class AgentRuntime:
                 raise DatabaseError("Terminal agent execution has no output")
             outputs.append(trace.job.output)
         return outputs
+
+    async def execute_primary(self, requests: list[AgentExecutionRequest]) -> list[AgentOutput]:
+        """Reserved critical lane; never waits for a SHADOW worker or semaphore."""
+        if any(self.registry.get(r.input.agent_name).decision_role != "PRIMARY" for r in requests):
+            raise ValidationError("Reserved lane only accepts PRIMARY agents")
+        jobs = await self.submit_many(requests)
+        traces = await asyncio.gather(*(self._execute_submitted(job, force_inline=True) for job in jobs))
+        return [trace.job.output for trace in traces]
 
     async def _wait_for_submitted_many(
         self,
@@ -888,8 +908,28 @@ class AgentRuntime:
             job.agent_name,
             asyncio.Lock(),
         )
-        async with self._semaphore, agent_lock:
-            output = await agent.run(job.input)
+        semaphore = self._primary_semaphore if self.shadow_runner is not None and job.decision_role == "PRIMARY" else self._semaphore
+        async with semaphore, agent_lock:
+            deadline = job.input.config.get("office_deadline_at") if self.shadow_runner is not None else None
+            if deadline:
+                try:
+                    parsed = datetime.fromisoformat(deadline)
+                    if parsed.tzinfo is None:
+                        raise ValueError("Naive deadline")
+                except (ValueError, TypeError):
+                    return AgentOutput(agent_name=agent.name, status=AgentStatus.FAILED,
+                        signal=Signal.WAIT, confidence=0, reason="Invalid analytical deadline",
+                        warnings=["OFFICE_INVALID_DEADLINE"]), False
+            if deadline and utcnow() >= datetime.fromisoformat(deadline):
+                return AgentOutput(agent_name=agent.name, status=AgentStatus.SKIPPED,
+                    signal=Signal.WAIT, confidence=0, reason="Analytical deadline expired",
+                    warnings=["OFFICE_ANALYSIS_EXPIRED"]), False
+            if self.shadow_runner is not None and job.decision_role == "SHADOW":
+                output = await self.shadow_runner.run(agent, job.input)
+            elif self.primary_runner is not None and job.decision_role == "PRIMARY":
+                output = await self.primary_runner.run(agent, job.input)
+            else:
+                output = await agent.run(job.input)
         try:
             ensure_payload_has_no_secrets(output.model_dump(mode="json"))
         except ValueError:

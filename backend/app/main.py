@@ -44,6 +44,7 @@ from app.market_data.raw_batch import RawMarketEventBatchPersister
 from app.market_data.runtime import (
     build_runtime_market_adapter,
     market_data_exchange,
+    runtime_market_subscriptions,
 )
 from app.schemas.api import error_response
 from app.schemas.events import EventTypes
@@ -274,6 +275,11 @@ def create_app(
             agent_worker_task = asyncio.create_task(
                 ctx.agent_runtime_worker.run(agent_worker_stop)
             )
+        if ctx.shadow_office is not None:
+            if ctx.repository is not None:
+                await ctx.shadow_office.recover(ctx.repository,
+                    runtime_market_subscriptions(ctx.settings, ctx.orchestrator.strategy_engine))
+            ctx.shadow_office.start()
         if settings.backfill_worker_enabled and ctx.backfill_worker is not None:
             backfill_task = asyncio.create_task(
                 ctx.backfill_worker.run(backfill_stop)
@@ -300,10 +306,10 @@ def create_app(
                     ctx.clock_monitor.run(clock_stop)
                 )
             adapter = build_runtime_market_adapter(ctx.oms_service)
-            for symbol in ctx.settings.allowed_symbols_list:
+            for symbol, timeframe in runtime_market_subscriptions(ctx.settings, ctx.orchestrator.strategy_engine):
                 await adapter.subscribe_candles(
                     symbol,
-                    ctx.settings.default_timeframe,
+                    timeframe,
                 )
 
             continuity_processor = (
@@ -359,46 +365,53 @@ def create_app(
             adapter.on_status = on_status
             await adapter.connect()
 
-        yield
-
-        if adapter is not None:
-            await adapter.disconnect()
-        if clock_task is not None:
-            clock_stop.set()
-            await clock_task
-        if backfill_task is not None:
-            backfill_stop.set()
-            await backfill_task
-        if agent_worker_task is not None:
-            agent_worker_stop.set()
-            await agent_worker_task
-        if reconciliation_task is not None:
-            reconciliation_stop.set()
-            await reconciliation_task
-        if oms_worker_task is not None:
-            oms_worker_stop.set()
-            await oms_worker_task
-        if operations_task is not None:
-            operations_stop.set()
-            await operations_task
-        await asyncio.gather(
-            *(
-                execution_adapter.aclose()
-                for execution_adapter in ctx.execution_adapters.values()
-            )
-        )
-        if ctx.public_market_clients is not None:
+        try:
+            yield
+        finally:
+            if adapter is not None:
+                await adapter.disconnect()
+            if clock_task is not None:
+                clock_stop.set()
+                await clock_task
+            if backfill_task is not None:
+                backfill_stop.set()
+                await backfill_task
+            if ctx.shadow_office is not None:
+                await ctx.shadow_office.aclose()
+            if agent_worker_task is not None:
+                agent_worker_stop.set()
+                await agent_worker_task
+            if ctx.agent_runtime is not None and ctx.agent_runtime.shadow_runner is not None:
+                await ctx.agent_runtime.shadow_runner.aclose()
+            if ctx.agent_runtime is not None and ctx.agent_runtime.primary_runner is not None:
+                await ctx.agent_runtime.primary_runner.aclose()
+            if reconciliation_task is not None:
+                reconciliation_stop.set()
+                await reconciliation_task
+            if oms_worker_task is not None:
+                oms_worker_stop.set()
+                await oms_worker_task
+            if operations_task is not None:
+                operations_stop.set()
+                await operations_task
             await asyncio.gather(
-                *(client.aclose() for client in ctx.public_market_clients.values())
+                *(
+                    execution_adapter.aclose()
+                    for execution_adapter in ctx.execution_adapters.values()
+                )
             )
-        if outbox_task is not None:
-            outbox_stop.set()
-            await outbox_task
-        if ctx.event_transport is not None:
-            await ctx.event_transport.close()
-        if ctx.database is not None:
-            await ctx.database.dispose()
-        logger.info("System stopped", event_type="SYSTEM_STOPPED")
+            if ctx.public_market_clients is not None:
+                await asyncio.gather(
+                    *(client.aclose() for client in ctx.public_market_clients.values())
+                )
+            if outbox_task is not None:
+                outbox_stop.set()
+                await outbox_task
+            if ctx.event_transport is not None:
+                await ctx.event_transport.close()
+            if ctx.database is not None:
+                await ctx.database.dispose()
+            logger.info("System stopped", event_type="SYSTEM_STOPPED")
 
     app = FastAPI(
         title="Capital Cipher AI",

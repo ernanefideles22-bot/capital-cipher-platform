@@ -13,7 +13,7 @@ from typing import Any
 from uuid import uuid4
 
 from pydantic import ValidationError as PydanticValidationError
-from sqlalchemy import and_, func, or_, select, tuple_, update
+from sqlalchemy import and_, case, func, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -2183,6 +2183,7 @@ class Repository:
             select(AgentExecutionJobModel)
             .where(or_(ready, expired))
             .order_by(
+                case((AgentExecutionJobModel.decision_role == "PRIMARY", 0), else_=1),
                 AgentExecutionJobModel.available_at,
                 AgentExecutionJobModel.created_at,
             )

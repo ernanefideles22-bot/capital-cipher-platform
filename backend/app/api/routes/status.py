@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends
 from app.api.context import AppContext
 from app.api.deps import get_context
 from app.schemas.api import success_response
+from app.market_data.runtime import runtime_market_subscriptions
 
 router = APIRouter()
 
@@ -46,6 +47,8 @@ async def system_status(context: AppContext = Depends(get_context)) -> dict:
             },
             "database": "CONNECTED" if context.repository is not None else "IN_MEMORY",
             "runtime_capacity": {
+                "office_async_enabled": context.settings.office_async_enabled,
+                "market_subscriptions": runtime_market_subscriptions(context.settings, context.orchestrator.strategy_engine),
                 "default_timeframe": context.settings.default_timeframe,
                 "symbol_count": len(context.settings.allowed_symbols_list),
                 "database_pool_size": context.settings.database_pool_size,

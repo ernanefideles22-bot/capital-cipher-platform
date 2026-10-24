@@ -11,6 +11,17 @@ from app.schemas.common import Exchange
 from app.schemas.oms import ExecutionEnvironment
 
 
+def runtime_market_subscriptions(settings, strategy_engine):
+    """Use each enabled strategy's actual stream, never invent a 5m strategy."""
+    if not settings.office_async_enabled:
+        return [(symbol, settings.default_timeframe) for symbol in settings.allowed_symbols_list]
+    allowed = set(settings.allowed_symbols_list)
+    subscriptions = {(symbol, strategy.timeframe)
+        for strategy in strategy_engine.list() if strategy.enabled
+        for symbol in strategy.symbols if symbol in allowed}
+    return sorted(subscriptions)
+
+
 def market_data_exchange(oms_service) -> Exchange:
     """Return the exchange whose candles may drive the active OMS boundary."""
 
