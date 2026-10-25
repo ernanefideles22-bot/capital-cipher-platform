@@ -5,10 +5,11 @@ from __future__ import annotations
 import ssl
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from sqlalchemy import inspect, text
+from sqlalchemy import event, inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.database.models import Base, INTERNAL_SCHEMA
+from app.office.profiling import record_primary_database
 
 
 def _prepare_asyncpg_connection(url: str) -> tuple[str, dict[str, object]]:
@@ -95,6 +96,12 @@ class Database:
             **engine_options,
         )
         self.session_factory = async_sessionmaker(self.engine, expire_on_commit=False)
+        event.listen(self.engine.sync_engine, "before_cursor_execute",
+                     lambda *args: record_primary_database("sql_statements"))
+        event.listen(self.engine.sync_engine, "checkout",
+                     lambda *args: record_primary_database("db_checkouts"))
+        event.listen(self.engine.sync_engine, "commit",
+                     lambda *args: record_primary_database("db_commit_calls"))
 
     async def healthcheck(self) -> bool:
         try:

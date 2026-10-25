@@ -43,6 +43,7 @@ from app.market_data.store import CandleStore
 from app.orchestrator.decision_engine import DecisionEngine
 from app.operations.resilience import DependencyName
 from app.operations.service import OperationsService
+from app.office.profiling import safe_primary_profile
 from app.paper_trading.engine import PaperTradingEngine
 from app.risk.manager import RiskManager
 from app.strategy.engine import StrategyEngine
@@ -120,6 +121,7 @@ class Orchestrator:
         self.cycle_latencies_ms: deque[int] = deque(maxlen=100)
         self.failures: deque[dict[str, Any]] = deque(maxlen=50)
         self.pending_events: int = 0
+        self.last_cycle_stages_ms: dict[str, float] = {}
 
     # -- status ------------------------------------------------------------------
     @property
@@ -153,6 +155,8 @@ class Orchestrator:
             "recent_failures": len(self.failures),
             "pending_events": self.pending_events,
             "cycle_latency_ms": self.latency_percentiles(),
+            "last_cycle_stages_ms": dict(self.last_cycle_stages_ms),
+            "primary_profile": safe_primary_profile(self._agent_runtime.last_primary_profile),
             "shadow_office": self._office.status() if self._office else None,
             "governance": {
                 "latest_consensus_status": (
@@ -197,6 +201,8 @@ class Orchestrator:
         correlation_id = str(uuid4())
         operational_cycle_attempted = False
         operational_cycle_succeeded = False
+        if self._office is not None:
+            self.last_cycle_stages_ms = {}
         try:
             clock_verdict = None
             if self._require_trusted_clock:
@@ -508,6 +514,8 @@ class Orchestrator:
             )
 
     def _observe_stage(self, stage: str, started: float) -> None:
+        if self._office is not None:
+            self.last_cycle_stages_ms[stage] = round((time.monotonic() - started) * 1000, 3)
         if self._operations is not None:
             self._operations.observe_orchestrator_stage(
                 stage,
@@ -553,14 +561,17 @@ class Orchestrator:
             )
         agent_batch_started = time.monotonic()
         if self._office is not None:
-            agent_outputs = await asyncio.wait_for(self._agent_runtime.execute_primary(requests), self._primary_timeout)
+            try:
+                agent_outputs = await asyncio.wait_for(self._agent_runtime.execute_primary(requests), self._primary_timeout)
+            finally:
+                self._observe_stage("agent_runtime", agent_batch_started)
             market = next((o for o in agent_outputs if o.agent_name == "MarketDataAgent"), None)
             if market is None or market.evidence.get("connection_status") != "CONNECTED":
                 raise DataQualityError("Office fast lane requires connected market data")
             self._latest_primary_outputs = agent_outputs
         else:
             agent_outputs = await self._agent_runtime.execute_many(requests)
-        self._observe_stage("agent_runtime", agent_batch_started)
+            self._observe_stage("agent_runtime", agent_batch_started)
         if self._operations is not None and self._office is None:
             try:
                 await self._operations.observe_agent_batch(

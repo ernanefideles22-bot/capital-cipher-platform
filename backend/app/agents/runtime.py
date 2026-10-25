@@ -14,6 +14,8 @@ from typing import Protocol
 
 from app.agents.base import BaseAgent
 from app.agents.registry import AgentRegistry
+from app.office.profiling import PrimaryProfile, primary_profile, primary_step
+from app.office.claims import leased_primary_submissions
 from app.core.errors import DatabaseError, ValidationError
 from app.core.event_bus import EventBus, EventPublication, Topics
 from app.core.logging import ServiceLogger
@@ -59,6 +61,7 @@ class AgentRuntimeRepository(Protocol):
     async def create_agent_executions(
         self,
         submissions: list[tuple[AgentExecutionJob, AgentMemoryEntry]],
+        *, claim_new_primary_by: str | None = None, lease_seconds: int = 30,
     ) -> list[AgentExecutionJob]: ...
 
     async def claim_agent_execution(
@@ -188,7 +191,9 @@ class InMemoryAgentRuntimeRepository:
     async def create_agent_executions(
         self,
         submissions: list[tuple[AgentExecutionJob, AgentMemoryEntry]],
+        *, claim_new_primary_by: str | None = None, lease_seconds: int = 30,
     ) -> list[AgentExecutionJob]:
+        submissions = leased_primary_submissions(submissions, claim_new_primary_by, lease_seconds)
         async with self._lock:
             return [
                 self._create_agent_execution(job, input_memory)
@@ -497,9 +502,13 @@ class AgentRuntime:
         self.shadow_runner = None
         self.primary_runner = None
         self._primary_semaphore = asyncio.Semaphore(3)
+        self.last_primary_profile = None
 
     async def initialize(self) -> None:
         await self.registry.initialize_all()
+        warmup = getattr(self.primary_runner, "warmup", None)
+        if warmup is not None:
+            await warmup()
 
     @property
     def background_worker_active(self) -> bool:
@@ -627,11 +636,15 @@ class AgentRuntime:
     async def submit_many(
         self,
         requests: list[AgentExecutionRequest],
+        *, _primary_worker_id: str | None = None,
     ) -> list[AgentExecutionJob]:
         submissions = [
             self._prepare_submission(request) for request in requests
         ]
-        jobs = await self.repository.create_agent_executions(submissions)
+        with primary_step("create_jobs"):
+            reservation = ({"claim_new_primary_by": _primary_worker_id,
+                            "lease_seconds": self._lease_seconds} if _primary_worker_id else {})
+            jobs = await self.repository.create_agent_executions(submissions, **reservation)
         unique_jobs = list(
             {
                 job.execution_id: job
@@ -642,7 +655,9 @@ class AgentRuntime:
             [
                 self._event_publication(
                     EventTypes.AGENT_REQUESTED,
-                    job,
+                    job.model_copy(update={"status": "PENDING", "attempt_count": 0,
+                        "leased_by": None, "lease_expires_at": None})
+                    if _primary_worker_id and job.leased_by == _primary_worker_id else job,
                     event_id=agent_lifecycle_event_id(
                         job.execution_id,
                         EventTypes.AGENT_REQUESTED,
@@ -774,19 +789,34 @@ class AgentRuntime:
 
     async def execute_primary(self, requests: list[AgentExecutionRequest]) -> list[AgentOutput]:
         """Reserved critical lane; never waits for a SHADOW worker or semaphore."""
+        profile = PrimaryProfile()
+        with primary_profile(profile):
+            try:
+                return await self._execute_primary(requests)
+            finally:
+                self.last_primary_profile = profile.snapshot()
+
+    async def _execute_primary(self, requests: list[AgentExecutionRequest]) -> list[AgentOutput]:
         if any(self.registry.get(r.input.agent_name).decision_role != "PRIMARY" for r in requests):
             raise ValidationError("Reserved lane only accepts PRIMARY agents")
-        jobs = await self.submit_many(requests)
         worker_id = self._worker_id("office-primary")
+        jobs = await self.submit_many(requests, _primary_worker_id=worker_id)
+        # Fresh jobs and their INPUT memory committed together with this lease.
+        # Idempotent existing rows retain their owner, status and attempt count.
+        claimed = list({job.execution_id: job for job in jobs
+                        if job.status == "LEASED" and job.leased_by == worker_id}.values())
         terminal = {job.execution_id: job for job in jobs
                     if job.status in {"COMPLETED", "DEAD_LETTER"}}
         pending = {job.execution_id for job in jobs} - terminal.keys()
         while pending:
-            claimed = await self.repository.claim_next_agent_executions(
-                worker_id=worker_id, lease_seconds=self._lease_seconds,
-                limit=len(pending), execution_ids=sorted(pending), decision_role="PRIMARY",
-            )
+            if not claimed:
+                with primary_step("claim_jobs"):
+                    claimed = await self.repository.claim_next_agent_executions(
+                        worker_id=worker_id, lease_seconds=self._lease_seconds,
+                        limit=len(pending), execution_ids=sorted(pending), decision_role="PRIMARY",
+                    )
             updated = await self.execute_claimed_many(claimed, worker_id=worker_id)
+            claimed = []
             for job in updated:
                 if job.status in {"COMPLETED", "DEAD_LETTER"}:
                     terminal[job.execution_id] = job
@@ -1042,12 +1072,10 @@ class AgentRuntime:
                 for job, _ in runnable
             ]
         )
-        run_results = await asyncio.gather(
-            *(
-                self._run_agent(job, agent)
-                for job, agent in runnable
+        with primary_step("analysis"):
+            run_results = await asyncio.gather(
+                *(self._run_agent(job, agent) for job, agent in runnable)
             )
-        )
         results_by_id = {
             job.execution_id: result
             for (job, _), result in zip(
@@ -1071,9 +1099,8 @@ class AgentRuntime:
                     retryable=retryable,
                 )
             )
-        updated_jobs = await self.repository.finish_agent_executions(
-            finishes
-        )
+        with primary_step("finish_jobs"):
+            updated_jobs = await self.repository.finish_agent_executions(finishes)
         for updated in updated_jobs:
             if updated.status in {"COMPLETED", "DEAD_LETTER"}:
                 self._notify_completion(updated.execution_id)
@@ -1243,7 +1270,12 @@ class AgentRuntime:
     ) -> None:
         if self._event_bus is None or not publications:
             return
-        await self._event_bus.publish_many(publications)
+        event_type = publications[0].event_type
+        stage = ("requested_events" if event_type == EventTypes.AGENT_REQUESTED
+                 else "started_events" if event_type == EventTypes.AGENT_STARTED
+                 else "terminal_events")
+        with primary_step(stage):
+            await self._event_bus.publish_many(publications)
 
     @staticmethod
     def _event_publication(

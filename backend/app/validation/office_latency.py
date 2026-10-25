@@ -56,7 +56,9 @@ async def benchmark_sample(*, enabled, runner, primary_runner):
             collector._client = client
     await context.state_machine.transition(SystemState.INITIALIZING, reason="benchmark", actor="isolated-fixture")
     await context.state_machine.transition(SystemState.PAPER, reason="benchmark", actor="isolated-fixture")
+    initialize_started = time.perf_counter()
     await context.agent_runtime.initialize()
+    initialization_ms = (time.perf_counter() - initialize_started) * 1000
     context.market_connected = True
     trust_fixture_clock(context)
     now = utcnow()
@@ -88,6 +90,7 @@ async def benchmark_sample(*, enabled, runner, primary_runner):
         assert all(j.status == "COMPLETED" for j in jobs)
         assert not any(j.output.status in {AgentStatus.FAILED, AgentStatus.TIMEOUT} for j in jobs)
         return {"critical_ms": critical_ms, "analytical_completion_ms": completion_ms,
+            "runtime_initialization_ms": initialization_ms,
             "jobs_at_order": agents_at_decision, "completed_jobs": len(jobs),
             "paper_orders": 1, "risk_and_oms_verified": True}
     finally:
@@ -123,6 +126,7 @@ async def compare(samples=40):
             "provider_http": "MockTransport 503", "durable_database": False,
             "hardware": "same local execution host; paired alternating trials"},
         "limitations": ["Not hosted staging measurements; no post-deploy claim",
+            "Critical timer starts after initialization; reserved process warmup is reported separately",
             "Local percentiles cannot be subtracted from the hosted 92s mean",
             "Finite small sample; P99 is exploratory, not a latency SLO",
             "Synthetic PAPER fills do not demonstrate financial performance"],

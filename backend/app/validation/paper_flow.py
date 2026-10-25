@@ -20,12 +20,13 @@ from app.schemas.market import Candle
 from app.schemas.decisions import Decision
 from app.core.errors import RiskError
 from app.office.scheduler import shadow_correlation
+from app.office.profiling import safe_primary_profile
 
 
 class PaperFlowValidationError(RuntimeError):
     """Export only fixed checkpoint/error codes, never exception payloads."""
 
-    def __init__(self, failures, elapsed_ms):
+    def __init__(self, failures, elapsed_ms, *, primary_profile=None, cycle_stages=None):
         super().__init__("PAPER decision cycle did not complete")
         self.validation_stage = "decision_cycle"
         known = {"PRIMARY_DEADLINE_EXCEEDED", "CLOCK_UNTRUSTED", "DATA_QUALITY_ERROR",
@@ -33,6 +34,23 @@ class PaperFlowValidationError(RuntimeError):
         self.validation_error_codes = sorted({item.get("error") if item.get("error") in known
                                                else "OTHER" for item in failures})
         self.validation_elapsed_ms = round(elapsed_ms, 3)
+        self.primary_profile = safe_primary_profile(primary_profile)
+        allowed_stages = ("pre_agent", "agent_runtime", "decision_engine", "decision_persistence", "risk", "execution")
+        from math import isfinite
+        self.cycle_stages_ms = {key: round(value, 3) for key, value in (cycle_stages or {}).items()
+            if key in allowed_stages and type(value) in (int, float) and 0 <= value <= 1e12 and isfinite(value)}
+
+
+def fresh_fixture_close(candle: Candle, previous: Candle) -> Candle:
+    """Emit the synthetic close after setup, using the actual wall clock.
+
+    History remains unchanged. Setup must still fit a normal 15m interval;
+    runtime freshness, trusted clock, risk and OMS use their real limits.
+    """
+    now = datetime.now(timezone.utc)
+    if not 0 < (now - previous.closed_at).total_seconds() <= 900 * 1.5:
+        raise RuntimeError("PAPER_FIXTURE_PREPARATION_EXCEEDED_INTERVAL")
+    return candle.model_copy(update={"closed_at": now, "received_at": now})
 
 
 def trust_fixture_clock(context):
@@ -66,15 +84,23 @@ async def validate_full_paper_flow(settings: Settings, direction: int, expected_
             ))
         assert await context.orchestrator.on_candle_closed(candles[-1]) is None
         assert not context.paper_engine.open_orders
-        trust_fixture_clock(context)
+        preparation_started = time.monotonic()
         for candle in candles[:-1]:
             context.candle_store.add(candle)
         await context.repository.save_candles(candles[:-1])
+        candles[-1] = fresh_fixture_close(candles[-1], candles[-2])
+        trust_fixture_clock(context)
+        preparation_ms = (time.monotonic() - preparation_started) * 1000
+        previous_failures = len(context.orchestrator.failures)
         decision_started = time.monotonic()
         decision = await context.orchestrator.on_candle_closed(candles[-1])
         decision_elapsed_ms = (time.monotonic() - decision_started) * 1000
         if decision is None:
-            raise PaperFlowValidationError(list(context.orchestrator.failures), decision_elapsed_ms)
+            raise PaperFlowValidationError(list(context.orchestrator.failures)[previous_failures:], decision_elapsed_ms,
+                primary_profile=context.agent_runtime.last_primary_profile,
+                cycle_stages=context.orchestrator.last_cycle_stages_ms)
+        primary_profile = safe_primary_profile(context.agent_runtime.last_primary_profile)
+        cycle_stages = dict(context.orchestrator.last_cycle_stages_ms)
         assert decision.candidate_action.value == expected_side, decision.model_dump()
         assert decision.risk_status.value in {"APPROVED", "REDUCED"}, decision.model_dump()
         assert len(context.paper_engine.open_orders) == 1
@@ -154,6 +180,8 @@ async def validate_full_paper_flow(settings: Settings, direction: int, expected_
         "pnl": closed.pnl, "balance": balance, "registered_agents": 300,
         "completed_agent_jobs": sum(job.status == "COMPLETED" for job in jobs),
         "decision_elapsed_ms": round(decision_elapsed_ms, 3),
+        "fixture_preparation_ms": round(preparation_ms, 3),
+        "primary_profile": primary_profile, "cycle_stages_ms": cycle_stages,
         "primary_reserved_worker_verified": bool(primary_workers),
         "shadow_dependency_skips": sum(job.output is not None and job.output.status.value == "SKIPPED" for job in jobs),
         "open_restart_verified": True, "closed_restart_verified": True,

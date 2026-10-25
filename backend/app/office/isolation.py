@@ -47,6 +47,9 @@ def _process_loop(pipe):
             agent, agent_input = pipe.recv()
         except EOFError:
             return
+        if agent is None and agent_input is None:
+            pipe.send("office-ready-v1")
+            continue
         try:
             output = asyncio.run(agent.run(agent_input))
             pipe.send(output.model_dump_json())
@@ -68,6 +71,47 @@ class IsolatedAgentRunner:
         self._children = set()
         self.timeouts = 0
         self.closed = False
+        self.last_warmup_ms = None
+
+    async def _receive(self, slot):
+        while not slot[1].poll():
+            if not slot[0].is_alive():
+                raise RuntimeError("Agent process exited")
+            await asyncio.sleep(.002)
+        return await asyncio.to_thread(slot[1].recv)
+
+    async def warmup(self, *, timeout_seconds=5):
+        """Await one ready reserved process before trading is admitted.
+
+        Same process/slot budget as lazy startup. No agent or market analysis is
+        run. Failure/cancellation disposes the child and prevents successful boot.
+        """
+        if self.closed:
+            raise RuntimeError("Agent executor closed")
+        slot = await self._slots.get()
+        start = time.monotonic()
+        try:
+            async def ready():
+                nonlocal slot
+                if slot is None or not slot[0].is_alive():
+                    if slot is not None:
+                        await self._dispose(slot)
+                    slot = self._start()
+                await asyncio.to_thread(slot[1].send, (None, None))
+                if await self._receive(slot) != "office-ready-v1":
+                    raise RuntimeError("Agent warmup handshake failed")
+            await asyncio.wait_for(ready(), timeout=timeout_seconds)
+            self.last_warmup_ms = round((time.monotonic() - start) * 1000, 3)
+        except BaseException:
+            if slot is not None:
+                await self._dispose(slot)
+                slot = None
+            raise
+        finally:
+            if self.closed and slot is not None:
+                await self._dispose(slot)
+                slot = None
+            self._slots.put_nowait(slot)
 
     def _start(self):
         parent, child = self._context.Pipe()
@@ -136,11 +180,7 @@ class IsolatedAgentRunner:
             async def execute():
                 clone = await self._snapshot(agent, agent_input)
                 await asyncio.to_thread(slot[1].send, (clone, agent_input))
-                while not slot[1].poll():
-                    if not slot[0].is_alive():
-                        raise RuntimeError("Agent process exited")
-                    await asyncio.sleep(.002)
-                raw = await asyncio.to_thread(slot[1].recv)
+                raw = await self._receive(slot)
                 if raw is None:
                     raise RuntimeError("Agent process failed")
                 result = AgentOutput.model_validate_json(raw)

@@ -176,3 +176,63 @@ somente leitura em REPEATABLE READ, com isolamento limitado à conexão dessa
 operação e restaurado ao devolver a conexão ao pool. Um teste nativo força o
 commit exatamente entre os SELECTs e verifica o snapshot anterior coerente e
 o resultado completo numa leitura posterior. Nenhuma invariante é relaxada.
+
+## Redução de persistência após o segundo pré-deploy
+
+O candidato `aeeb1c7` aprovou os dois esquemas isolados, mas a tentativa nativa
+`b8d5c759-6bf1-4cc1-aa10-fa2b074392d8` reprovou com
+`PRIMARY_DEADLINE_EXCEEDED`: etapa de 3 s, ciclo total de 8.464,779 ms.
+Job/backend em Europa, PostgreSQL recuperado em SFO; 39 amostras de rede
+indicaram 140–155 ms. Isso não é latência SQL nem percentil de decisão.
+O backend permanece em `044839f`; a validação operacional continua pendente.
+
+As alterações seguintes preservam os mesmos limites e componentes:
+
+- Novos jobs PRIMARY já nascem com lease e INPUT na mesma transação. Em
+  PostgreSQL, um CTE INSERT/RETURNING encadeia a inserção do job e de sua memória
+  em um comando. ON CONFLICT não altera jobs antigos, donos, tentativas ou
+  memórias. Jobs existentes/retries continuam pelo claim explícito com locks.
+- Inserções de memórias, tentativas e outputs são agrupadas sem buscar IDs
+  gerados que o chamador não utiliza. Validação de propriedade, contagem de
+  tentativas, locks, constraints e commit atômico permanecem obrigatórios.
+- O processo PRIMARY reservado responde a um handshake no startup, antes de
+  o estado operacional aceitar decisões. Usa o mesmo único slot, sem executar
+  agentes ou criar réplicas. Startup tem limite separado de 5 s; o lote crítico
+  continua limitado a 3 s, incluindo uma reposição necessária após falha.
+  Falha/cancelamento do aquecimento encerra o filho e impede boot bem-sucedido.
+- Cada etapa PRIMARY exporta tempo, comandos SQLAlchemy, checkouts e chamadas
+  de commit. O contexto é isolado dos workers SHADOW. Não são registrados SQL,
+  argumentos, URLs ou erros livres; falhas preservam a etapa cancelada. Esses
+  contadores não incluem handshake/BEGIN/pre-ping nem equivalem a round trips.
+- A fixture positiva emite seu candle sintético com o relógio real após o
+  preparo do histórico e o teste negativo. Não modifica o histórico, usa os
+  mesmos limites operacionais de frescor e recusa preparo que criaria um gap.
+  O erro positivo não inclui mais o CLOCK_UNTRUSTED esperado do teste anterior.
+
+Reprodução local do perfil de persistência, sem conexão hospedada:
+
+```bash
+python -m app.validation.primary_persistence --samples 10 --delay-ms 140 --output primary.json
+```
+
+Essa fixture usa SQLite temporário, transporte Redis falso e três PRIMARY
+determinísticos. O atraso é um await controlado por comando SQL e commit, não
+uma emulação exata de PostgreSQL remoto. Não executa risco, OMS ou ordens. Em
+cinco amostras exploratórias antes/depois, a etapa final caiu de 13 para 6
+comandos SQL, o total de 27 para 16 e as transações de 9 para 8. Com 140 ms
+injetados, o tempo caiu aproximadamente de 5,33 para 3,16 s. **O resultado ainda
+não certifica o prazo de 3 s.** O CTE específico PostgreSQL não participa dessa
+medição SQLite. O benchmark de 300 agentes continua separado e agora informa
+explicitamente o tempo de inicialização, fora do temporizador da decisão.
+
+Testes adicionais cobrem reserva idempotente concorrente, dono preexistente,
+rollback entre job/INPUT e entre tentativas/memórias/outputs, startup e seu
+cancelamento, isolamento dos contadores e diagnóstico sem credenciais. Os
+cenários de claims também rodam em PostgreSQL 17 local quando o CI fornece
+POSTGRES_TEST_URL; hosts remotos são recusados. Nenhuma migração foi criada.
+
+Antes de novo deploy, exigir CI completo e revisar o perfil. Publicar o job
+isolado ou o backend continua sujeito à autorização específica; não mover
+regiões/volumes nem ampliar recursos para encobrir o gargalo. Se o orçamento
+continuar inviável no perfil nativo, discutir a topologia com evidência em vez
+de aumentar silenciosamente timeout ou validade. Fase C continua bloqueada.

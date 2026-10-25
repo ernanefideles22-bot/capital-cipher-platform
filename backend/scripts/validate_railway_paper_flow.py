@@ -252,7 +252,8 @@ def failure_report(exc: Exception) -> dict:
     from app.validation.paper_flow import PaperFlowValidationError
     if isinstance(exc, PaperFlowValidationError):
         report.update(stage=exc.validation_stage, error_codes=exc.validation_error_codes,
-                      elapsed_ms=exc.validation_elapsed_ms)
+                      elapsed_ms=exc.validation_elapsed_ms,
+                      primary_profile=exc.primary_profile, cycle_stages_ms=exc.cycle_stages_ms)
     return report
 
 

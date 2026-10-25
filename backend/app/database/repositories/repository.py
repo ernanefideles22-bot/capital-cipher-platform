@@ -13,7 +13,7 @@ from typing import Any
 from uuid import uuid4
 
 from pydantic import ValidationError as PydanticValidationError
-from sqlalchemy import and_, case, func, or_, select, tuple_, update
+from sqlalchemy import and_, case, func, insert, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -75,6 +75,8 @@ from app.database.models import (
     ReleaseGateDecisionModel,
 )
 from app.database.session import Database
+from app.database.repositories.primary_cohort import insert_primary_inputs
+from app.office.claims import leased_primary_submissions
 from app.market_data.identity import candle_event_id
 from app.schemas.agents import (
     AgentExecutionAttempt,
@@ -232,6 +234,21 @@ def _spot_base_asset(symbol: str) -> str | None:
             base_asset = normalized[: -len(quote_asset)]
             return base_asset or None
     return None
+
+
+async def _append_agent_rows(session, model, rows):
+    """Append a cohort without fetching unused generated row identifiers.
+
+    The caller's transaction/locks own atomicity. No upsert, evidence mutation
+    or commit occurs here; all constraints, RLS and immutability guards remain.
+    """
+    if rows:
+        values = [{column.key: getattr(row, column.key)
+                   for column in model.__table__.columns
+                   if getattr(row, column.key) is not None or not column.primary_key}
+                  for row in rows]
+        with session.no_autoflush:
+            await session.execute(insert(model.__table__).values(values))
 
 
 class Repository:
@@ -1985,8 +2002,16 @@ class Repository:
     async def create_agent_executions(
         self,
         submissions: list[tuple[AgentExecutionJob, AgentMemoryEntry]],
+        *, claim_new_primary_by: str | None = None, lease_seconds: int = 30,
     ) -> list[AgentExecutionJob]:
-        """Create a cohort and its input memories in one transaction."""
+        """Create inputs and optionally reserve fresh PRIMARY rows atomically.
+
+        ON CONFLICT preserves pre-existing leases and attempts. Those rows still
+        use the normal explicit scoped claim/recovery path; only new rows skip
+        the separate SELECT/UPDATE/commit reservation transaction.
+        """
+
+        submissions = leased_primary_submissions(submissions, claim_new_primary_by, lease_seconds)
 
         if not submissions:
             return []
@@ -2036,7 +2061,12 @@ class Repository:
                     AgentExecutionJobModel
                 )
                 inserted_ids: set[str] = set()
-                if insert_statement is not None:
+                primary_statement = claim_new_primary_by is not None and self._db.engine.dialect.name == "postgresql"
+                if primary_statement:
+                    inserted_ids = set(await session.scalars(insert_primary_inputs(
+                        [job_values(job) for job, _ in submissions],
+                        [memory for _, memory in submissions])))
+                elif insert_statement is not None:
                     inserted_ids = set(
                         await session.scalars(
                             insert_statement.values(
@@ -2071,9 +2101,9 @@ class Repository:
                 memories = {
                     job.execution_id: input_memory
                     for job, input_memory in submissions
-                    if job.execution_id in inserted_ids
+                    if job.execution_id in inserted_ids and not primary_statement
                 }
-                session.add_all(
+                await _append_agent_rows(session, AgentMemoryEntryModel,
                     [
                         AgentMemoryEntryModel(
                             execution_id=memory.execution_id,
@@ -2385,6 +2415,7 @@ class Repository:
                             "Agent attempts are not append-only"
                         )
 
+                evidence = {AgentExecutionAttemptModel: [], AgentMemoryEntryModel: [], AgentOutputModel: []}
                 for finish in finishes:
                     attempt = finish.attempt
                     output = finish.output
@@ -2392,7 +2423,7 @@ class Repository:
                     attempt_memory = finish.attempt_memory
                     terminal_memory = finish.terminal_memory
 
-                    session.add(
+                    evidence[AgentExecutionAttemptModel].append(
                         AgentExecutionAttemptModel(
                             execution_id=attempt.execution_id,
                             schema_version=attempt.schema_version,
@@ -2405,7 +2436,7 @@ class Repository:
                             completed_at=attempt.completed_at,
                         )
                     )
-                    session.add(
+                    evidence[AgentMemoryEntryModel].append(
                         AgentMemoryEntryModel(
                             execution_id=attempt_memory.execution_id,
                             schema_version=attempt_memory.schema_version,
@@ -2464,7 +2495,7 @@ class Repository:
                             raise RuntimeError(
                                 "Terminal agent memory is inconsistent"
                             )
-                        session.add(
+                        evidence[AgentMemoryEntryModel].append(
                             AgentMemoryEntryModel(
                                 execution_id=(
                                     terminal_memory.execution_id
@@ -2481,7 +2512,7 @@ class Repository:
                                 created_at=terminal_memory.created_at,
                             )
                         )
-                        session.add(
+                        evidence[AgentOutputModel].append(
                             AgentOutputModel(
                                 correlation_id=row.correlation_id,
                                 agent_name=row.agent_name,
@@ -2500,6 +2531,8 @@ class Repository:
                             "Retrying execution cannot append "
                             "terminal memory"
                         )
+                for model, appended in evidence.items():
+                    await _append_agent_rows(session, model, appended)
                 await session.flush()
                 return [
                     self._agent_execution_job_from_row(

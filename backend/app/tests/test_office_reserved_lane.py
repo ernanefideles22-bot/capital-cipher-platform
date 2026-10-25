@@ -1,5 +1,6 @@
 """Reproduce the hosted PRIMARY/analytical-worker race on both repositories."""
 import asyncio
+import os
 
 import pytest
 
@@ -23,13 +24,37 @@ class InlineRunner:
         return await agent.run(agent_input)
 
 
-@pytest.fixture(params=["memory", "sqlite"])
+@pytest.fixture(params=["memory", "sqlite", pytest.param("postgres",
+    marks=pytest.mark.skipif(not os.environ.get("POSTGRES_TEST_URL"), reason="POSTGRES_TEST_URL is not configured"))])
 async def lanes(request, tmp_path):
     database = None
     repository = None
     if request.param == "sqlite":
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'lanes.db'}")
         await database.create_all()
+        repository = Repository(database)
+    elif request.param == "postgres":
+        import asyncpg
+        from pathlib import Path
+        from urllib.parse import urlsplit, urlunsplit
+        from uuid import uuid4
+        url = urlsplit(os.environ["POSTGRES_TEST_URL"].replace("postgresql+asyncpg://", "postgresql://"))
+        assert url.hostname in {"localhost", "127.0.0.1", "::1"}, "CI fixture refuses hosted databases"
+        name = "capital_cipher_paper_validation_" + uuid4().hex[:12] + "_flow"
+        control = await asyncpg.connect(urlunsplit(url))
+        try:
+            assert int(await control.fetchval("show server_version_num")) // 10000 == 17
+            await control.execute(f'create database "{name}" template template0')
+        finally:
+            await control.close()
+        target = urlunsplit(url._replace(path="/" + name))
+        connection = await asyncpg.connect(target)
+        try:
+            for migration in sorted((Path(__file__).resolve().parents[3] / "supabase/migrations").glob("*.sql")):
+                await connection.execute(migration.read_text())
+        finally:
+            await connection.close()
+        database = Database(target.replace("postgresql://", "postgresql+asyncpg://"), pool_size=4)
         repository = Repository(database)
     agents = []
     for name, role in [("PrimaryA", "PRIMARY"), ("PrimaryB", "PRIMARY"),
@@ -123,3 +148,76 @@ async def test_expired_primary_lease_recovers_without_analytical_worker(lanes):
         trace = await runtime.trace(job.execution_id)
         assert trace.job.status == "COMPLETED" and len(trace.attempts) == 1
         assert trace.attempts[0].worker_id.startswith("office-primary-")
+
+
+async def test_fresh_primary_commits_input_with_lease_without_a_second_claim(lanes, monkeypatch):
+    runtime, requests = lanes
+    async def forbidden(**kwargs):
+        raise AssertionError("New PRIMARY must not incur another claim transaction")
+    monkeypatch.setattr(runtime.repository, "claim_next_agent_executions", forbidden)
+    outputs = await runtime.execute_primary(requests[:3])
+    assert len(outputs) == 3
+    profile = runtime.last_primary_profile
+    assert "claim_jobs" not in profile["stages"]
+    if isinstance(runtime.repository, Repository):
+        # Performance budget on actual DB statements, without generated-id reads.
+        assert profile["stages"]["create_jobs"]["sql_statements"] <= 2
+        assert profile["stages"]["finish_jobs"]["sql_statements"] <= 6
+    for job in await runtime.list_jobs():
+        trace = await runtime.trace(job.execution_id)
+        assert job.status == "COMPLETED" and len(trace.attempts) == 1 and len(trace.memory) == 3
+
+
+async def test_reservation_does_not_overwrite_another_primary_owner(lanes):
+    runtime, requests = lanes
+    prepared = [runtime._prepare_submission(r) for r in requests[:3]]
+    first = await runtime.repository.create_agent_executions(prepared,
+        claim_new_primary_by="office-primary-existing", lease_seconds=30)
+    again = await runtime.repository.create_agent_executions(prepared,
+        claim_new_primary_by="office-primary-second", lease_seconds=30)
+    assert all(job.leased_by == "office-primary-existing" and job.attempt_count == 1 for job in again)
+    await runtime.execute_claimed_many(first, worker_id="office-primary-existing")
+    assert len(await runtime.execute_primary(requests[:3])) == 3
+    for job in await runtime.list_jobs():
+        assert len((await runtime.trace(job.execution_id)).attempts) == 1
+
+
+async def test_duplicate_requests_in_new_reserved_batch_remain_one_attempt(lanes):
+    runtime, requests = lanes
+    outputs = await runtime.execute_primary([requests[0], requests[0]])
+    assert len(outputs) == 2 and outputs[0] == outputs[1]
+    job, = await runtime.list_jobs()
+    trace = await runtime.trace(job.execution_id)
+    assert len(trace.attempts) == 1 and len(trace.memory) == 3
+
+
+@pytest.mark.parametrize("phase", ["input", "output"])
+async def test_sql_failure_rolls_back_reserved_input_and_terminal_evidence(lanes, phase):
+    from sqlalchemy import event
+    from app.core.errors import DatabaseError
+    runtime, requests = lanes
+    if not isinstance(runtime.repository, Repository):
+        pytest.skip("SQL rollback case")
+    engine = runtime.repository._db.engine.sync_engine
+    table = "agent_memory_entries" if phase == "input" else "agent_outputs"
+    def fail(conn, cursor, statement, parameters, execution_context, executemany):
+        compiled = execution_context.compiled
+        if compiled is not None and compiled.isinsert and compiled.statement.table.name == table:
+            raise RuntimeError("Controlled SQL failure")
+    event.listen(engine, "before_cursor_execute", fail)
+    try:
+        with pytest.raises(DatabaseError):
+            await runtime.execute_primary(requests[:3])
+    finally:
+        event.remove(engine, "before_cursor_execute", fail)
+    jobs = await runtime.list_jobs()
+    if phase == "input":
+        assert not jobs
+    else:
+        assert len(jobs) == 3
+        for job in jobs:
+            trace = await runtime.trace(job.execution_id)
+            assert job.status == "LEASED" and job.attempt_count == 1
+            assert not trace.attempts and len(trace.memory) == 1
+        await runtime.execute_claimed_many(jobs, worker_id=jobs[0].leased_by)
+        assert all([len((await runtime.trace(job.execution_id)).attempts) == 1 for job in jobs])
