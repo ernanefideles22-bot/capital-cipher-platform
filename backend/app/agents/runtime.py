@@ -638,6 +638,15 @@ class AgentRuntime:
         requests: list[AgentExecutionRequest],
         *, _primary_worker_id: str | None = None,
     ) -> list[AgentExecutionJob]:
+        jobs = await self._create_submissions(requests, _primary_worker_id=_primary_worker_id)
+        await self._publish_many(self._requested_publications(jobs, _primary_worker_id))
+        return jobs
+
+    async def _create_submissions(
+        self,
+        requests: list[AgentExecutionRequest],
+        *, _primary_worker_id: str | None = None,
+    ) -> list[AgentExecutionJob]:
         submissions = [
             self._prepare_submission(request) for request in requests
         ]
@@ -645,29 +654,29 @@ class AgentRuntime:
             reservation = ({"claim_new_primary_by": _primary_worker_id,
                             "lease_seconds": self._lease_seconds} if _primary_worker_id else {})
             jobs = await self.repository.create_agent_executions(submissions, **reservation)
+        return jobs
+
+    def _requested_publications(
+        self, jobs: list[AgentExecutionJob], primary_worker_id: str | None = None,
+    ) -> list[EventPublication]:
         unique_jobs = list(
             {
                 job.execution_id: job
                 for job in jobs
             }.values()
         )
-        await self._publish_many(
-            [
-                self._event_publication(
-                    EventTypes.AGENT_REQUESTED,
-                    job.model_copy(update={"status": "PENDING", "attempt_count": 0,
-                        "leased_by": None, "lease_expires_at": None})
-                    if _primary_worker_id and job.leased_by == _primary_worker_id else job,
-                    event_id=agent_lifecycle_event_id(
-                        job.execution_id,
-                        EventTypes.AGENT_REQUESTED,
-                        0,
-                    ),
-                )
-                for job in unique_jobs
-            ]
-        )
-        return jobs
+        return [
+            self._event_publication(
+                EventTypes.AGENT_REQUESTED,
+                job.model_copy(update={"status": "PENDING", "attempt_count": 0,
+                    "leased_by": None, "lease_expires_at": None})
+                if primary_worker_id else job,
+                event_id=agent_lifecycle_event_id(
+                    job.execution_id, EventTypes.AGENT_REQUESTED, 0,
+                ),
+            )
+            for job in unique_jobs
+        ]
 
     async def enqueue(
         self,
@@ -800,11 +809,17 @@ class AgentRuntime:
         if any(self.registry.get(r.input.agent_name).decision_role != "PRIMARY" for r in requests):
             raise ValidationError("Reserved lane only accepts PRIMARY agents")
         worker_id = self._worker_id("office-primary")
-        jobs = await self.submit_many(requests, _primary_worker_id=worker_id)
+        jobs = await self._create_submissions(requests, _primary_worker_id=worker_id)
+        requested = self._requested_publications(jobs, worker_id)
         # Fresh jobs and their INPUT memory committed together with this lease.
         # Idempotent existing rows retain their owner, status and attempt count.
         claimed = list({job.execution_id: job for job in jobs
                         if job.status == "LEASED" and job.leased_by == worker_id}.values())
+        if not claimed:
+            # Existing jobs keep their original owner/retry path. Public submit
+            # semantics remain unchanged, including terminal idempotent calls.
+            await self._publish_many(requested)
+            requested = []
         terminal = {job.execution_id: job for job in jobs
                     if job.status in {"COMPLETED", "DEAD_LETTER"}}
         pending = {job.execution_id for job in jobs} - terminal.keys()
@@ -815,7 +830,12 @@ class AgentRuntime:
                         worker_id=worker_id, lease_seconds=self._lease_seconds,
                         limit=len(pending), execution_ids=sorted(pending), decision_role="PRIMARY",
                     )
-            updated = await self.execute_claimed_many(claimed, worker_id=worker_id)
+            # Both lifecycle records must be durable, broker-acknowledged and
+            # confirmed before analysis. One ordered batch removes a redundant
+            # journal/confirmation transaction pair for the newly owned cohort.
+            updated = await self.execute_claimed_many(claimed, worker_id=worker_id,
+                                                      _before_started=requested)
+            requested = []
             claimed = []
             for job in updated:
                 if job.status in {"COMPLETED", "DEAD_LETTER"}:
@@ -1040,6 +1060,7 @@ class AgentRuntime:
         jobs: list[AgentExecutionJob],
         *,
         worker_id: str,
+        _before_started: list[EventPublication] | None = None,
     ) -> list[AgentExecutionJob]:
         """Run and durably acknowledge a small leased job cohort."""
 
@@ -1059,7 +1080,7 @@ class AgentRuntime:
             if agent is not None and unavailable_output is None
         ]
         await self._publish_many(
-            [
+            list(_before_started or []) + [
                 self._event_publication(
                     EventTypes.AGENT_STARTED,
                     job,
@@ -1271,7 +1292,9 @@ class AgentRuntime:
         if self._event_bus is None or not publications:
             return
         event_type = publications[0].event_type
-        stage = ("requested_events" if event_type == EventTypes.AGENT_REQUESTED
+        types = {publication.event_type for publication in publications}
+        stage = ("admission_events" if types == {EventTypes.AGENT_REQUESTED, EventTypes.AGENT_STARTED}
+                 else "requested_events" if event_type == EventTypes.AGENT_REQUESTED
                  else "started_events" if event_type == EventTypes.AGENT_STARTED
                  else "terminal_events")
         with primary_step(stage):

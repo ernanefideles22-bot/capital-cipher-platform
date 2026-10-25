@@ -10,11 +10,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import OrderedDict, defaultdict
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
 from app.core.journal import JournalWriteResult
+from app.office.profiling import primary_publication_step
 from app.core.logging import ServiceLogger
 from app.core.payload_security import ensure_payload_has_no_secrets
 from app.core.publication import PublicationCoordinator
@@ -260,9 +262,10 @@ class EventBus:
         if not active:
             return messages
 
-        async with self._publication_coordinator.hold_many(
-            [message.event_id for message in active]
-        ):
+        async with AsyncExitStack() as stack:
+            with primary_publication_step("lock_wait"):
+                await stack.enter_async_context(self._publication_coordinator.hold_many(
+                    [message.event_id for message in active]))
             active = [
                 message
                 for message in active
@@ -274,16 +277,17 @@ class EventBus:
             journal_results: dict[
                 str, bool | JournalWriteResult | None
             ] = {}
-            if self._journal_many is not None:
-                journal_results = await self._journal_many(active)
-            elif self._journal is not None:
-                results = await asyncio.gather(
-                    *(self._journal(message) for message in active)
-                )
-                journal_results = {
-                    message.event_id: result
-                    for message, result in zip(active, results, strict=True)
-                }
+            with primary_publication_step("journal"):
+                if self._journal_many is not None:
+                    journal_results = await self._journal_many(active)
+                elif self._journal is not None:
+                    results = await asyncio.gather(
+                        *(self._journal(message) for message in active)
+                    )
+                    journal_results = {
+                        message.event_id: result
+                        for message, result in zip(active, results, strict=True)
+                    }
 
             to_transport: list[BusMessage] = []
             for message in active:
@@ -306,61 +310,67 @@ class EventBus:
 
             if self._transport is not None and to_transport:
                 try:
-                    publish_many = getattr(
-                        self._transport,
-                        "publish_many",
-                        None,
-                    )
-                    if publish_many is None:
-                        broker_ids = await asyncio.gather(
-                            *(
-                                self._transport.publish(message)
-                                for message in to_transport
+                    with primary_publication_step("broker"):
+                        publish_many = getattr(
+                            self._transport,
+                            "publish_many",
+                            None,
+                        )
+                        if publish_many is None:
+                            broker_ids = await asyncio.gather(
+                                *(
+                                    self._transport.publish(message)
+                                    for message in to_transport
+                                )
                             )
-                        )
-                    else:
-                        broker_ids = await publish_many(to_transport)
-                    if len(broker_ids) != len(to_transport):
-                        raise RuntimeError(
-                            "Broker batch result length mismatch"
-                        )
-                    published = [
-                        (message.event_id, broker_id)
-                        for message, broker_id in zip(
-                            to_transport,
-                            broker_ids,
-                            strict=True,
-                        )
-                    ]
-                    if self._mark_published_many is not None:
-                        await self._mark_published_many(published)
-                    elif self._mark_published is not None:
-                        await asyncio.gather(
-                            *(
-                                self._mark_published(event_id, broker_id)
-                                for event_id, broker_id in published
+                        else:
+                            broker_ids = await publish_many(to_transport)
+                        if len(broker_ids) != len(to_transport):
+                            raise RuntimeError(
+                                "Broker batch result length mismatch"
                             )
-                        )
+                        published = [
+                            (message.event_id, broker_id)
+                            for message, broker_id in zip(
+                                to_transport,
+                                broker_ids,
+                                strict=True,
+                            )
+                        ]
+
+                    with primary_publication_step("confirmation"):
+                        if self._mark_published_many is not None:
+                            await self._mark_published_many(published)
+                        elif self._mark_published is not None:
+                            await asyncio.gather(
+                                *(
+                                    self._mark_published(event_id, broker_id)
+                                    for event_id, broker_id in published
+                                )
+                            )
+
                 except Exception as exc:
                     event_ids = [
                         message.event_id for message in to_transport
                     ]
                     try:
-                        if self._mark_failed_many is not None:
-                            await self._mark_failed_many(
-                                event_ids,
-                                type(exc).__name__,
-                            )
-                        elif self._mark_failed is not None:
-                            await asyncio.gather(
-                                *(
-                                    self._mark_failed(
-                                        event_id,
-                                        type(exc).__name__,
-                                    )
-                                    for event_id in event_ids
+                        with primary_publication_step("failure_record"):
+                            if self._mark_failed_many is not None:
+                                await self._mark_failed_many(
+                                    event_ids,
+                                    type(exc).__name__,
                                 )
-                            )
+                            elif self._mark_failed is not None:
+                                await asyncio.gather(
+                                    *(
+                                        self._mark_failed(
+                                            event_id,
+                                            type(exc).__name__,
+                                        )
+                                        for event_id in event_ids
+                                    )
+                                )
+
                     except Exception:
                         logging.getLogger("message_bus").exception(
                             "Failed to record broker batch publish failure"
@@ -380,22 +390,24 @@ class EventBus:
             for message in deliver:
                 self._remember(message.event_id)
 
-        for message in deliver:
-            for handler in self._subscribers.get(message.topic, []):
-                try:
-                    await handler(message)
-                except Exception:
-                    logger.error(
-                        f"Handler failed for topic {message.topic}",
-                        event_type="BUS_HANDLER_FAILED",
-                        correlation_id=message.correlation_id,
-                        metadata={
-                            "topic": message.topic,
-                            "event_type_failed": message.event_type,
-                        },
-                        exc_info=True,
-                    )
-                    await self._to_dead_letter(message)
+        with primary_publication_step("delivery"):
+            for message in deliver:
+                for handler in self._subscribers.get(message.topic, []):
+                    try:
+                        await handler(message)
+                    except Exception:
+                        logger.error(
+                            f"Handler failed for topic {message.topic}",
+                            event_type="BUS_HANDLER_FAILED",
+                            correlation_id=message.correlation_id,
+                            metadata={
+                                "topic": message.topic,
+                                "event_type_failed": message.event_type,
+                            },
+                            exc_info=True,
+                        )
+                        await self._to_dead_letter(message)
+
         return messages
 
     async def _to_dead_letter(self, message: BusMessage) -> None:

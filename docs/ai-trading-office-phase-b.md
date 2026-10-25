@@ -236,3 +236,62 @@ isolado ou o backend continua sujeito à autorização específica; não mover
 regiões/volumes nem ampliar recursos para encobrir o gargalo. Se o orçamento
 continuar inviável no perfil nativo, discutir a topologia com evidência em vez
 de aumentar silenciosamente timeout ou validade. Fase C continua bloqueada.
+
+## Publicação agrupada após o perfil hospedado de 25/10/2026
+
+O candidato `9083c8d` foi executado no job de auditoria, deployment
+`227a630a-4f20-4de1-9285-091f23dbe149`. Os dois esquemas passaram pelas 15
+migrações, mas a análise nem chegou a iniciar: `create_jobs` levou 1.060,883 ms
+e `requested_events` foi cancelado após outros 2.560,707 ms. O perfil PRIMARY
+totalizou 3.622,742 ms incluindo limpeza de cancelamento, com prazo de admissão
+inalterado de três segundos. Não foi observada uma ordem PAPER esperada nem
+foi certificada a conclusão dos 300 agentes. Banco recuperado em SFO e job em
+Europa continuam sendo um risco material; não atribuir a falha a SHADOW sem
+evidência. A versão publicada do backend continua `044839f`.
+
+Para um lote PRIMARY recém-reservado, REQUESTED e STARTED agora são publicados
+no mesmo lote ordenado antes da análise. Os três eventos REQUESTED mantêm o
+estado lógico PENDING/attempt 0, inclusive se um chamador concorrente encontrar
+uma lease já reservada. Os três STARTED mantêm LEASED e a tentativa vigente.
+Cada evento conserva seu ID determinístico, tópico e registro imutável.
+Journal, confirmação do broker e gravação do outbox continuam obrigatórios.
+Não se posterga auditoria para depois de uma ordem. A etapa de conclusão ainda
+publica seus três eventos, para um total de nove eventos em uma execução normal.
+Falha em qualquer confirmação impede análise e a admissão de ordem. A lease e
+o INPUT duráveis continuam disponíveis para retomada idempotente. Retomar uma
+lease expirada mantém o número de tentativa não concluída conforme a semântica
+existente, e não cria outra tentativa nem altera o INPUT.
+
+A API pública `submit_many` continua publicando REQUESTED antes de retornar;
+claims de jobs existentes e o caminho legado conservam sua sequência anterior.
+A otimização é limitada ao lote novo que a via PRIMARY já possui. Não altera
+filas SHADOW, OMS, risco, migrações, esquema, banco/Redis, pool ou prazos.
+
+O perfil agora separa, dentro de cada publicação, espera pelo coordenador,
+journal, broker, confirmação, registro de falha e entrega local. Tempos e
+contadores SQL são preservados se uma parte for cancelada. Nomes/campos são
+fixos; nenhum SQL, payload, credencial ou erro livre é exportado. A duração do
+journal/confirmation inclui espera pelo pool, comandos, commit e limpeza; o
+contador de checkout não mede isoladamente o tempo de espera por conexão.
+As partes são subdivisões da etapa; não somá-las novamente ao tempo da etapa.
+Essas medidas só representam Railway quando o novo código for executado lá.
+
+Uma comparação local sequencial, dez amostras antes e dez depois, três PRIMARY
+determinísticos, SQLite temporário, transporte falso e 140 ms por comando SQL
+e chamada de commit, encontrou:
+
+| Persistência do lote | Antes (`9083c8d`) | Publicação agrupada |
+|---|---:|---:|
+| P50 | 3.149,172 ms | 2.581,086 ms |
+| P95 / P99 exploratórios | 3.360,979 ms | 2.620,534 ms |
+| Comandos SQLAlchemy | 14 | 12 |
+| Checkouts / chamadas de commit | 8 / 8 | 6 / 6 |
+| Eventos de ciclo de vida | 9 | 9 |
+
+Essa medição isola a persistência dos agentes: não inclui risco, OMS ou ordens,
+não usa PostgreSQL remoto nem Redis real e não certifica o prazo hospedado.
+As amostras não foram intercaladas e os percentis de cauda são exploratórios.
+O perfil base usou apenas instrumentação passiva em relação a `9083c8d`.
+Uma nova execução hospedada requer CI completo e autorização específica para o
+job; usar novos nomes de cópias para a revisão nova, preservando as anteriores.
+Publicar o backend continua exigindo validação satisfatória e aprovação própria.

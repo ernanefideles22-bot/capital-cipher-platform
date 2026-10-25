@@ -74,6 +74,46 @@ def test_profile_redacts_unknown_fields_invalid_numbers_and_statuses():
     assert result["elapsed_ms"] == 0 and result["stages"]["create_jobs"]["sql_statements"] == 2
 
 
+def test_publication_profile_is_deep_copied_and_redacts_nested_data():
+    from app.office.profiling import primary_publication_step, record_primary_database
+    profile = PrimaryProfile()
+    with primary_profile(profile), primary_step("admission_events"):
+        with primary_publication_step("journal"):
+            record_primary_database("sql_statements")
+        snapshot = profile.snapshot()
+        with primary_publication_step("journal"):
+            record_primary_database("sql_statements")
+    assert snapshot["stages"]["admission_events"]["publication"]["journal"]["sql_statements"] == 1
+    row = profile.snapshot()["stages"]["admission_events"]
+    assert row["sql_statements"] == row["publication"]["journal"]["sql_statements"] == 2
+    row["publication"]["sensitive-url"] = {"sql_statements": 999}
+    row["publication"]["broker"] = {"elapsed_ms": float("nan"), "status": "sensitive-url", "payload": "sensitive-url"}
+    cleaned = safe_primary_profile({"stages": {"admission_events": row}})
+    assert "sensitive-url" not in json.dumps(cleaned)
+    assert cleaned["stages"]["admission_events"]["publication"]["broker"]["elapsed_ms"] == 0
+
+
+async def test_cancelled_publication_lock_wait_releases_coordinator():
+    from app.core.event_bus import EventBus, EventPublication, Topics
+    from app.core.publication import PublicationCoordinator
+    coordinator = PublicationCoordinator(max_concurrency=1)
+    bus = EventBus(publication_coordinator=coordinator)
+    publication = EventPublication(Topics.AGENT_REQUESTS, "AGENT_REQUESTED", {}, "test", "profile", "event")
+    profile = PrimaryProfile()
+    async def blocked():
+        with primary_profile(profile), primary_step("admission_events"):
+            await bus.publish_many([publication])
+    async with coordinator.hold("different-event"):
+        task = asyncio.create_task(blocked())
+        await asyncio.sleep(.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert profile.snapshot()["stages"]["admission_events"]["publication"]["lock_wait"]["status"] == "CANCELLED"
+    assert not coordinator._event_locks
+    assert len(await asyncio.wait_for(bus.publish_many([publication]), 1)) == 1
+
+
 def test_fixture_emits_positive_close_after_setup_without_mutating_history():
     from app.tests.test_office_async import candles
     from app.validation.paper_flow import fresh_fixture_close
