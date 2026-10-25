@@ -219,7 +219,7 @@ Essa fixture usa SQLite temporário, transporte Redis falso e três PRIMARY
 determinísticos. O atraso é um await controlado por comando SQL e commit, não
 uma emulação exata de PostgreSQL remoto. Não executa risco, OMS ou ordens. Em
 cinco amostras exploratórias antes/depois, a etapa final caiu de 13 para 6
-comandos SQL, o total de 27 para 16 e as transações de 9 para 8. Com 140 ms
+comandos SQL, o total de 25 para 14 e as transações de 9 para 8. Com 140 ms
 injetados, o tempo caiu aproximadamente de 5,33 para 3,16 s. **O resultado ainda
 não certifica o prazo de 3 s.** O CTE específico PostgreSQL não participa dessa
 medição SQLite. O benchmark de 300 agentes continua separado e agora informa
