@@ -13,6 +13,7 @@ Rules enforced:
 from __future__ import annotations
 
 import time
+import asyncio
 from collections import deque
 from datetime import datetime, timezone
 from typing import Any
@@ -42,6 +43,7 @@ from app.market_data.store import CandleStore
 from app.orchestrator.decision_engine import DecisionEngine
 from app.operations.resilience import DependencyName
 from app.operations.service import OperationsService
+from app.office.profiling import safe_primary_profile
 from app.paper_trading.engine import PaperTradingEngine
 from app.risk.manager import RiskManager
 from app.strategy.engine import StrategyEngine
@@ -80,6 +82,8 @@ class Orchestrator:
         weighted_consensus_service=None,
         portfolio_construction_service=None,
         operations_service: OperationsService | None = None,
+        shadow_office=None,
+        primary_timeout_seconds: float = 3,
     ) -> None:
         self._sm = state_machine
         self._bus = event_bus
@@ -98,6 +102,11 @@ class Orchestrator:
         self._weighted_consensus = weighted_consensus_service
         self._portfolio_construction = portfolio_construction_service
         self._operations = operations_service
+        self._office = shadow_office
+        self._primary_timeout = primary_timeout_seconds
+        self._cycle_lock = asyncio.Lock()
+        self._latest_primary_outputs = []
+        self.queue_latencies_ms = deque(maxlen=100)
         self.strategy_engine = strategy_engine or StrategyEngine()
         self._current_day = None
         self._agent_runtime = agent_runtime or AgentRuntime(
@@ -112,6 +121,7 @@ class Orchestrator:
         self.cycle_latencies_ms: deque[int] = deque(maxlen=100)
         self.failures: deque[dict[str, Any]] = deque(maxlen=50)
         self.pending_events: int = 0
+        self.last_cycle_stages_ms: dict[str, float] = {}
 
     # -- status ------------------------------------------------------------------
     @property
@@ -144,6 +154,10 @@ class Orchestrator:
             "avg_cycle_latency_ms": round(avg_latency, 2),
             "recent_failures": len(self.failures),
             "pending_events": self.pending_events,
+            "cycle_latency_ms": self.latency_percentiles(),
+            "last_cycle_stages_ms": dict(self.last_cycle_stages_ms),
+            "primary_profile": safe_primary_profile(self._agent_runtime.last_primary_profile),
+            "shadow_office": self._office.status() if self._office else None,
             "governance": {
                 "latest_consensus_status": (
                     consensus_items[0].status if consensus_items else None
@@ -164,11 +178,31 @@ class Orchestrator:
 
     # -- main entrypoint -----------------------------------------------------------
     async def on_candle_closed(self, candle: Candle) -> Decision | None:
+        if self._office is not None:
+            # One authoritative portfolio/risk state, even when streams arrive together.
+            started = time.monotonic()
+            try:
+                async with self._cycle_lock:
+                    self.queue_latencies_ms.append((time.monotonic() - started) * 1000)
+                    return await self._process_candle(candle)
+            finally:
+                self.cycle_latencies_ms.append((time.monotonic() - started) * 1000)
+        return await self._process_candle(candle)
+
+    def latency_percentiles(self) -> dict:
+        from app.operations.metrics import percentile
+        values = list(self.cycle_latencies_ms)
+        return {"samples": len(values), **{name: percentile(values, p) if values else None
+                for name, p in (("p50", .5), ("p95", .95), ("p99", .99))}}
+
+    async def _process_candle(self, candle: Candle) -> Decision | None:
         """Full decision cycle for a closed candle (docs/04 flow)."""
         started = time.monotonic()
         correlation_id = str(uuid4())
         operational_cycle_attempted = False
         operational_cycle_succeeded = False
+        if self._office is not None:
+            self.last_cycle_stages_ms = {}
         try:
             clock_verdict = None
             if self._require_trusted_clock:
@@ -338,9 +372,18 @@ class Orchestrator:
             self._observe_stage("pre_agent", started)
             operational_cycle_attempted = True
             decision = await self._evaluate(candle, correlation_id, quality)
+            if self._office is not None and (self._operations is None or self._operations.shadow_admission_allowed):
+                self._office.offer(candle, self._latest_primary_outputs)
             operational_cycle_succeeded = decision is not None
-            self.cycle_latencies_ms.append(int((time.monotonic() - started) * 1000))
+            if self._office is None:
+                self.cycle_latencies_ms.append(int((time.monotonic() - started) * 1000))
             return decision
+        except TimeoutError:
+            self.failures.append({"correlation_id": correlation_id, "error": "PRIMARY_DEADLINE_EXCEEDED"})
+            logger.error("Reserved primary deadline exceeded; no order admitted",
+                         event_type="PRIMARY_DEADLINE_EXCEEDED", correlation_id=correlation_id,
+                         metadata={"timeout_seconds": self._primary_timeout})
+            return None
         except AuditError:
             # Fail safe: audit failure blocks operations (docs/31).
             await self._mark_operational_dependency_unhealthy(
@@ -471,6 +514,8 @@ class Orchestrator:
             )
 
     def _observe_stage(self, stage: str, started: float) -> None:
+        if self._office is not None:
+            self.last_cycle_stages_ms[stage] = round((time.monotonic() - started) * 1000, 3)
         if self._operations is not None:
             self._operations.observe_orchestrator_stage(
                 stage,
@@ -488,6 +533,8 @@ class Orchestrator:
 
         # Run analytical agents through their contracts.
         registrations = self._agent_runtime.registry.registrations()
+        if self._office is not None:
+            registrations = [r for r in registrations if r.decision_role == "PRIMARY"]
         admitted_registrations = (
             self._operations.admitted_registrations(registrations)
             if self._operations is not None
@@ -513,9 +560,19 @@ class Orchestrator:
                 )
             )
         agent_batch_started = time.monotonic()
-        agent_outputs = await self._agent_runtime.execute_many(requests)
-        self._observe_stage("agent_runtime", agent_batch_started)
-        if self._operations is not None:
+        if self._office is not None:
+            try:
+                agent_outputs = await asyncio.wait_for(self._agent_runtime.execute_primary(requests), self._primary_timeout)
+            finally:
+                self._observe_stage("agent_runtime", agent_batch_started)
+            market = next((o for o in agent_outputs if o.agent_name == "MarketDataAgent"), None)
+            if market is None or market.evidence.get("connection_status") != "CONNECTED":
+                raise DataQualityError("Office fast lane requires connected market data")
+            self._latest_primary_outputs = agent_outputs
+        else:
+            agent_outputs = await self._agent_runtime.execute_many(requests)
+            self._observe_stage("agent_runtime", agent_batch_started)
+        if self._operations is not None and self._office is None:
             try:
                 await self._operations.observe_agent_batch(
                     agent_outputs,
@@ -532,7 +589,7 @@ class Orchestrator:
                     correlation_id=correlation_id,
                     metadata={"error_type": type(exc).__name__},
                 )
-        if self._agent_evaluation is not None:
+        if self._agent_evaluation is not None and self._office is None:
             agent_evaluation_started = time.monotonic()
             try:
                 await self._agent_evaluation.observe(
@@ -606,7 +663,13 @@ class Orchestrator:
         self._observe_stage("decision_engine", decision_engine_started)
 
         consensus = None
-        if self._weighted_consensus is not None:
+        if self._office is not None and self._weighted_consensus is not None:
+            if self._weighted_consensus._experiments.active().mode == "CONFIRMATION":
+                # Never silently relax an existing confirmation veto. Cached
+                # operational consensus promotion belongs to a later phase.
+                decision = decision.model_copy(update={"candidate_action": CandidateAction.WAIT,
+                    "confidence": 0, "warnings": [*decision.warnings, "OFFICE_CONFIRMATION_NOT_READY"]})
+        if self._weighted_consensus is not None and self._office is None:
             consensus_started = time.monotonic()
             try:
                 consensus = await self._weighted_consensus.evaluate(
@@ -736,6 +799,8 @@ class Orchestrator:
             return decision
 
         # Risk validation — mandatory, cannot be skipped (ADR-001).
+        if self._office is not None and (datetime.now(timezone.utc) - candle.closed_at).total_seconds() * 1000 > self._max_data_delay_ms:
+            raise DataQualityError("Fast-lane signal expired before risk")
         quant_output = next((o for o in agent_outputs if o.agent_name == "QuantAgent"), None)
         atr = quant_output.evidence.get("atr") if quant_output else None
         risk_started = time.monotonic()
@@ -794,6 +859,8 @@ class Orchestrator:
             return decision_after_risk
 
         if self._oms is not None:
+            if self._office is not None and (datetime.now(timezone.utc) - candle.closed_at).total_seconds() * 1000 > self._max_data_delay_ms:
+                raise DataQualityError("Fast-lane signal expired before OMS submission")
             execution_started = time.monotonic()
             order = await self._oms.submit_approved(
                 decision_after_risk,

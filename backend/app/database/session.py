@@ -5,10 +5,11 @@ from __future__ import annotations
 import ssl
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from sqlalchemy import inspect, text
+from sqlalchemy import event, inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.database.models import Base, INTERNAL_SCHEMA
+from app.office.profiling import record_primary_database
 
 
 def _prepare_asyncpg_connection(url: str) -> tuple[str, dict[str, object]]:
@@ -70,6 +71,12 @@ class Database:
             execution_options = {
                 "schema_translate_map": {INTERNAL_SCHEMA: None},
             }
+            if ":memory:" not in url:
+                # SQLite is a single-writer test/local database. Serialize file
+                # sessions instead of racing read-to-write upgrades across the
+                # fast lane and analytical workers. PostgreSQL remains pooled.
+                engine_options = {"pool_size": 1, "max_overflow": 0,
+                                  "pool_timeout": pool_timeout_seconds}
         else:
             engine_url, connect_args = _prepare_asyncpg_connection(url)
             engine_options = {
@@ -89,6 +96,12 @@ class Database:
             **engine_options,
         )
         self.session_factory = async_sessionmaker(self.engine, expire_on_commit=False)
+        event.listen(self.engine.sync_engine, "before_cursor_execute",
+                     lambda *args: record_primary_database("sql_statements"))
+        event.listen(self.engine.sync_engine, "checkout",
+                     lambda *args: record_primary_database("db_checkouts"))
+        event.listen(self.engine.sync_engine, "commit",
+                     lambda *args: record_primary_database("db_commit_calls"))
 
     async def healthcheck(self) -> bool:
         try:
