@@ -295,3 +295,54 @@ O perfil base usou apenas instrumentação passiva em relação a `9083c8d`.
 Uma nova execução hospedada requer CI completo e autorização específica para o
 job; usar novos nomes de cópias para a revisão nova, preservando as anteriores.
 Publicar o backend continua exigindo validação satisfatória e aprovação própria.
+
+## Diagnóstico nativo e comparação regional preparada
+
+O deployment `ce38544a-6e14-4828-b895-d3c57a99d6dc`, candidato `c6f5b77`,
+rodou na Europa em 25/10/2026. Os dois esquemas isolados passaram, mas o fluxo
+reprovou antes da análise com `PRIMARY_DEADLINE_EXCEEDED`. O perfil contém:
+
+| Etapa | Tempo | Resultado |
+|---|---:|---|
+| create_jobs | 1.209,313 ms | COMPLETED |
+| admission_events / lock_wait | 0,063 ms | COMPLETED |
+| admission_events / journal | 1.006,444 ms | COMPLETED |
+| admission_events / broker | 1,344 ms | COMPLETED |
+| admission_events / confirmation | 1.368,136 ms | CANCELLED |
+| PRIMARY total, incluindo limpeza | 3.586,830 ms | CANCELLED |
+
+O ciclo positivo totalizou 8.501,475 ms, com 4.906,994 ms antes dos agentes.
+Redis e espera pelo coordenador não foram o gargalo observado. O tempo de banco
+inclui aquisição de conexão, protocolo, SQL, transação e limpeza; o perfil não
+isola qual parcela interna domina nem demonstra sozinho um defeito do servidor.
+Job/backend estão em Europa e o PostgreSQL recuperado em SFO. A causalidade da
+topologia deve ser testada; não declarar que o ganho local resolveu o Railway.
+Nenhuma ordem esperada foi admitida e não há percentis de ordens hospedadas.
+As cópias da revisão continuam preservadas e não devem ser reutilizadas/limpas.
+
+Para tornar um experimento regional verificável, o gate exporta o commit e a
+região da réplica nos eventos de esquema, sucesso e falha, com campos validados
+e sem valores livres de ambiente. A opção `PAPER_VALIDATION_EXPECTED_REGION`,
+quando configurada, exige igualdade exata com `RAILWAY_REPLICA_REGION` antes
+de abrir uma conexão ou criar cópia. Região ausente, inválida ou divergente
+resulta `PAPER_VALIDATION_REGION_MISMATCH`. Quando a opção não existe, o caminho
+anterior continua disponível. Essa mudança afeta apenas o validador, seus testes
+e esta documentação; o código operacional em `backend/app`, exceto testes,
+é idêntico ao candidato c6f5b77.
+
+Proposta para aprovação, sem aplicação implícita: executar somente o job de
+auditoria existente, sem volume/endpoint, na região `sfo` onde o banco já está,
+uma réplica, restart NEVER, mesmo timeout de 1.200 s, pool e credenciais. Usar a
+nova revisão fixada e cópias com seus novos nomes, sem apagar as da Europa, e
+`PAPER_VALIDATION_EXPECTED_REGION=sfo`. O guard evita certificar uma execução
+em região diferente da aprovada. Não mover PostgreSQL, Redis, backend ou volume,
+nem contratar plano/recurso ou aumentar réplicas totais. O teste consome a
+capacidade faturável já existente e pode reprovar por outro limite.
+
+Comparar os subtempos e resultado completo com c6f5b77 na Europa. A fixture e
+o código operacional permanecem os mesmos, mas são execuções sequenciais em
+instâncias/regiões distintas, não um experimento controlado com desempenho
+garantido. Redis poderá se tornar remoto ao job. Um teste aprovado em SFO
+**não certifica o backend que permanece na Europa**: apenas fornece evidência
+para decidir a topologia final, que exigirá proposta, validação e autorização
+próprias. A Fase B operacional e a Fase C continuam bloqueadas.

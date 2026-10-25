@@ -133,3 +133,44 @@ def test_generic_failure_exposes_source_coordinate_not_exception_or_sql(monkeypa
     assert result["source_locations"][-1]["function"] == "test_generic_failure_exposes_source_coordinate_not_exception_or_sql"
     assert result["source_locations"][-1]["line"] > 0
     assert "secret" not in json.dumps(result) and "postgresql" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("actual,expected", [("sfo", "sfo"), ("europe-west4-drams3a", "europe-west4-drams3a")])
+def test_regional_guard_accepts_exact_approved_location(monkeypatch, actual, expected):
+    gate = gate_module(monkeypatch)
+    monkeypatch.setenv("APP_SOURCE_REVISION", "c" * 40)
+    monkeypatch.setenv("RAILWAY_REPLICA_REGION", actual)
+    monkeypatch.setenv("PAPER_VALIDATION_EXPECTED_REGION", expected)
+    identity = gate.runtime_identity()
+    gate.require_expected_region(identity)
+    assert identity == {"source_revision": "c" * 40, "runtime_region": actual, "expected_region": expected}
+
+
+@pytest.mark.parametrize("actual,expected", [("europe-west4-drams3a", "sfo"), ("", "sfo"), ("sfo", ""),
+    ("sfo", "postgresql://user:secret@db"), ("secret/region", "sfo")])
+async def test_wrong_or_unverified_region_stops_before_connections(monkeypatch, actual, expected):
+    gate = gate_module(monkeypatch)
+    monkeypatch.setenv("PAPER_FULL_FLOW_VALIDATION_ENABLED", "true")
+    monkeypatch.setenv("RAILWAY_REPLICA_REGION", actual)
+    monkeypatch.setenv("PAPER_VALIDATION_EXPECTED_REGION", expected)
+    async def forbidden(*args, **kwargs):
+        pytest.fail("A mismatched regional experiment must not reach PostgreSQL")
+    monkeypatch.setattr(gate.asyncpg, "connect", forbidden)
+    monkeypatch.setattr(gate, "validate_staging", lambda: pytest.fail("Region must be checked before staging validation"))
+    with pytest.raises(gate.ValidationRegionError) as failure:
+        await gate.main()
+    import json
+    report = gate.failure_report(failure.value)
+    assert report["error_codes"] == ["PAPER_VALIDATION_REGION_MISMATCH"]
+    assert report["stage"] == "region_guard"
+    assert "secret" not in json.dumps(report)
+
+
+def test_unconfigured_region_guard_is_backward_compatible_and_provenance_is_safe(monkeypatch):
+    gate = gate_module(monkeypatch)
+    monkeypatch.delenv("PAPER_VALIDATION_EXPECTED_REGION", raising=False)
+    monkeypatch.setenv("APP_SOURCE_REVISION", "postgresql://user:secret@db")
+    monkeypatch.setenv("RAILWAY_REPLICA_REGION", "secret/region")
+    identity = gate.runtime_identity()
+    gate.require_expected_region(identity)
+    assert identity == {"source_revision": None, "runtime_region": "UNKNOWN", "expected_region": None}

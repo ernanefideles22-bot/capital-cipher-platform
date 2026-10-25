@@ -29,6 +29,30 @@ HOST = "capital-cipher-recovered.railway.internal"
 PREFIX = "capital_cipher_paper_validation_"
 
 
+class ValidationRegionError(RuntimeError):
+    """Refuse a regional experiment before opening a database connection."""
+
+
+def runtime_identity() -> dict:
+    """Bounded provenance only; never include arbitrary environment values."""
+    revision = os.getenv("APP_SOURCE_REVISION", "")
+    region = os.getenv("RAILWAY_REPLICA_REGION", "")
+    expected = os.getenv("PAPER_VALIDATION_EXPECTED_REGION", "")
+    valid_region = lambda value: bool(re.fullmatch(r"[a-z0-9][a-z0-9-]{0,47}", value))
+    return {"source_revision": revision if re.fullmatch(r"[a-f0-9]{40}", revision) else None,
+            "runtime_region": region if valid_region(region) else "UNKNOWN",
+            "expected_region": expected if valid_region(expected) else None}
+
+
+def require_expected_region(identity: dict) -> None:
+    # Unconfigured deployments keep their existing behavior. A reviewed
+    # regional experiment explicitly opts in and must run where approved.
+    if "PAPER_VALIDATION_EXPECTED_REGION" in os.environ:
+        expected = identity["expected_region"]
+        if expected is None or identity["runtime_region"] != expected:
+            raise ValidationRegionError("PAPER_VALIDATION_REGION_MISMATCH")
+
+
 def database_url(url: str, name: str) -> str:
     if not re.fullmatch(PREFIX + r"[a-f0-9]{12}_(schema|flow)", name):
         raise RuntimeError("PAPER_VALIDATION_DATABASE_NAME_REFUSED")
@@ -165,6 +189,8 @@ async def verify_live_compatibility(connection, migrations, settings) -> dict:
 async def main() -> None:
     if os.getenv("PAPER_FULL_FLOW_VALIDATION_ENABLED") != "true":
         raise RuntimeError("PAPER_VALIDATION_EXPLICIT_OPT_IN_REQUIRED")
+    identity = runtime_identity()
+    require_expected_region(identity)
     validate_staging()
     admin_url = os.environ["MIGRATION_DATABASE_URL"]
     _require_private_database_url(admin_url)
@@ -180,7 +206,7 @@ async def main() -> None:
     names = {kind: PREFIX + revision[:12] + "_" + kind for kind in ("schema", "flow")}
     settings = validation_settings(names["flow"], revision)
     control = await asyncpg.connect(admin_url)
-    report = {"event": "CC_PAPER_FULL_FLOW_VALIDATION", "source_revision": revision,
+    report = {"event": "CC_PAPER_FULL_FLOW_VALIDATION", **identity,
               "execution_environment": "PAPER", "original_volume_modified": False,
               "databases": names, "migrations": len(migrations)}
     try:
@@ -215,6 +241,7 @@ async def main() -> None:
             if previous_invariants is not None:
                 assert previous_invariants == report[kind + "_schema"], "Existing schema constraints changed"
             print(json.dumps({"event": "CC_PAPER_VALIDATION_SCHEMA", "kind": kind,
+                              **identity,
                               "migrations": len(migrations), "status": "PASSED"}), flush=True)
             if kind == "flow":
                 rows = await connection.fetch("""select p.exit_price, p.exit_reason, a.payload
@@ -245,10 +272,13 @@ async def main() -> None:
 def failure_report(exc: Exception) -> dict:
     """Source coordinates diagnose a failed assertion without logging secrets."""
     report = {"event": "CC_PAPER_FULL_FLOW_VALIDATION", "status": "FAILED",
+              **runtime_identity(),
               "error_type": type(exc).__name__,
               "source_locations": [{"file": Path(frame.filename).name,
                                     "function": frame.name, "line": frame.lineno}
                                    for frame in traceback.extract_tb(exc.__traceback__)[-6:]]}
+    if isinstance(exc, ValidationRegionError):
+        report.update(stage="region_guard", error_codes=["PAPER_VALIDATION_REGION_MISMATCH"])
     from app.validation.paper_flow import PaperFlowValidationError
     if isinstance(exc, PaperFlowValidationError):
         report.update(stage=exc.validation_stage, error_codes=exc.validation_error_codes,
