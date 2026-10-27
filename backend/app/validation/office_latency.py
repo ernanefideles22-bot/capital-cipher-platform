@@ -11,6 +11,8 @@ import argparse
 import asyncio
 import json
 import logging
+import os
+import re
 import time
 from math import exp, sin
 from pathlib import Path
@@ -18,14 +20,10 @@ from pathlib import Path
 import httpx
 
 from app.agents.base import BaseAgent
-from app.api.context import build_context
-from app.core.config import Settings
-from app.core.state_machine import SystemState
 from app.office.isolation import IsolatedAgentRunner
 from app.operations.metrics import percentile
 from app.schemas.common import AgentStatus, Exchange, Signal, utcnow
 from app.schemas.market import Candle
-from app.validation.paper_flow import FIXTURE_INTERVALS, fixture_interval, trust_fixture_clock
 
 
 class BenchmarkShadow(BaseAgent):
@@ -40,8 +38,18 @@ class BenchmarkShadow(BaseAgent):
 
 
 async def benchmark_sample(*, enabled, runner, primary_runner, timeframe="15m"):
+    # spawn reimports this module in each supervised child. API construction
+    # belongs to the parent fixture, not the child readiness handshake.
+    from app.api.context import build_context
+    from app.core.config import Settings
+    from app.core.state_machine import SystemState
+    from app.validation.paper_flow import fixture_interval, trust_fixture_clock
     interval = fixture_interval(timeframe)
     config = Settings(_env_file=None, office_async_enabled=enabled,
+        # The controlled replacement is a benchmark fixture, not a reviewed
+        # production catalog implementation. Do not publish OfficeAnalysis for
+        # it merely because the invoking shell supplies APP_SOURCE_REVISION.
+        app_source_revision="",
         database_url="sqlite+aiosqlite:///:memory:", redis_url=None,
         enable_market_data=False, operations_monitor_enabled=False)
     context = build_context(config, with_database=False)
@@ -101,6 +109,7 @@ async def benchmark_sample(*, enabled, runner, primary_runner, timeframe="15m"):
 
 
 async def compare(samples=40, *, timeframe="15m"):
+    from app.validation.paper_flow import fixture_interval
     fixture_interval(timeframe)
     runner = IsolatedAgentRunner(concurrency=2, timeout_seconds=5)
     primary_runner = IsolatedAgentRunner(concurrency=1, timeout_seconds=3)
@@ -124,10 +133,13 @@ async def compare(samples=40, *, timeframe="15m"):
             "max_ms": round(max(values), 3),
             "all_300_completed": all(row["completed_jobs"] == 300 for row in rows),
             "risk_oms_orders_verified": all(row["risk_and_oms_verified"] for row in rows)}
+    revision = os.getenv("APP_SOURCE_REVISION", "")
     return {"schema_version": "office-latency-benchmark-v1", "summary": summary,
+        "source_revision": revision if re.fullmatch(r"[a-f0-9]{40}", revision) else None,
         "fixture": {"agents": 300, "primary": 3, "shadow": 297, "timeframe": timeframe,
             "controlled_shadow_delay_ms": 100, "pool_processes": 2,
             "provider_http": "MockTransport 503", "durable_database": False,
+            "analytical_context_cache": "not published for the controlled benchmark replacement",
             "hardware": "same local execution host; paired alternating trials"},
         "limitations": ["Not hosted staging measurements; no post-deploy claim",
             "Critical timer starts after initialization; reserved process warmup is reported separately",
@@ -139,6 +151,7 @@ async def compare(samples=40, *, timeframe="15m"):
 
 
 def main():
+    from app.validation.paper_flow import FIXTURE_INTERVALS
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--samples", type=int, default=40)
     parser.add_argument("--timeframe", choices=tuple(FIXTURE_INTERVALS), default="15m")
