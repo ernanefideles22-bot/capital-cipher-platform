@@ -84,7 +84,8 @@ comprova seu início, executa uma ordem pelo risco/OMS enquanto ele ainda está
 rodando, espera o timeout de 5 s, verifica a morte do filho e reconstrói o estado
 da ordem fechada. A injeção usa diretamente o supervisor SHADOW do runtime;
 não é uma execução durável adicional de agente nem um processo com autoridade
-para ordens. A admissão analítica normal continua presente. As seis fixtures
+para ordens. Os 300 agentes registrados e suas afiliações permanecem intactos;
+a admissão analítica normal continua presente. As seis fixtures
 anteriores verificam separadamente a conclusão dos 300 jobs duráveis.
 
 Falhas de banco, broker e auditoria são exceções explícitas na fronteira de
@@ -97,3 +98,9 @@ real do container do backend é verificada separadamente.
 PAPER permanece obrigatório, LIVE/TESTNET e a Fase C não são habilitados.
 Código, CI e este documento preparam a verificação; sua existência não declara
 que a nova publicação ou o job final já foram executados.
+
+O benchmark local mantém o agente de atraso controlado fora da publicação de
+OfficeAnalysis, mesmo quando o shell informa APP_SOURCE_REVISION. Esse substituto
+é uma fixture, sem afiliação revisada no catálogo de produção. O relatório conserva
+a revisão externa como proveniência e declara que não mede publicação do cache.
+Isso não altera o catálogo, scheduler, risco ou OMS da aplicação operacional.

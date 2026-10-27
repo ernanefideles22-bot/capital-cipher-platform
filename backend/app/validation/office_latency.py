@@ -11,6 +11,8 @@ import argparse
 import asyncio
 import json
 import logging
+import os
+import re
 import time
 from math import exp, sin
 from pathlib import Path
@@ -42,6 +44,10 @@ class BenchmarkShadow(BaseAgent):
 async def benchmark_sample(*, enabled, runner, primary_runner, timeframe="15m"):
     interval = fixture_interval(timeframe)
     config = Settings(_env_file=None, office_async_enabled=enabled,
+        # The controlled replacement is a benchmark fixture, not a reviewed
+        # production catalog implementation. Do not publish OfficeAnalysis for
+        # it merely because the invoking shell supplies APP_SOURCE_REVISION.
+        app_source_revision="",
         database_url="sqlite+aiosqlite:///:memory:", redis_url=None,
         enable_market_data=False, operations_monitor_enabled=False)
     context = build_context(config, with_database=False)
@@ -124,10 +130,13 @@ async def compare(samples=40, *, timeframe="15m"):
             "max_ms": round(max(values), 3),
             "all_300_completed": all(row["completed_jobs"] == 300 for row in rows),
             "risk_oms_orders_verified": all(row["risk_and_oms_verified"] for row in rows)}
+    revision = os.getenv("APP_SOURCE_REVISION", "")
     return {"schema_version": "office-latency-benchmark-v1", "summary": summary,
+        "source_revision": revision if re.fullmatch(r"[a-f0-9]{40}", revision) else None,
         "fixture": {"agents": 300, "primary": 3, "shadow": 297, "timeframe": timeframe,
             "controlled_shadow_delay_ms": 100, "pool_processes": 2,
             "provider_http": "MockTransport 503", "durable_database": False,
+            "analytical_context_cache": "not published for the controlled benchmark replacement",
             "hardware": "same local execution host; paired alternating trials"},
         "limitations": ["Not hosted staging measurements; no post-deploy claim",
             "Critical timer starts after initialization; reserved process warmup is reported separately",

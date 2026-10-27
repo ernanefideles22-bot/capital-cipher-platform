@@ -64,7 +64,10 @@ async def certify_cpu_isolation(settings, timeframe, marker_directory):
     marker.parent.mkdir(parents=True, exist_ok=True)
     hung = CpuBoundDiagnostic()
     hung.started_path = str(marker)
-    context.agent_registry.replace(hung, expected_version="1.0.0")
+    # The injected supervisor child has no durable request or cache authority.
+    # Keep all 300 registered agents and their governed affiliations intact.
+    assert len(context.agent_registry.registrations()) == 300
+    assert context.agent_registry.get("MomentumAgent").version == "1.0.0"
     app = create_app(context, with_market_data=False)
     task = None
     async with app.router.lifespan_context(app):
