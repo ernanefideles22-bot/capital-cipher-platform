@@ -24,7 +24,7 @@ from app.schemas.agents import AgentExecutionRequest, AgentInput
 from app.schemas.common import AgentStatus, Exchange, Signal, utcnow
 from app.schemas.market import Candle
 from app.strategy.engine import StrategyEngine
-from app.validation.paper_flow import trust_fixture_clock
+from app.validation.paper_flow import fixture_interval, trust_fixture_clock
 
 
 class HungShadow(BaseAgent):
@@ -57,14 +57,14 @@ def request(agent, suffix="1", *, deadline=None):
         agent_version=agent.version)
 
 
-def candles(symbol="BTCUSDT", direction=1):
+def candles(symbol="BTCUSDT", direction=1, timeframe="15m"):
     now = utcnow()
     result = []
     for i in range(220):
         close = 100 * exp(direction * .002 * i) * (1 + direction * .01 * sin(1.1 * i))
-        result.append(Candle(exchange=Exchange.BINANCE, symbol=symbol, timeframe="15m",
+        result.append(Candle(exchange=Exchange.BINANCE, symbol=symbol, timeframe=timeframe,
             open=close * .999, high=close * 1.003, low=close * .997, close=close,
-            volume=100, closed_at=now - timedelta(minutes=15 * (219 - i))))
+            volume=100, closed_at=now - fixture_interval(timeframe) * (219 - i)))
     return result
 
 
@@ -110,7 +110,8 @@ async def test_noncooperative_cpu_agent_is_killed_while_event_loop_remains_respo
     assert not runner._children
 
 
-async def test_real_paper_order_does_not_wait_for_shadow_and_survives_restart(tmp_path):
+@pytest.mark.parametrize("timeframe", ["15m", "1h", "4h"])
+async def test_real_paper_order_does_not_wait_for_shadow_and_survives_restart(tmp_path, timeframe):
     config = settings(tmp_path)
     context = build_context(config, with_database=True)
     hung_agent = HungShadow()
@@ -118,7 +119,7 @@ async def test_real_paper_order_does_not_wait_for_shadow_and_survives_restart(tm
     context.agent_registry.replace(hung_agent, expected_version="1.0.0")
     app = create_app(context, with_market_data=False)
     async with app.router.lifespan_context(app):
-        items = candles()
+        items = candles(timeframe=timeframe)
         await seed(context, items)
         started = time.monotonic()
         decision = await context.orchestrator.on_candle_closed(items[-1])
@@ -140,10 +141,11 @@ async def test_real_paper_order_does_not_wait_for_shadow_and_survives_restart(tm
         while not (tmp_path / "concurrent-started").exists():
             assert time.monotonic() < deadline
             await asyncio.sleep(.01)
-        other = candles("ETHUSDT")
+        other = candles("ETHUSDT", timeframe=timeframe)
         await seed(context, other)
         second = await asyncio.wait_for(context.orchestrator.on_candle_closed(other[-1]), 3)
         assert second is not None and len(second.agent_summary) == 3
+        assert second.timeframe == timeframe
         assert not job.done(), "CPU-hung diagnostic should still be isolated while trading finishes"
         job.cancel()
         await asyncio.gather(job, return_exceptions=True)
@@ -272,6 +274,26 @@ async def test_confirmation_veto_is_not_silently_removed(tmp_path, monkeypatch):
         assert decision.candidate_action.value == "WAIT"
         assert "OFFICE_CONFIRMATION_NOT_READY" in decision.warnings
         assert not context.paper_engine.open_orders
+
+
+async def test_three_existing_timeframes_compete_for_one_portfolio_without_duplicate_orders(tmp_path):
+    context = build_context(settings(tmp_path, max_open_positions=1), with_database=True)
+    app = create_app(context, with_market_data=False)
+    async with app.router.lifespan_context(app):
+        streams = [candles(timeframe=timeframe) for timeframe in ("15m", "1h", "4h")]
+        for items in streams:
+            await seed(context, items)
+        results = await asyncio.gather(*[
+            context.orchestrator.on_candle_closed(items[-1])
+            for _ in range(4) for items in streams
+        ])
+        decisions = [decision for decision in results if decision is not None]
+        assert len(decisions) == 3
+        assert {decision.strategy for decision in decisions} == {"SCALP_15M_v1", "DAY_1H_v1", "SWING_4H_v1"}
+        assert sum(decision.risk_status.value in {"APPROVED", "REDUCED"} for decision in decisions) == 1
+        assert len(context.paper_engine.open_orders) == context.risk_manager.state.open_positions == 1
+        order, = context.paper_engine.open_orders.values()
+        assert order.approval_id and order.risk_check_id
 
 
 async def test_signal_is_rechecked_after_slow_risk_before_oms(tmp_path, monkeypatch):

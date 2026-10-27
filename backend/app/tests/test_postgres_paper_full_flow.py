@@ -16,7 +16,8 @@ from app.validation.paper_flow import validate_full_paper_flow, validate_paper_s
 
 @pytest.mark.skipif(not os.environ.get("POSTGRES_TEST_URL"), reason="POSTGRES_TEST_URL is not configured")
 @pytest.mark.parametrize("office_enabled", [False, True])
-async def test_native_postgres17_redis_paper_full_flow(office_enabled):
+@pytest.mark.parametrize("timeframe", ["15m", "1h", "4h"])
+async def test_native_postgres17_redis_paper_full_flow(office_enabled, timeframe):
     import asyncpg
 
     url = urlsplit(os.environ["POSTGRES_TEST_URL"].replace("postgresql+asyncpg://", "postgresql://"))
@@ -49,7 +50,7 @@ async def test_native_postgres17_redis_paper_full_flow(office_enabled):
         ADMIN_API_KEY="isolated-native-paper-ci-administration-key",
         DATA_LAKE_ROOT="/tmp/cc-native-paper-" + name, LOG_LEVEL="ERROR",
     )
-    results = [await validate_full_paper_flow(settings, direction, side)
+    results = [await validate_full_paper_flow(settings, direction, side, timeframe=timeframe)
                for direction, side in ((1, "BUY"), (-1, "SELL"))]
     assert all(result["completed_agent_jobs"] == 300 for result in results)
     safety = await validate_paper_safety(settings)

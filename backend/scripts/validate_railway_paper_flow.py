@@ -29,6 +29,15 @@ HOST = "capital-cipher-recovered.railway.internal"
 PREFIX = "capital_cipher_paper_validation_"
 
 
+def validation_timeframes() -> tuple[str, ...]:
+    """Explicit bounded matrix; do not silently expand an approved hosted job."""
+    values = tuple(os.getenv("PAPER_VALIDATION_TIMEFRAMES", "15m").split(","))
+    if (not 1 <= len(values) <= 3 or len(set(values)) != len(values)
+            or any(value not in {"15m", "1h", "4h"} for value in values)):
+        raise ValueError("PAPER_VALIDATION_TIMEFRAMES_REFUSED")
+    return values
+
+
 class ValidationRegionError(RuntimeError):
     """Refuse a regional experiment before opening a database connection."""
 
@@ -191,6 +200,7 @@ async def main() -> None:
         raise RuntimeError("PAPER_VALIDATION_EXPLICIT_OPT_IN_REQUIRED")
     identity = runtime_identity()
     require_expected_region(identity)
+    timeframes = validation_timeframes()
     validate_staging()
     admin_url = os.environ["MIGRATION_DATABASE_URL"]
     _require_private_database_url(admin_url)
@@ -208,7 +218,7 @@ async def main() -> None:
     control = await asyncpg.connect(admin_url)
     report = {"event": "CC_PAPER_FULL_FLOW_VALIDATION", **identity,
               "execution_environment": "PAPER", "original_volume_modified": False,
-              "databases": names, "migrations": len(migrations)}
+              "databases": names, "migrations": len(migrations), "timeframes": list(timeframes)}
     try:
         assert int(await control.fetchval("show server_version_num")) // 10000 == 17, "PostgreSQL 17 required"
         report["live_compatibility"] = await verify_live_compatibility(control, migrations, settings)
@@ -262,7 +272,8 @@ async def main() -> None:
 
     # Capacity was checked against the live role before any isolated DB creation.
     with block_external_http():
-        report["flows"] = [await validate_full_paper_flow(settings, direction, side)
+        report["flows"] = [await validate_full_paper_flow(settings, direction, side, timeframe=timeframe)
+                           for timeframe in timeframes
                            for direction, side in ((1, "BUY"), (-1, "SELL"))]
         report["safety"] = await validate_paper_safety(settings)
     report["status"] = "PASSED"

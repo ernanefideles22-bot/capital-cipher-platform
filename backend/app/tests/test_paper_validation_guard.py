@@ -174,3 +174,25 @@ def test_unconfigured_region_guard_is_backward_compatible_and_provenance_is_safe
     identity = gate.runtime_identity()
     gate.require_expected_region(identity)
     assert identity == {"source_revision": None, "runtime_region": "UNKNOWN", "expected_region": None}
+
+
+def test_timeframe_matrix_keeps_previous_hosted_scope_until_explicitly_enabled(monkeypatch):
+    gate = gate_module(monkeypatch)
+    monkeypatch.delenv("PAPER_VALIDATION_TIMEFRAMES", raising=False)
+    assert gate.validation_timeframes() == ("15m",)
+    monkeypatch.setenv("PAPER_VALIDATION_TIMEFRAMES", "15m,1h,4h")
+    assert gate.validation_timeframes() == ("15m", "1h", "4h")
+
+
+@pytest.mark.parametrize("value", ["", "5m", "15m,15m", "15m, 1h", "15m,1h,4h,15m", "postgresql://secret@host/db"])
+async def test_invalid_timeframe_matrix_stops_before_any_hosted_access(monkeypatch, value):
+    gate = gate_module(monkeypatch)
+    monkeypatch.setenv("PAPER_FULL_FLOW_VALIDATION_ENABLED", "true")
+    monkeypatch.delenv("PAPER_VALIDATION_EXPECTED_REGION", raising=False)
+    monkeypatch.setenv("PAPER_VALIDATION_TIMEFRAMES", value)
+    monkeypatch.setattr(gate, "validate_staging", lambda: pytest.fail("Invalid matrix must stop before staging setup"))
+    async def forbidden(*a, **k):
+        pytest.fail("Invalid matrix must not reach PostgreSQL")
+    monkeypatch.setattr(gate.asyncpg, "connect", forbidden)
+    with pytest.raises(ValueError, match="PAPER_VALIDATION_TIMEFRAMES_REFUSED"):
+        await gate.main()

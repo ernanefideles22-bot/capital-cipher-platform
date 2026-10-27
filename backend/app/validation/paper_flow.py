@@ -22,6 +22,15 @@ from app.core.errors import RiskError
 from app.office.scheduler import shadow_correlation
 from app.office.profiling import safe_primary_profile
 
+FIXTURE_INTERVALS = {"15m": 900, "1h": 3600, "4h": 14400}
+
+
+def fixture_interval(timeframe: str) -> timedelta:
+    """Only the three existing strategies are eligible for certification."""
+    if timeframe not in FIXTURE_INTERVALS:
+        raise ValueError("PAPER_FIXTURE_TIMEFRAME_REFUSED")
+    return timedelta(seconds=FIXTURE_INTERVALS[timeframe])
+
 
 class PaperFlowValidationError(RuntimeError):
     """Export only fixed checkpoint/error codes, never exception payloads."""
@@ -44,11 +53,14 @@ class PaperFlowValidationError(RuntimeError):
 def fresh_fixture_close(candle: Candle, previous: Candle) -> Candle:
     """Emit the synthetic close after setup, using the actual wall clock.
 
-    History remains unchanged. Setup must still fit a normal 15m interval;
+    History remains unchanged. Setup must still fit the strategy's interval;
     runtime freshness, trusted clock, risk and OMS use their real limits.
     """
     now = datetime.now(timezone.utc)
-    if not 0 < (now - previous.closed_at).total_seconds() <= 900 * 1.5:
+    interval = fixture_interval(candle.timeframe)
+    if (candle.exchange, candle.symbol, candle.timeframe) != (previous.exchange, previous.symbol, previous.timeframe):
+        raise ValueError("PAPER_FIXTURE_STREAM_MISMATCH")
+    if not timedelta(0) < now - previous.closed_at <= interval * 1.5:
         raise RuntimeError("PAPER_FIXTURE_PREPARATION_EXCEEDED_INTERVAL")
     return candle.model_copy(update={"closed_at": now, "received_at": now})
 
@@ -61,7 +73,10 @@ def trust_fixture_clock(context):
     ))
 
 
-async def validate_full_paper_flow(settings: Settings, direction: int, expected_side: str) -> dict:
+async def validate_full_paper_flow(
+    settings: Settings, direction: int, expected_side: str, *, timeframe: str = "15m"
+) -> dict:
+    interval = fixture_interval(timeframe)
     context = build_context(settings, with_database=True)
     app = create_app(context, with_market_data=False)
     async with app.router.lifespan_context(app):
@@ -77,10 +92,10 @@ async def validate_full_paper_flow(settings: Settings, direction: int, expected_
         for index in range(220):
             close = 100 * exp(direction * .002 * index) * (1 + direction * .01 * sin(1.1 * index))
             candles.append(Candle(
-                exchange=Exchange.BINANCE, symbol="BTCUSDT", timeframe="15m",
+                exchange=Exchange.BINANCE, symbol="BTCUSDT", timeframe=timeframe,
                 open=close * .999, high=close * 1.003, low=close * .997,
                 close=close, volume=100,
-                closed_at=now - timedelta(minutes=15 * (219 - index)),
+                closed_at=now - interval * (219 - index),
             ))
         assert await context.orchestrator.on_candle_closed(candles[-1]) is None
         assert not context.paper_engine.open_orders
@@ -102,6 +117,10 @@ async def validate_full_paper_flow(settings: Settings, direction: int, expected_
         primary_profile = safe_primary_profile(context.agent_runtime.last_primary_profile)
         cycle_stages = dict(context.orchestrator.last_cycle_stages_ms)
         assert decision.candidate_action.value == expected_side, decision.model_dump()
+        strategy = context.orchestrator.strategy_engine.select("BTCUSDT", timeframe)
+        assert strategy is not None
+        assert decision.timeframe == timeframe
+        assert decision.strategy == strategy.versioned_id
         assert decision.risk_status.value in {"APPROVED", "REDUCED"}, decision.model_dump()
         assert len(context.paper_engine.open_orders) == 1
         opened, = context.paper_engine.open_orders.values()
@@ -144,7 +163,7 @@ async def validate_full_paper_flow(settings: Settings, direction: int, expected_
         assert restored.risk_manager.state.open_positions == 1
         close = opened.entry_price
         closing_candle = Candle(
-            exchange=Exchange.BINANCE, symbol=opened.symbol, timeframe="15m",
+            exchange=Exchange.BINANCE, symbol=opened.symbol, timeframe=timeframe,
             open=close, close=close, volume=100,
             high=max(close, opened.take_profit) * 1.00001,
             low=min(close, opened.take_profit) * .99999,
@@ -173,7 +192,8 @@ async def validate_full_paper_flow(settings: Settings, direction: int, expected_
             chain = (await client.get(f"/api/v1/audit/correlation/{decision.correlation_id}")).json()["data"]["chain"]
             assert {"DECISION_CANDIDATE", "RISK_CHECK", "PAPER_ORDER_CREATED", "PAPER_ORDER_CLOSED"} <= {e["audit_type"] for e in chain}
     return {
-        "side": expected_side, "decision_id": decision.decision_id,
+        "side": expected_side, "timeframe": timeframe, "strategy": decision.strategy,
+        "decision_id": decision.decision_id,
         "correlation_id": decision.correlation_id, "paper_order_id": closed.paper_order_id,
         "confidence": decision.confidence, "risk_status": decision.risk_status.value,
         "exit_reason": closed.exit_reason, "exit_price": closed.exit_price,
