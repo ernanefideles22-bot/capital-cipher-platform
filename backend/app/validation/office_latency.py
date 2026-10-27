@@ -20,14 +20,10 @@ from pathlib import Path
 import httpx
 
 from app.agents.base import BaseAgent
-from app.api.context import build_context
-from app.core.config import Settings
-from app.core.state_machine import SystemState
 from app.office.isolation import IsolatedAgentRunner
 from app.operations.metrics import percentile
 from app.schemas.common import AgentStatus, Exchange, Signal, utcnow
 from app.schemas.market import Candle
-from app.validation.paper_flow import FIXTURE_INTERVALS, fixture_interval, trust_fixture_clock
 
 
 class BenchmarkShadow(BaseAgent):
@@ -42,6 +38,12 @@ class BenchmarkShadow(BaseAgent):
 
 
 async def benchmark_sample(*, enabled, runner, primary_runner, timeframe="15m"):
+    # spawn reimports this module in each supervised child. API construction
+    # belongs to the parent fixture, not the child readiness handshake.
+    from app.api.context import build_context
+    from app.core.config import Settings
+    from app.core.state_machine import SystemState
+    from app.validation.paper_flow import fixture_interval, trust_fixture_clock
     interval = fixture_interval(timeframe)
     config = Settings(_env_file=None, office_async_enabled=enabled,
         # The controlled replacement is a benchmark fixture, not a reviewed
@@ -107,6 +109,7 @@ async def benchmark_sample(*, enabled, runner, primary_runner, timeframe="15m"):
 
 
 async def compare(samples=40, *, timeframe="15m"):
+    from app.validation.paper_flow import fixture_interval
     fixture_interval(timeframe)
     runner = IsolatedAgentRunner(concurrency=2, timeout_seconds=5)
     primary_runner = IsolatedAgentRunner(concurrency=1, timeout_seconds=3)
@@ -148,6 +151,7 @@ async def compare(samples=40, *, timeframe="15m"):
 
 
 def main():
+    from app.validation.paper_flow import FIXTURE_INTERVALS
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--samples", type=int, default=40)
     parser.add_argument("--timeframe", choices=tuple(FIXTURE_INTERVALS), default="15m")

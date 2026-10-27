@@ -104,3 +104,6 @@ OfficeAnalysis, mesmo quando o shell informa APP_SOURCE_REVISION. Esse substitut
 é uma fixture, sem afiliação revisada no catálogo de produção. O relatório conserva
 a revisão externa como proveniência e declara que não mede publicação do cache.
 Isso não altera o catálogo, scheduler, risco ou OMS da aplicação operacional.
+As importações de construção da API ficam no corpo da fixture: spawn pode
+reimportar o módulo do benchmark sem construir a API dentro do handshake de
+readiness do filho. O limite de aquecimento continua em 5 s, sem retries embutidos.
