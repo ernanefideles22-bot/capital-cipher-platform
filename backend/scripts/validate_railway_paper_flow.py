@@ -27,6 +27,7 @@ from run_railway_staging_backend import validate as validate_staging
 DONOR = "capital_cipher_infra_smoke_20261023"
 HOST = "capital-cipher-recovered.railway.internal"
 PREFIX = "capital_cipher_paper_validation_"
+INGEST_LAG_MIGRATION = "20261027002000_widen_candle_ingest_lag.sql"
 
 
 def validation_timeframes() -> tuple[str, ...]:
@@ -174,8 +175,15 @@ async def verify_live_compatibility(connection, migrations, settings) -> dict:
         schema = await invariants(connection)
         tracked = {row["filename"]: row["sha256"] for row in await connection.fetch(
             "select filename, sha256 from public.capital_cipher_schema_migrations")}
+        pending = []
         for migration in migrations:
             digest = hashlib.sha256(migration.read_bytes()).hexdigest()
+            if (migration.name == INGEST_LAG_MIGRATION and migration.name not in tracked
+                    and os.getenv("PAPER_VALIDATION_ALLOW_INGEST_LAG_MIGRATION") == "true"):
+                # This permits testing that one forward migration in isolated
+                # copies only. It never applies it to the live connection.
+                pending.append(migration.name)
+                continue
             if tracked.get(migration.name) != digest:
                 raise RuntimeError("PAPER_VALIDATION_LIVE_MIGRATION_HASH_MISMATCH")
         runtime = await connection.fetchrow("""select rolconnlimit, rolsuper,
@@ -189,6 +197,7 @@ async def verify_live_compatibility(connection, migrations, settings) -> dict:
         if any(runtime[key] for key in ("rolsuper", "rolcreatedb", "rolcreaterole", "rolreplication", "rolbypassrls")):
             raise RuntimeError("PAPER_VALIDATION_RUNTIME_PRIVILEGE_DRIFT")
     return {"schema": schema, "tracked_migrations": len(tracked),
+            "pending_isolated_migrations": pending,
             "backend_connection_ceiling": ceiling,
             "isolated_connection_ceiling": settings.database_pool_size,
             "runtime_role_connection_limit": runtime["rolconnlimit"],
@@ -211,8 +220,8 @@ async def main() -> None:
     if not re.fullmatch(r"[a-f0-9]{40}", revision):
         raise RuntimeError("PAPER_VALIDATION_COMMIT_REQUIRED")
     migrations = sorted(Path("/app/migrations").glob("*.sql"))
-    if len(migrations) != 15:
-        raise RuntimeError("PAPER_VALIDATION_EXPECTS_15_MIGRATIONS")
+    if len(migrations) != 16:
+        raise RuntimeError("PAPER_VALIDATION_EXPECTS_16_MIGRATIONS")
     names = {kind: PREFIX + revision[:12] + "_" + kind for kind in ("schema", "flow")}
     settings = validation_settings(names["flow"], revision)
     control = await asyncpg.connect(admin_url)

@@ -196,3 +196,35 @@ async def test_invalid_timeframe_matrix_stops_before_any_hosted_access(monkeypat
     monkeypatch.setattr(gate.asyncpg, "connect", forbidden)
     with pytest.raises(ValueError, match="PAPER_VALIDATION_TIMEFRAMES_REFUSED"):
         await gate.main()
+
+
+@pytest.mark.parametrize("opt_in,tracked,expected", [("false",None,False),("true",None,True),("true","wrong-hash",False)])
+async def test_only_explicit_pending_ingest_migration_is_allowed_on_isolated_copy(monkeypatch, tmp_path, opt_in, tracked, expected):
+    gate = gate_module(monkeypatch)
+    migration = tmp_path / gate.INGEST_LAG_MIGRATION
+    migration.write_text("select 1;")
+    monkeypatch.setenv("PAPER_VALIDATION_ALLOW_INGEST_LAG_MIGRATION", opt_in)
+    async def invariants(connection): return {"tables":55}
+    monkeypatch.setattr(gate,"invariants",invariants)
+    from types import SimpleNamespace
+    monkeypatch.setattr(gate,"Settings",lambda **kwargs:SimpleNamespace(database_pool_size=4,database_max_overflow=0))
+    class Transaction:
+        async def __aenter__(self): return self
+        async def __aexit__(self,*args): return False
+    class Connection:
+        def transaction(self,**kwargs):
+            assert kwargs=={"readonly":True}
+            return Transaction()
+        async def fetch(self,sql):
+            assert sql.lstrip().startswith("select")
+            return [] if tracked is None else [{"filename":migration.name,"sha256":tracked}]
+        async def fetchrow(self,sql):
+            assert sql.lstrip().startswith("select")
+            return dict(rolconnlimit=8,rolsuper=False,rolcreatedb=False,rolcreaterole=False,rolreplication=False,rolbypassrls=False)
+    if expected:
+        result=await gate.verify_live_compatibility(Connection(),[migration],SimpleNamespace(database_pool_size=4))
+        assert result["pending_isolated_migrations"]==[migration.name]
+        assert result["main_database_writes"] is False
+    else:
+        with pytest.raises(RuntimeError,match="LIVE_MIGRATION_HASH_MISMATCH"):
+            await gate.verify_live_compatibility(Connection(),[migration],SimpleNamespace(database_pool_size=4))

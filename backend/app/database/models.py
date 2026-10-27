@@ -166,7 +166,9 @@ class CandleObservationModel(Base):
     volume: Mapped[float] = mapped_column(Numeric(38, 18), nullable=False)
     closed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    ingest_lag_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Historical 4h backfills exceed int32 milliseconds after only 24.8 days.
+    # Preserve the measured lag instead of truncating it or changing timestamps.
+    ingest_lag_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
     quality_score: Mapped[int | None] = mapped_column(Integer)
     quality_status: Mapped[str] = mapped_column(String(16), nullable=False)
     quality_warnings: Mapped[list] = mapped_column(JsonType, nullable=False)
