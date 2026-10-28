@@ -69,6 +69,11 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Our initial checkout SHA can be stale if prior workflow results
+          # landed on the audit branch. Sync the index to the current remote
+          # branch BEFORE committing new output; never force push.
+          git fetch origin audit/alpha-cloud-20261028
+          git reset --mixed FETCH_HEAD
           git add alpha-results/
           if ! git diff --cached --quiet; then
             git commit -m "audit(results): store cloud alpha run outcome [skip ci]"
