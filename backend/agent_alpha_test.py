@@ -8,8 +8,8 @@ Metodo
 1. Alimenta os candles um a um em um CandleStore (so passado, sem look-ahead).
 2. A cada `stride` barras roda todos os agentes e converte o sinal em posicao
    (BUY=+1, SELL=-1, resto=0), decidida no fechamento da barra t.
-3. A posicao e mantida de open[t+1] ate close[t+stride] (execucao na barra
-   seguinte, nunca no mesmo preco que gerou o sinal).
+3. A posicao e mantida de open[t+1] ate open[t+stride+1] (execucao no
+   proximo candle, sem usar o preco que gerou o sinal).
 4. Custo por unidade de posicao trocada (taxa + slippage, por lado).
 5. Selecao SO nos primeiros 60% (in-sample) com FDR de Benjamini-Hochberg;
    os sobreviventes sao avaliados nos 40% finais (out-of-sample), que nunca
@@ -117,7 +117,11 @@ def load_binance(directory: Path, symbol: str, tf: str):
                 exchange="BINANCE", symbol=symbol, timeframe=tf,
                 open=float(r[1]), high=float(r[2]), low=float(r[3]),
                 close=float(r[4]), volume=float(r[5]),
-                closed_at=datetime.fromtimestamp(ts(r[6]), tz=timezone.utc),
+                # Normalize the candle close boundary from its OPEN time: Binance switched
+                # spot monthly timestamps from milliseconds to microseconds in 2025.
+                # This retains exact 1h spacing without inventing missing bars.
+                closed_at=datetime.fromtimestamp(ts(r[0]), tz=timezone.utc)
+                          + timedelta(minutes=TF_MINUTES[tf]),
             )
         )
     validate_candles(out, tf)
