@@ -87,6 +87,60 @@ de ordem é `COMMITTED`; tentativas anteriores ao envio são `NOT_SUBMITTED`.
 - TTL nunca é ampliado; prazo sem timezone, vencido ou alterado na mesma
   identidade é rejeitado. Métricas têm janela limitada e dados destacados.
 
+## Conflitos, aprovações pendentes e recuperação
+
+O contrato preserva a política existente. Cada ordem pertence à sua estratégia,
+ativo e timeframe; não existe prioridade financeira por mesa. Compra e venda
+opostas não fecham ou revertem automaticamente uma à outra. Continuam somadas
+na exposição bruta e por ativo, mesmo quando a exposição líquida diminui. O
+monitor de SL/TP continua independente por ordem, a partir dos candles do ativo.
+
+Uma aprovação pendente é autorização limitada por prazo e snapshot, **não uma
+reserva de saldo**. Ela não garante capacidade futura. No consumo, o lock global
+durável serializa a admissão e revalida o livro. Entre aprovações independentes
+sobre o mesmo snapshot, a primeira admissão durável ganha; as demais ficam
+obsoletas. Não há promessa de FIFO entre processos nem retry automático com
+nova identidade. Redução e bloqueio pertencem ao RiskManager existente. O teste
+PG usa três pools e aprovações simultâneas, tanto iguais quanto opostas: uma
+aceita, duas obsoletas, exposição única recuperada de 4.000 sobre 10.000. Os
+limites dessa fixture não são a configuração operacional.
+
+O probe de recuperação termina de verdade um processo Python com `os._exit`
+enquanto outras duas mesas aguardam o lock do ciclo. Quatro fronteiras:
+
+| Queda | Estado obrigatório após reconstrução |
+|---|---|
+| Antes do consumo | Nenhuma ordem, aprovação ACTIVE |
+| Após flush SQL, antes do commit | Rollback de ordem/espelho/consumo; aprovação ACTIVE |
+| Após commit, antes do acknowledgement à engine | Uma ordem, um espelho OMS, aprovação CONSUMED |
+| Após registrar o livro local, antes do retorno OMS | Mesma ordem única, exposição restaurada |
+
+Nos casos confirmados pelo banco, a consulta/repetição OMS recupera a mesma
+identidade sem reenviar. Replay do primeiro candle persistido não cria ordem.
+Um candle cuja execução foi interrompida não é automaticamente reexecutado:
+isso pode perder um sinal, e deve continuar visível como limitação de cobertura.
+Não existe reserva pendente para liberar. Leases dos agentes permitem repetir
+análise, não concedem autoridade para repetir execução. A suíte também verifica
+as três chegadas concorrentes com exceções explícitas de banco, broker e auditoria:
+zero ordens antes e depois da reconstrução. Exceções não simulam falha de rede;
+queda do processo não representa queda do servidor PostgreSQL ou do host.
+
+## Validação hospedada delimitada
+
+`scripts/validate_railway_phase_c.py` testa o candidato usando o job de auditoria
+existente e 11 bancos PG17 novos de template0, prefixo exclusivo por revisão.
+Recusa os nomes anteriores, região diferente, ausência de opt-in e migração no
+principal. Verifica o schema principal por SELECT, mantém os bancos de evidência
+e limita seu total a 200 MB. Recusa execução se os bancos do cluster mais esse
+orçamento ultrapassarem 3,8 GB. Não cria serviços, volumes nem recursos pagos.
+Configuração local de fixture (20% por posição/estratégia) fica só nesses bancos;
+PAPER e prazos 3s/5s/120s permanecem obrigatórios. HTTP externo fica bloqueado.
+
+O job reúne pipeline simultâneo, conflitos em três pools independentes, expiração
+após espera real por row lock, falhas concorrentes e as quatro mortes de processo.
+Seu PASSED atesta somente o candidato isolado. Não publica o backend nem encerra
+a avaliação financeira, causal ou fora da amostra.
+
 ## Publicação e critérios restantes
 
 Sem migração ou nova variável. Antes de publicar, revisar o commit exato e seu
@@ -95,7 +149,7 @@ backups e histórico existentes permanecem preservados. A campanha externa
 atual está fixada no SHA certificado anterior: nova publicação requer uma nova
 janela identificada de observação, sem sobrescrever sua baseline.
 
-Ainda faltam provas hospedadas do candidato final, falhas/reinício durante as
-fronteiras do fluxo simultâneo, avaliação de conflitos definida explicitamente
-e evidência estatística fora da amostra. O conjunto completo da Fase C não pode
-ser marcado concluído somente por estes testes ou pelos percentis novos.
+Antes do encerramento técnico, o candidato final precisa passar nesse job,
+ser publicado em PAPER e ter revisão/readiness e preservação do livro verificadas.
+Evidência estatística fora da amostra e qualidade financeira continuam dependentes
+de dados: não podem ser declaradas aprovadas por fixtures ou tempo decorrido.
