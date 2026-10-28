@@ -174,3 +174,57 @@ def test_unconfigured_region_guard_is_backward_compatible_and_provenance_is_safe
     identity = gate.runtime_identity()
     gate.require_expected_region(identity)
     assert identity == {"source_revision": None, "runtime_region": "UNKNOWN", "expected_region": None}
+
+
+def test_timeframe_matrix_keeps_previous_hosted_scope_until_explicitly_enabled(monkeypatch):
+    gate = gate_module(monkeypatch)
+    monkeypatch.delenv("PAPER_VALIDATION_TIMEFRAMES", raising=False)
+    assert gate.validation_timeframes() == ("15m",)
+    monkeypatch.setenv("PAPER_VALIDATION_TIMEFRAMES", "15m,1h,4h")
+    assert gate.validation_timeframes() == ("15m", "1h", "4h")
+
+
+@pytest.mark.parametrize("value", ["", "5m", "15m,15m", "15m, 1h", "15m,1h,4h,15m", "postgresql://secret@host/db"])
+async def test_invalid_timeframe_matrix_stops_before_any_hosted_access(monkeypatch, value):
+    gate = gate_module(monkeypatch)
+    monkeypatch.setenv("PAPER_FULL_FLOW_VALIDATION_ENABLED", "true")
+    monkeypatch.delenv("PAPER_VALIDATION_EXPECTED_REGION", raising=False)
+    monkeypatch.setenv("PAPER_VALIDATION_TIMEFRAMES", value)
+    monkeypatch.setattr(gate, "validate_staging", lambda: pytest.fail("Invalid matrix must stop before staging setup"))
+    async def forbidden(*a, **k):
+        pytest.fail("Invalid matrix must not reach PostgreSQL")
+    monkeypatch.setattr(gate.asyncpg, "connect", forbidden)
+    with pytest.raises(ValueError, match="PAPER_VALIDATION_TIMEFRAMES_REFUSED"):
+        await gate.main()
+
+
+@pytest.mark.parametrize("opt_in,tracked,expected", [("false",None,False),("true",None,True),("true","wrong-hash",False)])
+async def test_only_explicit_pending_ingest_migration_is_allowed_on_isolated_copy(monkeypatch, tmp_path, opt_in, tracked, expected):
+    gate = gate_module(monkeypatch)
+    migration = tmp_path / gate.INGEST_LAG_MIGRATION
+    migration.write_text("select 1;")
+    monkeypatch.setenv("PAPER_VALIDATION_ALLOW_INGEST_LAG_MIGRATION", opt_in)
+    async def invariants(connection): return {"tables":55}
+    monkeypatch.setattr(gate,"invariants",invariants)
+    from types import SimpleNamespace
+    monkeypatch.setattr(gate,"Settings",lambda **kwargs:SimpleNamespace(database_pool_size=4,database_max_overflow=0))
+    class Transaction:
+        async def __aenter__(self): return self
+        async def __aexit__(self,*args): return False
+    class Connection:
+        def transaction(self,**kwargs):
+            assert kwargs=={"readonly":True}
+            return Transaction()
+        async def fetch(self,sql):
+            assert sql.lstrip().startswith("select")
+            return [] if tracked is None else [{"filename":migration.name,"sha256":tracked}]
+        async def fetchrow(self,sql):
+            assert sql.lstrip().startswith("select")
+            return dict(rolconnlimit=8,rolsuper=False,rolcreatedb=False,rolcreaterole=False,rolreplication=False,rolbypassrls=False)
+    if expected:
+        result=await gate.verify_live_compatibility(Connection(),[migration],SimpleNamespace(database_pool_size=4))
+        assert result["pending_isolated_migrations"]==[migration.name]
+        assert result["main_database_writes"] is False
+    else:
+        with pytest.raises(RuntimeError,match="LIVE_MIGRATION_HASH_MISMATCH"):
+            await gate.verify_live_compatibility(Connection(),[migration],SimpleNamespace(database_pool_size=4))

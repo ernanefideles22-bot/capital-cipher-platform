@@ -1,8 +1,14 @@
 # AI Trading Office — Fase B
 
+Complemento de validação dos três timeframes existentes:
+[certificação operacional](phase-b-operational-certification.md).
+
 Esta alteração parte integralmente da Fase A (`d8b4917`, PR #39), na branch
 `feat/ai-trading-office-phase-b-20261024`. O staging continua em `044839f` até
-aprovação explícita. Não há migração, novo serviço, volume ou plano contratado.
+aprovação explícita. O candidato inicial não adicionava migrações; o complemento
+de certificação prepara uma migração BIGINT para o backfill 4h, descrita no
+documento acima e ainda não aplicada ao Railway. Não há novo serviço, volume ou
+plano contratado.
 
 ## Duas vias e limites de autoridade
 
