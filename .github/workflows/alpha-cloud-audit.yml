@@ -9,10 +9,10 @@ on:
       - '.github/workflows/alpha-cloud-audit.yml'
   workflow_dispatch:
 permissions:
-  contents: read
+  contents: write
 concurrency:
   group: alpha-audit-cloud
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
   btc-1h:
     name: BTCUSDT 1h - out-of-sample alpha
@@ -44,6 +44,7 @@ jobs:
               if z.testzip(): raise SystemExit(f'Bad archive {x}')
           PY
       - name: Run 299-agent PAPER research harness (never places orders)
+        id: alpha
         run: python agent_alpha_test.py --mode binance --dir klines --symbol BTCUSDT --tf 1h --out btc1h.json
       - name: Upload results
         if: always()
@@ -53,3 +54,23 @@ jobs:
           path: backend/btc1h.json
           if-no-files-found: warn
           retention-days: 14
+      - name: Store outcome on isolated audit branch for mobile retrieval
+        if: always()
+        working-directory: .
+        env:
+          ALPHA_OUTCOME: ${{ steps.alpha.outcome }}
+        run: |
+          mkdir -p alpha-results
+          echo "GitHub Actions test outcome: $ALPHA_OUTCOME" > alpha-results/status.txt
+          echo "Commit: $GITHUB_SHA" >> alpha-results/status.txt
+          echo "Workflow: $GITHUB_RUN_ID" >> alpha-results/status.txt
+          if test -f backend/btc1h.json; then
+            cp backend/btc1h.json alpha-results/btc1h.json
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add alpha-results/
+          if ! git diff --cached --quiet; then
+            git commit -m "audit(results): store cloud alpha run outcome [skip ci]"
+            git push origin HEAD:audit/alpha-cloud-20261028
+          fi
