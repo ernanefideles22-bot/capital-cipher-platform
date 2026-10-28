@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import NAMESPACE_URL, uuid5
 
 from app.audit.service import AuditService
-from app.core.errors import AuditError, RiskError, SystemStateError, ValidationError
+from app.core.errors import AuditError, DataQualityError, RiskError, SystemStateError, ValidationError
 from app.core.logging import ServiceLogger
 from app.core.state_machine import SystemState, SystemStateMachine
 from app.market_data.store import CandleStore
@@ -266,6 +266,7 @@ class RiskManager:
         max_strategy_exposure_percent_override: float | None = None,
         max_portfolio_var_percent_override: float | None = None,
         max_notional_override: float | None = None,
+        signal_expires_at: datetime | None = None,
     ) -> RiskCheck:
         """Evaluate one immutable risk request and mint an execution approval."""
 
@@ -315,6 +316,14 @@ class RiskManager:
             "max_portfolio_var_percent": effective_var,
             "max_leverage": self.limits.max_leverage,
         }
+        if signal_expires_at is not None:
+            if signal_expires_at.tzinfo is None or signal_expires_at.utcoffset() is None:
+                raise ValidationError("Signal expiry requires a timezone")
+            if signal_expires_at <= datetime.now(timezone.utc):
+                raise DataQualityError("Signal expired before central risk evaluation")
+            # Bind the deadline into immutable risk evidence/fingerprint and
+            # the existing durable approval expiry, including after DB waits.
+            effective_limits["signal_expires_at_unix"] = signal_expires_at.timestamp()
         if max_notional_override is not None:
             effective_limits["portfolio_max_notional"] = (
                 max_notional_override
@@ -635,6 +644,12 @@ class RiskManager:
     ) -> RiskCheck:
         approved = status in (RiskStatus.APPROVED, RiskStatus.REDUCED)
         created_at = datetime.now(timezone.utc)
+        expires_at = created_at + timedelta(seconds=self.limits.approval_ttl_seconds)
+        if approved and "signal_expires_at_unix" in effective_limits:
+            expires_at = min(expires_at, datetime.fromtimestamp(
+                effective_limits["signal_expires_at_unix"], timezone.utc))
+            if expires_at <= created_at:
+                raise DataQualityError("Signal expired before central approval")
         risk_check_id = str(uuid5(NAMESPACE_URL, f"risk:{evaluation_id}"))
         approval: OrderApproval | None = None
         approval_id: str | None = None
@@ -665,8 +680,7 @@ class RiskManager:
                 reference_price=entry_price,
                 max_entry_deviation_bps=self.limits.max_entry_deviation_bps,
                 created_at=created_at,
-                expires_at=created_at
-                + timedelta(seconds=self.limits.approval_ttl_seconds),
+                expires_at=expires_at,
             )
         check = RiskCheck(
             risk_check_id=risk_check_id,
@@ -761,6 +775,8 @@ class RiskManager:
             self._approvals[approval.approval_id] = approval.model_copy(
                 update={"status": ApprovalStatus.EXPIRED}
             )
+            if "signal_expires_at_unix" in risk_check.effective_limits:
+                raise DataQualityError("PAPER signal approval expired")
             raise RiskError("Order approval expired")
         expected = (
             approval.decision_id == decision.decision_id

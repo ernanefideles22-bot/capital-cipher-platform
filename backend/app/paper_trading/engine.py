@@ -19,6 +19,7 @@ from app.paper_trading.execution import (
     RealisticExecutionModel,
 )
 from app.risk.manager import RiskManager
+from app.office.paper_timing import mark_paper_timing
 from app.schemas.common import Exchange, OrderSide, PaperOrderStatus, RiskStatus
 from app.schemas.decisions import Decision
 from app.schemas.market import Candle
@@ -246,6 +247,9 @@ class PaperTradingEngine:
             self._execution_costs[order.paper_order_id] = ledger
             self._last_funding_at[order.paper_order_id] = opened_at
         self._risk.register_position(order)
+        mark_paper_timing("paper_fill_committed", correlation_id=order.correlation_id,
+                          decision_id=order.decision_id, strategy=order.strategy,
+                          paper_order_id=order.paper_order_id)
         logger.info(
             f"Paper order created {order.symbol} {order.side.value}",
             event_type="PAPER_ORDER_CREATED",

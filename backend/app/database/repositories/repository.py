@@ -17,7 +17,7 @@ from sqlalchemy import and_, case, func, insert, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from app.core.errors import DatabaseError, ValidationError
+from app.core.errors import DataQualityError, DatabaseError, ValidationError
 from app.backtesting.artifacts import walk_forward_artifact_hash
 from app.database.models import (
     AgentExecutionAttemptModel,
@@ -2987,7 +2987,7 @@ class Repository:
                 now = _now()
                 if _as_utc(stored.expires_at) <= now:
                     stored.status = ApprovalStatus.EXPIRED.value
-                    raise ValidationError("Order approval expired")
+                    raise DataQualityError("PAPER approval expired before durable admission")
                 if (
                     stored.risk_check_id != order.risk_check_id
                     or stored.decision_id != order.decision_id
@@ -3021,7 +3021,7 @@ class Repository:
                     session.add(
                         self._oms_order_event(oms_order, "PAPER_FILLED")
                     )
-        except DatabaseError:
+        except (DatabaseError, DataQualityError):
             raise
         except Exception as exc:
             raise DatabaseError(
