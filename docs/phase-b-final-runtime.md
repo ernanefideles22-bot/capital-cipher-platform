@@ -1,4 +1,18 @@
-# Fase B — publicação e verificação final preparadas
+# Fase B — verificação final concluída
+
+Atualização de encerramento em 27/10/2026: runtime
+`ec882651ac0a098891420d6159f0f9ba42a05f5b` certificado com **PASSED** às
+22:54:02 UTC (18:54 em America/Campo_Grande). Backend, PostgreSQL 17 e RedisEU
+estão na Europa. Os seis fluxos, três contenções de CPU, falhas de dependências,
+limite de armazenamento e controles PAPER passaram. O volume PG17 permaneceu
+com 5 GB; não houve upgrade pago. O PR #42 foi integrado na base operacional
+em `11306a7e2ab0d830567ee10bd3dd8d4aa404c2c5`, com árvore idêntica ao candidato.
+
+O texto abaixo preserva o planejamento anterior como histórico. As propostas
+de migração, capacidade, publicação e certificação não são pendências atuais.
+O próximo acompanhamento está em [paper-forward-observation.md](paper-forward-observation.md).
+
+## Planejamento histórico anterior ao encerramento
 
 O candidato operacional `6abaf7c` passou no job Railway
 `18f35663-d87f-4d33-8454-b0590bba8cc8`, em 27/10/2026 às 09:02:55 UTC.
