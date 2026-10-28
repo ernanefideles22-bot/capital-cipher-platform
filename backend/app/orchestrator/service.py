@@ -15,7 +15,7 @@ from __future__ import annotations
 import time
 import asyncio
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
@@ -44,6 +44,7 @@ from app.orchestrator.decision_engine import DecisionEngine
 from app.operations.resilience import DependencyName
 from app.operations.service import OperationsService
 from app.office.profiling import safe_primary_profile
+from app.office.paper_timing import PaperTiming, mark_paper_timing, paper_timing, timing_snapshot
 from app.paper_trading.engine import PaperTradingEngine
 from app.risk.manager import RiskManager
 from app.strategy.engine import StrategyEngine
@@ -122,6 +123,7 @@ class Orchestrator:
         self.failures: deque[dict[str, Any]] = deque(maxlen=50)
         self.pending_events: int = 0
         self.last_cycle_stages_ms: dict[str, float] = {}
+        self._paper_timings = deque(maxlen=100)
 
     # -- status ------------------------------------------------------------------
     @property
@@ -156,6 +158,7 @@ class Orchestrator:
             "pending_events": self.pending_events,
             "cycle_latency_ms": self.latency_percentiles(),
             "last_cycle_stages_ms": dict(self.last_cycle_stages_ms),
+            "paper_execution_timing": timing_snapshot(self._paper_timings),
             "primary_profile": safe_primary_profile(self._agent_runtime.last_primary_profile),
             "shadow_office": self._office.status() if self._office else None,
             "governance": {
@@ -181,11 +184,30 @@ class Orchestrator:
         if self._office is not None:
             # One authoritative portfolio/risk state, even when streams arrive together.
             started = time.monotonic()
+            trace = PaperTiming(candle.symbol, candle.timeframe) if (
+                self._oms is None or self._oms.target_environment.value == "PAPER"
+            ) else None
+            cancelled = False
+            unexpected = False
             try:
-                async with self._cycle_lock:
-                    self.queue_latencies_ms.append((time.monotonic() - started) * 1000)
-                    return await self._process_candle(candle)
+                with paper_timing(trace):
+                    async with self._cycle_lock:
+                        mark_paper_timing("queue_acquired")
+                        self.queue_latencies_ms.append((time.monotonic() - started) * 1000)
+                        return await self._process_candle(candle)
+            except asyncio.CancelledError:
+                cancelled = True
+                raise
+            except BaseException:
+                unexpected = True
+                raise
             finally:
+                if trace is not None:
+                    error = next((f.get("error") for f in reversed(self.failures)
+                                  if f.get("correlation_id") == trace.correlation_id), None)
+                    if unexpected and error is None:
+                        error = "OTHER"
+                    self._paper_timings.append(trace.finish(cancelled=cancelled, error_code=error))
                 self.cycle_latencies_ms.append((time.monotonic() - started) * 1000)
         return await self._process_candle(candle)
 
@@ -199,6 +221,7 @@ class Orchestrator:
         """Full decision cycle for a closed candle (docs/04 flow)."""
         started = time.monotonic()
         correlation_id = str(uuid4())
+        mark_paper_timing("queue_acquired", correlation_id=correlation_id)
         operational_cycle_attempted = False
         operational_cycle_succeeded = False
         if self._office is not None:
@@ -769,6 +792,8 @@ class Orchestrator:
             finally:
                 self._observe_stage("portfolio", portfolio_started)
         self.last_decision = decision
+        mark_paper_timing("decision", correlation_id=correlation_id,
+                          decision_id=decision.decision_id, strategy=decision.strategy)
         self.recent_decisions.append(decision)
 
         # Audit the candidate BEFORE risk (docs/04: no decision without evidence).
@@ -804,6 +829,14 @@ class Orchestrator:
         quant_output = next((o for o in agent_outputs if o.agent_name == "QuantAgent"), None)
         atr = quant_output.evidence.get("atr") if quant_output else None
         risk_started = time.monotonic()
+        mark_paper_timing("risk_started", correlation_id=correlation_id)
+        signal_deadline = {}
+        if self._office is not None and (
+            self._oms is None or self._oms.target_environment.value == "PAPER"
+        ):
+            signal_deadline["signal_expires_at"] = (
+                candle.closed_at + timedelta(milliseconds=self._max_data_delay_ms)
+            )
         risk_check = await self._risk.check(
             decision,
             entry_price=candle.close,
@@ -833,8 +866,10 @@ class Orchestrator:
                 if portfolio_proposal is not None
                 else None
             ),
+            **signal_deadline,
         )
         self._observe_stage("risk", risk_started)
+        mark_paper_timing("risk_completed", correlation_id=correlation_id, risk_status=risk_check.risk_status.value)
         decision_after_risk = decision.model_copy(update={"risk_status": risk_check.risk_status})
         self.last_decision = decision_after_risk
         self.recent_decisions[-1] = decision_after_risk
@@ -862,6 +897,7 @@ class Orchestrator:
             if self._office is not None and (datetime.now(timezone.utc) - candle.closed_at).total_seconds() * 1000 > self._max_data_delay_ms:
                 raise DataQualityError("Fast-lane signal expired before OMS submission")
             execution_started = time.monotonic()
+            mark_paper_timing("submit_started", correlation_id=correlation_id)
             order = await self._oms.submit_approved(
                 decision_after_risk,
                 risk_check,
@@ -881,6 +917,7 @@ class Orchestrator:
             # Compatibility path for isolated unit construction. Production
             # composition always injects the OMS boundary.
             execution_started = time.monotonic()
+            mark_paper_timing("submit_started", correlation_id=correlation_id)
             order = await self._paper.create_order(
                 decision_after_risk,
                 risk_check,

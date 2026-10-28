@@ -4,6 +4,11 @@ A Fase B foi concluída e o acompanhamento PAPER está ativo. Este documento e
 `backend/scripts/review_paper_readiness.py` preparam a Fase C. Não certificam
 essa fase, não alteram o runtime nem autorizam publicação ou dinheiro real.
 
+O próximo bloco de código e testes está em
+[phase-c-pipeline-timing.md](phase-c-pipeline-timing.md): três mesas pelo fluxo
+PAPER completo, validade vinculada ao sinal e medições monotônicas até o fill.
+Sua existência na branch não comprova publicação ou validação hospedada.
+
 ## Revisão do código existente
 
 Referência revisada: `b4186abefa45fcb3cc4740988de12eed866546c7`; runtime certificado
