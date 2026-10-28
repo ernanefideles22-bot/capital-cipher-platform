@@ -1,0 +1,55 @@
+name: Alpha audit cloud (PAPER only)
+on:
+  push:
+    branches:
+      - audit/alpha-cloud-20261028
+    paths:
+      - 'backend/agent_alpha_test.py'
+      - 'backend/download_klines.py'
+      - '.github/workflows/alpha-cloud-audit.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: alpha-audit-cloud
+  cancel-in-progress: false
+jobs:
+  btc-1h:
+    name: BTCUSDT 1h - out-of-sample alpha
+    runs-on: ubuntu-latest
+    timeout-minutes: 110
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: backend/pyproject.toml
+      - name: Install local backend (no exchange credentials)
+        run: python -m pip install -e '.[dev]' numpy
+      - name: Download official Binance Spot monthly BTCUSDT 1h candles (fail closed)
+        run: python download_klines.py --symbol BTCUSDT --tf 1h --start 2024-01 --end 2026-09 --out klines
+      - name: Verify expected month count and archive integrity
+        run: |
+          python - <<'PY'
+          import pathlib,zipfile
+          files=sorted(pathlib.Path('klines').glob('BTCUSDT-1h-*.zip'))
+          print('monthly files:',len(files))
+          if len(files)!=33: raise SystemExit('Incomplete months: expected 33')
+          for x in files:
+            with zipfile.ZipFile(x) as z:
+              if z.testzip(): raise SystemExit(f'Bad archive {x}')
+          PY
+      - name: Run 299-agent PAPER research harness (never places orders)
+        run: python agent_alpha_test.py --mode binance --dir klines --symbol BTCUSDT --tf 1h --out btc1h.json
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: capital-cipher-alpha-btc1h
+          path: backend/btc1h.json
+          if-no-files-found: warn
+          retention-days: 14
