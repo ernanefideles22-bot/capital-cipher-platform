@@ -28,10 +28,11 @@ def stop_matches(snapshot, *, order_id, contract, position_size, trigger_price,
         return bool(
             str(response_id) == str(order_id)
             and snapshot['status'] == 'open'
-            and snapshot['order_type'] == ('plan-close-long-position' if position > 0 else 'plan-close-short-position')
+            and snapshot['order_type'] == ('close-long-position' if position > 0 else 'close-short-position')
             and initial['contract'] == contract
             and initial.get('is_reduce_only') is True
-            and size == -position
+            and initial.get('is_close') is True
+            and size == 0
             and type(trigger['strategy_type']) is int
             and type(trigger['price_type']) is int
             and type(trigger['rule']) is int
