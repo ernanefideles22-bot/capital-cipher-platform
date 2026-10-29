@@ -40,7 +40,7 @@ def probe_account(key: str, secret: str) -> dict:
     )
     try:
         # Reject redirects so credentials cannot be forwarded to another host.
-        with urllib.request.build_opener(_NoRedirect()).open(request, timeout=10) as response:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect()).open(request, timeout=10) as response:
             body = json.load(response)
     except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
         raise GateProbeError("Falha ao consultar a Gate Testnet") from None
