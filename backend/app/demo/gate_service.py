@@ -1,6 +1,7 @@
 """Independent Gate Testnet read-only connection status service."""
 import asyncio
 import logging
+import math
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -10,32 +11,43 @@ from fastapi.responses import HTMLResponse
 
 from app.demo.gate_readonly import GateProbeError, probe_account
 from app.demo.gate_market import fetch_candles
+from app.demo.gate_analysis import analyze_snapshot
 
 KEY_VARIABLE = "CAPITAL_CIPHER_GATE_TESTNET_API_KEY"
 SECRET_VARIABLE = "CAPITAL_CIPHER_GATE_TESTNET_API_SECRET"
 
 
-def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles):
+def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles, research=analyze_snapshot):
     values = dict(os.environ if environment is None else environment)
     key, secret = values.get(KEY_VARIABLE, "").strip(), values.get(SECRET_VARIABLE, "").strip()
     state = {"environment": "GATE_TESTNET", "status": "WAITING_FOR_CREDENTIALS",
              "authenticated": False, "execution_enabled": False, "checked_at": None,
-             "market_status": "CHECKING", "market_checked_at": None}
+             "market_status": "CHECKING", "market_checked_at": None,
+             "research_status": "WAITING" if values.get('GATE_RESEARCH_ANALYSIS_ENABLED') == 'true' else "DISABLED",
+             "research_checked_at": None}
+    private_account = {'equity': None}
 
     async def refresh():
+        private_account['equity'] = None
         state.update(authenticated=False, checked_at=None)
         if not key or not secret:
             state["status"] = "INCOMPLETE_CREDENTIALS" if key or secret else "WAITING_FOR_CREDENTIALS"
             state["checked_at"] = datetime.now(timezone.utc).isoformat()
             return
         try:
-            await asyncio.to_thread(probe, key, secret)
+            account = await asyncio.to_thread(probe, key, secret)
         except GateProbeError:
             state["status"] = "CONNECTION_FAILED"
         except Exception:
             state["status"] = "CONNECTION_FAILED"
         else:
             state.update(status="CONNECTED_READ_ONLY", authenticated=True)
+            try:
+                equity = float(account['total'])
+                if math.isfinite(equity) and equity > 0:
+                    private_account['equity'] = equity
+            except (KeyError, TypeError, ValueError, OverflowError):
+                pass
         state["checked_at"] = datetime.now(timezone.utc).isoformat()
 
     async def monitor():
@@ -60,9 +72,38 @@ def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles
             await refresh_market()
             await asyncio.sleep(300)
 
+    async def research_monitor():
+        last_candle = None
+        while True:
+            if not state['authenticated'] or state['market_status'] != 'AVAILABLE' or private_account['equity'] is None:
+                state['research_status'] = 'WAITING'
+                await asyncio.sleep(10)
+                continue
+            else:
+                state['research_status'] = 'CHECKING'
+                try:
+                    result = await research('BTCUSDT', '15m', private_account['equity'])
+                    candle = result['candle_closed_at']
+                    if result['analysis_scope'] != 'RESEARCH_ONLY' or result['execution_enabled'] is not False:
+                        raise ValueError('invalid scope')
+                    if candle != last_candle:
+                        # No account amounts, credentials or agent details in logs.
+                        logging.getLogger('uvicorn.error').info(
+                            'GATE_RESEARCH_CANDLE %s AGENTS %d DECISION %s',
+                            candle, int(result['total_agents']), result['decision']['candidate_action'])
+                        last_candle = candle
+                    state['research_status'] = 'AVAILABLE'
+                except Exception:
+                    state['research_status'] = 'UNAVAILABLE'
+                state['research_checked_at'] = datetime.now(timezone.utc).isoformat()
+                logging.getLogger('uvicorn.error').info('GATE_RESEARCH_STATUS %s', state['research_status'])
+            await asyncio.sleep(300)
+
     @asynccontextmanager
     async def lifespan(app):
         tasks = [asyncio.create_task(monitor()), asyncio.create_task(market_monitor())]
+        if values.get('GATE_RESEARCH_ANALYSIS_ENABLED') == 'true':
+            tasks.append(asyncio.create_task(research_monitor()))
         try:
             yield
         finally:
