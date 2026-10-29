@@ -116,9 +116,11 @@ class GateCycleJournal:
     def record_exit_intent(self, cycle_id):
         self._transition(cycle_id, {'PROTECTED'}, 'EXIT_PENDING', 'exit intent')
 
-    def record_flat_confirmation(self, cycle_id, *, position, open_owned_orders, exchange_confirmed):
-        flat = (_quantity(position) == 0 and type(open_owned_orders) is int
-                and open_owned_orders == 0 and exchange_confirmed is True)
+    def record_flat_confirmation(self, cycle_id, *, position, open_orders, open_stop_orders,
+                                 all_positions_flat, exchange_confirmed):
+        flat = (_quantity(position) == 0 and type(open_orders) is int and open_orders == 0
+                and type(open_stop_orders) is int and open_stop_orders == 0
+                and all_positions_flat is True and exchange_confirmed is True)
         self._transition(cycle_id, {'EXIT_PENDING'}, 'CLOSED' if flat else 'HALTED',
                          'flat confirmed' if flat else 'flat not confirmed')
         return flat
