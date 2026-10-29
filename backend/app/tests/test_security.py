@@ -37,19 +37,33 @@ def test_required_broker_cannot_start_without_redis_url():
 
 
 def test_no_real_order_code_in_backend():
-    """No module may reference private exchange order endpoints."""
+    """Live hosts stay forbidden; futures paths are confined to the demo client."""
     forbidden_fragments = [
         "api.binance.com/api/v3/order",
         "api-testnet.bybit.com/v5/order/create",
         "api.bybit.com/v5/order/create",
-        "/fapi/v1/order",
     ]
+    allowed_demo_futures = {"demo/venue.py", "demo/execution.py"}
     for py_file in APP_DIR.rglob("*.py"):
-        if py_file.name == "test_security.py":
+        relative = py_file.relative_to(APP_DIR).as_posix()
+        if relative.startswith("tests/"):
             continue
         content = py_file.read_text()
         for fragment in forbidden_fragments:
             assert fragment not in content, f"{py_file} references real order endpoint"
+        if "/fapi/v1/order" in content:
+            assert relative in allowed_demo_futures, f"{py_file} references a restricted futures endpoint"
+            assert "https://fapi.binance.com" not in content, f"{py_file} references a live futures origin"
+
+
+def test_futures_demo_origin_is_fixed_and_client_has_no_host_override():
+    import inspect
+    from app.demo.binance import BinanceFuturesDemoClient, DEMO_ORIGIN
+    from app.demo.venue import FuturesDemoVenue
+
+    assert DEMO_ORIGIN == "https://demo-fapi.binance.com"
+    assert "base_url" not in inspect.signature(BinanceFuturesDemoClient).parameters
+    assert "base_url" not in inspect.signature(FuturesDemoVenue).parameters
 
 
 def test_no_hardcoded_secrets():
