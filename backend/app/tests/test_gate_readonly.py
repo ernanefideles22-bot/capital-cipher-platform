@@ -22,7 +22,7 @@ def test_probe_signs_only_testnet_account_get(monkeypatch):
             assert request.get_header("Sign") == signature
             return io.BytesIO(b'{"currency":"USDT","total":"1000","other":"not exposed"}')
 
-    monkeypatch.setattr(gate_readonly.urllib.request, "build_opener", lambda handler: Opener())
+    monkeypatch.setattr(gate_readonly.urllib.request, "build_opener", lambda *handlers: Opener())
     assert gate_readonly.probe_account("key", "secret") == {
         "environment": "gate_testnet", "authenticated": True, "currency": "USDT", "total": "1000"
     }
@@ -36,7 +36,7 @@ def test_probe_rejects_redirect_and_sanitizes_errors(monkeypatch):
         def open(self, request, timeout):
             raise urllib.error.URLError("secret-value")
 
-    monkeypatch.setattr(gate_readonly.urllib.request, "build_opener", lambda handler: Opener())
+    monkeypatch.setattr(gate_readonly.urllib.request, "build_opener", lambda *handlers: Opener())
     with pytest.raises(gate_readonly.GateProbeError, match="Falha ao consultar") as error:
         gate_readonly.probe_account("key", "secret-value")
     assert "secret-value" not in str(error.value)
@@ -47,6 +47,6 @@ def test_probe_rejects_unexpected_response(monkeypatch):
         def open(self, request, timeout):
             return io.BytesIO(b'{"message":"error"}')
 
-    monkeypatch.setattr(gate_readonly.urllib.request, "build_opener", lambda handler: Opener())
+    monkeypatch.setattr(gate_readonly.urllib.request, "build_opener", lambda *handlers: Opener())
     with pytest.raises(gate_readonly.GateProbeError, match="Resposta inesperada"):
         gate_readonly.probe_account("key", "secret")
