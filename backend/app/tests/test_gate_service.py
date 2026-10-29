@@ -14,6 +14,10 @@ async def fake_inventory(*args, **kwargs):
     return {'positions':0,'orders':0,'conditional_orders':0,'atomic':False,'execution_authorized':False}
 
 
+async def fake_position_config(*args, **kwargs):
+    return {'mode':'single','margin':'isolated','leverage':'1','one_way_isolated_1x':True,'execution_authorized':False}
+
+
 def status_after_refresh(client):
     for _ in range(100):
         data = client.get('/api/gate/status').json()
@@ -26,14 +30,14 @@ def status_after_refresh(client):
 def test_missing_credentials_do_not_probe():
     def probe(*args):
         raise AssertionError('must not call Gate')
-    with TestClient(create_app(environment={}, probe=probe, market_fetch=fake_market, inventory_fn=fake_inventory)) as client:
+    with TestClient(create_app(environment={}, probe=probe, market_fetch=fake_market, inventory_fn=fake_inventory, position_config_fn=fake_position_config)) as client:
         assert status_after_refresh(client)['status'] == 'WAITING_FOR_CREDENTIALS'
         assert client.post('/api/demo/execute').status_code == 404
 
 
 def test_success_exposes_status_only():
     env = {KEY_VARIABLE: 'private-key', SECRET_VARIABLE: 'private-secret'}
-    with TestClient(create_app(environment=env, probe=lambda *args: {'total': '123'}, market_fetch=fake_market, inventory_fn=fake_inventory)) as client:
+    with TestClient(create_app(environment=env, probe=lambda *args: {'total': '123'}, market_fetch=fake_market, inventory_fn=fake_inventory, position_config_fn=fake_position_config)) as client:
         data = status_after_refresh(client)
         assert data['status'] == 'CONNECTED_READ_ONLY'
         assert data['execution_enabled'] is False
@@ -44,7 +48,7 @@ def test_failure_never_leaks_credentials():
     def probe(*args):
         raise GateProbeError('private-secret')
     env = {KEY_VARIABLE: 'private-key', SECRET_VARIABLE: 'private-secret'}
-    with TestClient(create_app(environment=env, probe=probe, market_fetch=fake_market, inventory_fn=fake_inventory)) as client:
+    with TestClient(create_app(environment=env, probe=probe, market_fetch=fake_market, inventory_fn=fake_inventory, position_config_fn=fake_position_config)) as client:
         data = status_after_refresh(client)
         assert data['status'] == 'CONNECTION_FAILED'
         assert 'private' not in str(data)
@@ -54,7 +58,7 @@ def test_market_health_is_independent_from_authentication():
     async def unavailable(*args, **kwargs):
         raise RuntimeError('secret details must not be displayed')
     env = {KEY_VARIABLE:'key', SECRET_VARIABLE:'secret'}
-    with TestClient(create_app(environment=env, probe=lambda *args: {}, market_fetch=unavailable, inventory_fn=fake_inventory)) as client:
+    with TestClient(create_app(environment=env, probe=lambda *args: {}, market_fetch=unavailable, inventory_fn=fake_inventory, position_config_fn=fake_position_config)) as client:
         for _ in range(100):
             data=client.get('/api/gate/status').json()
             if data['market_checked_at'] and data['checked_at']:
@@ -74,7 +78,7 @@ def test_research_is_opt_in_and_remains_read_only():
                 'candle_closed_at':'2026-10-29T00:00:00Z','total_agents':300,
                 'decision':{'candidate_action':'HOLD'}}
     with TestClient(create_app(environment=env, probe=lambda *args: {'total':'1000'},
-                               market_fetch=fake_market, research=research, inventory_fn=fake_inventory)) as client:
+                               market_fetch=fake_market, research=research, inventory_fn=fake_inventory, position_config_fn=fake_position_config)) as client:
         for _ in range(1200):
             data=client.get('/api/gate/status').json()
             if data['research_status']=='AVAILABLE':
@@ -90,11 +94,12 @@ def test_research_is_opt_in_and_remains_read_only():
 def test_inventory_runs_in_read_only_scope_without_public_balances():
     env={KEY_VARIABLE:'key', SECRET_VARIABLE:'secret'}
     with TestClient(create_app(environment=env,probe=lambda *args:{'total':'1000'},
-                               market_fetch=fake_market,inventory_fn=fake_inventory)) as client:
+                               market_fetch=fake_market,inventory_fn=fake_inventory, position_config_fn=fake_position_config)) as client:
         for _ in range(1200):
             data=client.get('/api/gate/status').json()
-            if data['inventory_checked_at']:
+            if data['inventory_checked_at'] and data['position_config_status'] != 'WAITING':
                 break
             time.sleep(.01)
         assert data['inventory_status']=='AVAILABLE' and data['execution_enabled'] is False
+        assert data['position_config_status']=='ONE_WAY_ISOLATED_1X'
         assert 'positions' not in data and 'secret' not in str(data)
