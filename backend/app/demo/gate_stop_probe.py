@@ -16,12 +16,17 @@ _HOST='https://api-testnet.gateapi.io'
 _BASE='/api/v4/futures/usdt/price_orders/'
 
 
-async def confirm_stop(key, secret, *, order_id, contract, position_size, trigger_price,
-                       transport=None, clock=time.time, sleep=asyncio.sleep):
+async def read_verified_stop(key, secret, *, order_id, contract, position_size, trigger_price,
+                             transport=None, clock=time.time, sleep=asyncio.sleep):
+    """Return the validated provider snapshot and its observation time, or None.
+
+    The caller must independently reconcile the position and revalidate the
+    evidence at consumption time. This read never authorizes execution.
+    """
     if not key or not secret or not isinstance(order_id,str) or not re.fullmatch(r'[1-9][0-9]*',order_id):
-        return False
+        return None
     if contract not in {'BTC_USDT','ETH_USDT','SOL_USDT'}:
-        return False
+        return None
     path=_BASE+order_id
     async with httpx.AsyncClient(timeout=8,follow_redirects=False,trust_env=False,transport=transport) as client:
         for attempt in range(3):
@@ -36,9 +41,15 @@ async def confirm_stop(key, secret, *, order_id, contract, position_size, trigge
                     row=response.json()
                     if stop_matches(row,order_id=order_id,contract=contract,position_size=position_size,
                                     trigger_price=trigger_price,observed_at=observed,now=clock()):
-                        return True
+                        return row, observed
             except (httpx.HTTPError,ValueError,TypeError):
                 pass
             if attempt < 2:
                 await sleep(.5)
-    return False
+    return None
+
+
+async def confirm_stop(key, secret, **kwargs):
+    """Compatibility wrapper for callers that need only a boolean."""
+    return (await read_verified_stop(key, secret, **kwargs)) is not None
+
