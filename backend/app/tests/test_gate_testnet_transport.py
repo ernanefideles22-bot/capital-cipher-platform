@@ -83,8 +83,25 @@ async def test_invalid_ids_and_contracts_never_reach_network():
 
 
 @pytest.mark.asyncio
+async def test_position_lookup_is_testnet_read_only():
+    calls=[]
+    def handler(request):
+        calls.append(request)
+        assert request.method=='GET'
+        assert request.url.host=='api-testnet.gateapi.io'
+        assert request.url.path=='/api/v4/futures/usdt/positions/BTC_USDT'
+        return httpx.Response(200,json={'contract':'BTC_USDT','size':'0'})
+    c=client(handler)
+    assert (await c.get_position('BTC_USDT'))['size']=='0'
+    with pytest.raises(ValueError): await c.get_position('OTHER')
+    assert len(calls)==1
+    await c.close()
+
+
+@pytest.mark.asyncio
 async def test_read_failure_is_sanitized():
     c=client(lambda req:httpx.Response(403,text='dummy-secret'))
     with pytest.raises(GateReadError) as error: await c.get_stop('123')
     assert 'dummy-secret' not in str(error.value)
     await c.close()
+
