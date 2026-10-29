@@ -47,6 +47,7 @@ def test_central_kill_switch_blocks_manual_and_automatic_demo_entries(monkeypatc
         headers={'X-API-Key':ADMIN}
         assert client.post('/api/v1/binance-demo/execute',headers=headers,json={'proposal_id':'proposal-12345678'}).status_code==409
         assert client.post('/api/v1/binance-demo/automatic',headers=headers,json={'enabled':True}).status_code==409
+        assert client.post('/api/v1/binance-demo/canary',headers=headers,json={}).status_code==409
 
 
 @pytest.mark.asyncio

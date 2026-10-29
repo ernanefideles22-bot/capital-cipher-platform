@@ -104,4 +104,6 @@ async def reset(context:AppContext=Depends(get_context)):
 
 @router.post('/canary',dependencies=[AdminRequired])
 async def canary(context:AppContext=Depends(get_context)):
+    if context.risk_manager.kill_switch_active:
+        raise HTTPException(409,'CENTRAL_KILL_SWITCH_ACTIVE')
     return success_response(await forward(context,'POST','/api/demo/canary'))

@@ -99,6 +99,22 @@ async def test_protected_entry_exit_and_idempotency(tmp_path,side):
 
 
 @pytest.mark.asyncio
+async def test_entry_confirmation_uses_lookup_after_successful_acknowledgement(tmp_path):
+    venue=Venue(); original=venue.request
+    async def request(method,path,params=None,**kwargs):
+        result=await original(method,path,params,**kwargs)
+        if method=='POST' and path.endswith('/order') and not (params or {}).get('reduceOnly'):
+            return {'orderId':result['orderId']}
+        return result
+    venue.request=request
+    engine=DemoExecution(venue,str(tmp_path/'ledger.sqlite'));p=proposal();engine.ledger.proposal(p)
+    assert (await engine.execute(p['id']))['state']=='PROTECTED'
+    assert len(venue.orders)==1
+    assert any(method=='GET' and path.endswith('/order') for method,path,_ in venue.calls)
+    await engine.close_trade(p['id']);engine.ledger.close()
+
+
+@pytest.mark.asyncio
 async def test_protection_failure_flattens_once_and_halts(tmp_path):
     venue=Venue();venue.failure='tp';engine=DemoExecution(venue,str(tmp_path/'ledger.sqlite'))
     p=proposal();engine.ledger.proposal(p)

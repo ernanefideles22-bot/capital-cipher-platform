@@ -205,8 +205,11 @@ class DemoExecution:
                 if self.ledger.flag('halted'):
                     raise DemoError('DEMO_KILL_SWITCH_ACTIVE')
                 self.ledger.update(proposal_id,'ENTRY_SENDING')
-                row=await self.venue.request('POST','/fapi/v1/order',{'symbol':symbol,'side':side,'positionSide':'BOTH','type':'MARKET',
+                await self.venue.request('POST','/fapi/v1/order',{'symbol':symbol,'side':side,'positionSide':'BOTH','type':'MARKET',
                     'quantity':text_number(qty),'newClientOrderId':identity('en',proposal_id),'newOrderRespType':'RESULT'})
+                # Confirm using the order lookup schema. A successful POST can
+                # return a different acknowledgement shape on the Demo venue.
+                row=await self.venue.request('GET','/fapi/v1/order',{'symbol':symbol,'origClientOrderId':identity('en',proposal_id)})
                 if row.get('status')!='FILLED' or row.get('clientOrderId')!=identity('en',proposal_id) or row.get('symbol')!=symbol or row.get('side')!=side or Decimal(row.get('executedQty','0'))!=qty:
                     raise VenueError('DEMO_ENTRY_NOT_FULLY_CONFIRMED',ambiguous=True)
                 self.ledger.update(proposal_id,'ENTRY_ACKNOWLEDGED',entry_order_id=str(row['orderId']),entry_price=float(number(row['avgPrice'])))
@@ -216,6 +219,14 @@ class DemoExecution:
                 current=self.ledger.trade(proposal_id)
                 code=exc.code if isinstance(exc,DemoError) else 'DEMO_EXECUTION_FAILED'
                 self.last_error=code;self.ledger.flag('automatic',False)
+                # Exception values may contain signed URLs; retain only the
+                # class and application source line for bounded diagnostics.
+                frames=[];tb=exc.__traceback__
+                while tb:
+                    if '/app/demo/' in tb.tb_frame.f_code.co_filename:
+                        frames.append({'function':tb.tb_frame.f_code.co_name,'line':tb.tb_lineno})
+                    tb=tb.tb_next
+                self.ledger.event('EXECUTION_FAULT',{'id':proposal_id,'error_type':type(exc).__name__,'frames':frames,'venue_code':exc.venue_code if isinstance(exc,VenueError) else None})
                 if current['state']=='RESERVED':
                     self.ledger.update(proposal_id,'REJECTED',error_code=code)
                 else:
