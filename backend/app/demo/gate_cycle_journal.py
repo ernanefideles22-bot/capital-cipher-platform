@@ -155,12 +155,17 @@ class GateCycleJournal:
         if filled is None:
             self._transition(cycle_id, {'ENTRY_PENDING'}, 'HALTED', 'entry evidence not reconciled')
             return False
-        self.record_entry_confirmation(cycle_id,signed_position=filled,owned_order_confirmed=True)
+        self._record_entry_confirmation(cycle_id,signed_position=filled,owned_order_confirmed=True,verified=True)
         return True
 
     def record_entry_confirmation(self, cycle_id, *, signed_position, owned_order_confirmed):
+        self._record_entry_confirmation(cycle_id,signed_position=signed_position,owned_order_confirmed=owned_order_confirmed,verified=False)
+
+    def _record_entry_confirmation(self, cycle_id, *, signed_position, owned_order_confirmed, verified):
         # A timeout, partial evidence, wrong ownership, or no position must halt;
         # a pending/unknown write is never submitted a second time by this class.
+        if not verified and self.db.execute('SELECT 1 FROM entry_identity WHERE cycle_id=?',(cycle_id,)).fetchone():
+            raise CycleBlocked('bound entry requires exchange evidence')
         position=_quantity(signed_position)
         row=self.read(cycle_id)
         planned=_quantity(row['planned'])
@@ -286,6 +291,8 @@ class GateCycleJournal:
 
     def record_flat_confirmation(self, cycle_id, *, position, open_orders, open_stop_orders,
                                  all_positions_flat, exchange_confirmed):
+        if self.db.execute('SELECT 1 FROM exit_identity WHERE cycle_id=?',(cycle_id,)).fetchone():
+            raise CycleBlocked('bound exit requires exchange evidence')
         flat = (_quantity(position) == 0 and type(open_orders) is int and open_orders == 0
                 and type(open_stop_orders) is int and open_stop_orders == 0
                 and all_positions_flat is True and exchange_confirmed is True)
