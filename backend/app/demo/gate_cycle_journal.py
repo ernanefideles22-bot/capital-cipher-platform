@@ -52,6 +52,11 @@ class GateCycleJournal:
             raise CycleBlocked('invalid plan')
         try:
             self.db.execute('BEGIN IMMEDIATE')
+            # Serialize account access across journal connections. Any open,
+            # halted or ambiguous cycle blocks a second entry, including after
+            # restart. Only a confirmed fully closed cycle releases the slot.
+            if self.db.execute("SELECT 1 FROM cycles WHERE state != 'CLOSED' LIMIT 1").fetchone():
+                raise CycleBlocked('another cycle is unresolved')
             self.db.execute('INSERT INTO cycles (id,state,contract,target,planned) VALUES (?, ?, ?, ?, ?)',(cycle_id,'CREATED',contract,str(n),str(planned)))
             self.db.execute('INSERT INTO events (cycle_id,old_state,new_state,reason) VALUES (?,NULL,?,?)',(cycle_id,'CREATED','plan recorded'))
             self.db.execute('COMMIT')
