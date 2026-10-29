@@ -69,6 +69,20 @@ def test_restart_during_ambiguous_submission_never_resubmits(tmp_path):
     j.close()
 
 
+def test_unresolved_cycle_blocks_other_connections_and_restart(tmp_path):
+    path=str(tmp_path/'cycle.sqlite')
+    first=setup(path)
+    second=GateCycleJournal(path)
+    with pytest.raises(CycleBlocked):
+        second.create('other_12345','ETH_USDT','3000',1)
+    first.halt_unknown('trade_12345')
+    first.close();second.close()
+    reopened=GateCycleJournal(path)
+    with pytest.raises(CycleBlocked):
+        reopened.create('other_12345','ETH_USDT','3000',1)
+    reopened.close()
+
+
 def test_stop_submission_lost_ack_remains_blocked_after_restart(tmp_path):
     path=str(tmp_path/'cycle.sqlite')
     j=setup(path)
