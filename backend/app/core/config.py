@@ -25,6 +25,9 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
+    # Server-only link to the isolated Demo executor; never a Vite variable.
+    demo_connector_url: str | None = Field(default=None, alias="DEMO_CONNECTOR_URL")
+    demo_connector_key: str | None = Field(default=None, alias="DEMO_CONNECTOR_KEY", repr=False)
     app_env: str = Field(default="local", alias="APP_ENV")
     app_name: str = "capital-cipher-api"
     app_version: str = "0.26.0"

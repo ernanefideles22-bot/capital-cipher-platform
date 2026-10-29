@@ -19,6 +19,7 @@ from app.api.context import AppContext, build_context
 from app.api.security import ApiSecurityMiddleware
 from app.api.routes import (
     agents,
+    binance_demo,
     audit,
     backtest,
     decisions,
@@ -461,6 +462,7 @@ def create_app(
     app.include_router(risk.router, prefix=api_prefix)
     app.include_router(paper.router, prefix=api_prefix)
     app.include_router(oms.router, prefix=api_prefix)
+    app.include_router(binance_demo.router, prefix=api_prefix)
     app.include_router(operations.router, prefix=api_prefix)
     app.include_router(audit.router, prefix=api_prefix)
     app.include_router(backtest.router, prefix=api_prefix)
