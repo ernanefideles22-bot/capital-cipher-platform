@@ -53,3 +53,25 @@ async def run_simulated_cycle(*, simulator, journal, cycle_id, plan, read_entry,
         journal.halt_unknown(cycle_id)
         return 'HALTED'
     return 'CLOSED' if closed else 'HALTED'
+
+
+async def simulate_emergency_exit(*, simulator, journal, cycle_id, plan, read_position, read_exit):
+    """Exercise emergency close only in a mock exchange after independent evidence."""
+    if type(simulator) is not GateProtocolSimulator:
+        raise SimulationBlocked('mock simulator required')
+    try:
+        evidence = await read_position()
+        journal.record_emergency_exit_intent(cycle_id, confirmed_position=evidence['position'],
+                                             owned_position_confirmed=evidence['owned'] is True)
+    except Exception:
+        return 'HALTED'
+    try:
+        acknowledgement = await simulator.submit_exit(plan)
+        evidence = await read_exit(acknowledgement)
+        closed = journal.record_flat_confirmation(cycle_id, position=evidence['position'],
+            open_orders=evidence['open_orders'], open_stop_orders=evidence['open_stop_orders'],
+            all_positions_flat=evidence['all_positions_flat'], exchange_confirmed=evidence['exchange_confirmed'])
+    except Exception:
+        journal.halt_unknown(cycle_id)
+        return 'HALTED'
+    return 'CLOSED' if closed else 'HALTED'
