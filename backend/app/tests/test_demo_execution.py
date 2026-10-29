@@ -91,6 +91,7 @@ async def test_protected_entry_exit_and_idempotency(tmp_path,side):
     assert len([c for c in venue.calls if c[0]=='POST' and c[1].endswith('/order')])==1
     closed=await engine.close_trade(p['id']);assert closed['state']=='CLOSED'
     assert closed['realized_pnl_usdt']==pytest.approx(-.04)
+    assert closed['fees_usdt']==pytest.approx(.04)
     assert not venue.positions and all(a['algoStatus']=='CANCELED' for a in venue.algos.values())
     assert len([c for c in venue.calls if c[0]=='POST' and c[1].endswith('/order')])==2
     await engine.close_trade(p['id'])
@@ -229,6 +230,69 @@ async def test_automatic_requires_canary_and_resets_on_restart(tmp_path):
     assert engine.ledger.flag('automatic')
     engine.ledger.close();engine=DemoExecution(Venue(),path)
     assert engine.ledger.flag('automatic') is False
+    engine.ledger.close()
+
+
+@pytest.mark.asyncio
+async def test_automatic_analyzes_each_closed_candle_once_and_expires(tmp_path):
+    calls=[]
+    async def analyze(payload):
+        calls.append(payload)
+        p=proposal(f'wait-proposal-{len(calls):08}')
+        p['candle_closed_at']=datetime.fromtimestamp(payload['candles'][-1]['close_time_ms']/1000,timezone.utc).isoformat()
+        p.update(decision={'candidate_action':'WAIT','confidence':40,'reason':'Insufficient confidence'},risk=None)
+        return p
+    venue=Venue();engine=DemoExecution(venue,str(tmp_path/'ledger.sqlite'),analysis_fn=analyze)
+    engine.ledger.flag('canary_verified',True);engine.ledger.flag('canary_revision',engine.revision)
+    await engine.set_automatic(True)
+    baseline=engine.ledger.flag('observation')
+    for _ in range(3):await engine.cycle()
+    assert len(calls)==1 and not venue.orders
+    report=engine.observation()
+    assert report['analysis_count']==report['wait_count']==1
+    assert report['net_realized_pnl_usdt']==0 and report['settled_count']==0
+    assert report['baseline_equity_usdt']==5000
+    await engine.set_automatic(False);await engine.set_automatic(True)
+    assert engine.ledger.flag('observation')==baseline
+    campaign=engine.ledger.flag('observation');campaign['expires_at']=(datetime.now(timezone.utc)-timedelta(seconds=1)).isoformat()
+    engine.ledger.flag('observation',campaign)
+    await engine.cycle()
+    assert not engine.ledger.flag('automatic') and len(calls)==1
+    assert any(e['kind']=='OBSERVATION_EXPIRED' for e in engine.ledger.events())
+    engine.ledger.close()
+
+
+def test_observation_uses_full_campaign_history_and_excludes_canaries(tmp_path):
+    engine=DemoExecution(Venue(),str(tmp_path/'ledger.sqlite'))
+    engine.ledger.flag('observation',{'id':'campaign-1','started_at':utc_stamp(),'expires_at':utc_stamp(),'baseline_equity_usdt':5000})
+    for i in range(105):
+        engine.ledger.reserve({'id':f'trade-{i}','symbol':'ETHUSDT','side':'BUY','state':'CLOSED','source':'AGENTS',
+            'observation_id':'campaign-1','realized_pnl_usdt':-.1,'fees_usdt':.04})
+    engine.ledger.reserve({'id':'canary-trade','symbol':'ETHUSDT','side':'BUY','state':'CLOSED','source':'OPERATIONAL_CANARY',
+        'observation_id':'campaign-1','realized_pnl_usdt':-50,'fees_usdt':50})
+    engine.ledger.reserve({'id':'other-campaign','symbol':'ETHUSDT','side':'BUY','state':'CLOSED','source':'AGENTS',
+        'observation_id':'campaign-0','realized_pnl_usdt':100})
+    report=engine.observation()
+    assert len(engine.ledger.trades())==100
+    assert report['settled_count']==report['losses']==105
+    assert report['net_realized_pnl_usdt']==pytest.approx(-10.5)
+    assert report['fees_usdt']==pytest.approx(4.2)
+    engine.ledger.close()
+
+
+def utc_stamp():
+    return datetime.now(timezone.utc).isoformat()
+
+
+@pytest.mark.asyncio
+async def test_central_control_guard_prevents_connector_entry_and_automation(tmp_path):
+    async def blocked():raise DemoError('DEMO_CENTRAL_CONTROL_BLOCKED')
+    venue=Venue();engine=DemoExecution(venue,str(tmp_path/'ledger.sqlite'),entry_guard=blocked)
+    p=proposal();engine.ledger.proposal(p)
+    engine.ledger.flag('canary_verified',True);engine.ledger.flag('canary_revision',engine.revision)
+    with pytest.raises(DemoError,match='CENTRAL_CONTROL_BLOCKED'):await engine.execute(p['id'])
+    with pytest.raises(DemoError,match='CENTRAL_CONTROL_BLOCKED'):await engine.set_automatic(True)
+    assert not venue.orders and not engine.ledger.flag('automatic')
     engine.ledger.close()
 
 

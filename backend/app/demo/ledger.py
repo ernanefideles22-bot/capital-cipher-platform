@@ -78,6 +78,17 @@ class DemoLedger:
     def active(self):
         return [x for x in self.trades() if x['state'] not in TERMINAL]
 
+    def observation_rows(self, campaign_id):
+        # Campaign aggregation reads all matching records, independently of
+        # the dashboard's recent-100 history limit. Canary trades are excluded.
+        counts=self.db.execute("SELECT COUNT(*),COALESCE(SUM(json_extract(payload,'$.decision.candidate_action')='WAIT'),0),COALESCE(SUM(json_extract(payload,'$.risk.approved')=1),0) FROM proposals WHERE json_extract(payload,'$.observation_id')=? AND json_extract(payload,'$.source')='AGENTS'",(campaign_id,)).fetchone()
+        latest=self.db.execute("SELECT payload FROM proposals WHERE json_extract(payload,'$.observation_id')=? AND json_extract(payload,'$.source')='AGENTS' ORDER BY created DESC LIMIT 1",(campaign_id,)).fetchone()
+        return {
+            'analysis_count':counts[0],'wait_count':counts[1],'risk_approved_count':counts[2],
+            'latest_analysis':json.loads(latest[0]) if latest else None,
+            'trades':[json.loads(r[0]) for r in self.db.execute("SELECT payload FROM trades WHERE json_extract(payload,'$.observation_id')=? AND json_extract(payload,'$.source')='AGENTS' ORDER BY updated",(campaign_id,))],
+        }
+
     def event(self, kind, data):
         previous=self.db.execute('SELECT hash FROM events ORDER BY seq DESC LIMIT 1').fetchone()
         previous=previous[0] if previous else '0'*64
