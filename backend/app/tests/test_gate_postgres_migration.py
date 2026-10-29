@@ -123,7 +123,7 @@ async def test_gate_oms_entry_requires_durable_stop_and_target():
         assert protected["exchange"]=="GATE" and protected["environment"]=="TESTNET"
         assert float(protected["stop_loss"])==check.stop_loss and float(protected["take_profit"])==check.take_profit
         assert float(protected["leverage"])==1 and protected["approval_id"]==check.approval_id
-        with pytest.raises(asyncpg.RaiseError):
+        with pytest.raises(asyncpg.ObjectNotInPrerequisiteStateError, match="protection evidence is immutable"):
             await connection.execute("UPDATE capital_cipher.oms_order_protections SET stop_loss=1 WHERE oms_order_id=$1",order.oms_order_id)
         assert not await adapter.healthcheck()
     finally:
