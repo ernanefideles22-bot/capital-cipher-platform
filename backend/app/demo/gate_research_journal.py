@@ -45,7 +45,7 @@ class ResearchJournal:
             if not math.isfinite(price) or price <= 0 or result.get('reference_price_type') != 'LAST_CLOSED_CANDLE':
                 raise ValueError()
             action = result['decision']['candidate_action']
-            if action not in {'BUY', 'SELL', 'WAIT', 'HOLD'}:
+            if action not in {'BUY', 'SELL', 'WAIT', 'HOLD', 'BLOCK'}:
                 raise ValueError()
             outputs = result['agents']
             if not isinstance(outputs, list) or not outputs or len(outputs) != result['total_agents'] or len(outputs) > 1000:
@@ -74,3 +74,4 @@ class ResearchJournal:
                 return False
             self.db.execute('INSERT INTO research VALUES (?, ?, ?, ?, ?, ?, ?)', key + (price, action, agents_json))
         return True
+
