@@ -99,11 +99,11 @@ class GateCycleJournal:
             raise CycleBlocked('invalid stop id')
         self._transition(cycle_id, {'STOP_SUBMITTING'}, 'STOP_PENDING', 'stop confirmation pending', stop_id=stop_id)
 
-    def record_stop_confirmation(self, cycle_id, *, snapshot, observed_at, now):
+    def record_stop_confirmation(self, cycle_id, *, snapshot, observed_at, now, confirmed_position):
         row=self.read(cycle_id)
         if row['state'] != 'STOP_PENDING':
             raise CycleBlocked('unexpected or unresolved state')
-        valid=stop_matches(snapshot,order_id=row['stop_id'],contract=row['contract'],
+        valid=_quantity(confirmed_position)==_quantity(row['position']) and stop_matches(snapshot,order_id=row['stop_id'],contract=row['contract'],
                            position_size=row['position'],trigger_price=row['target'],observed_at=observed_at,now=now)
         self._transition(cycle_id, {'STOP_PENDING'}, 'PROTECTED' if valid else 'HALTED',
                          'stop verified' if valid else 'stop not verified')
