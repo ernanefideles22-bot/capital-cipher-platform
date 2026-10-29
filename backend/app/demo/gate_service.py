@@ -13,20 +13,22 @@ from app.demo.gate_readonly import GateProbeError, probe_account
 from app.demo.gate_market import fetch_candles
 from app.demo.gate_analysis import analyze_snapshot
 from app.demo.gate_reconcile import inventory
+from app.demo.gate_position_config import read_position_config
 
 KEY_VARIABLE = "CAPITAL_CIPHER_GATE_TESTNET_API_KEY"
 SECRET_VARIABLE = "CAPITAL_CIPHER_GATE_TESTNET_API_SECRET"
 
 
 def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles, research=analyze_snapshot,
-               inventory_fn=inventory):
+               inventory_fn=inventory, position_config_fn=read_position_config):
     values = dict(os.environ if environment is None else environment)
     key, secret = values.get(KEY_VARIABLE, "").strip(), values.get(SECRET_VARIABLE, "").strip()
     state = {"environment": "GATE_TESTNET", "status": "WAITING_FOR_CREDENTIALS",
              "authenticated": False, "execution_enabled": False, "checked_at": None,
              "market_status": "CHECKING", "market_checked_at": None,
              "research_status": "WAITING" if values.get('GATE_RESEARCH_ANALYSIS_ENABLED') == 'true' else "DISABLED",
-             "research_checked_at": None, "inventory_status":"WAITING", "inventory_checked_at":None}
+             "research_checked_at": None, "inventory_status":"WAITING", "inventory_checked_at":None,
+             "position_config_status":"WAITING"}
     private_account = {'equity': None}
 
     async def refresh():
@@ -118,6 +120,16 @@ def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles
                 state['inventory_status']='UNAVAILABLE'
                 logging.getLogger('uvicorn.error').info('GATE_INVENTORY_UNAVAILABLE')
             state['inventory_checked_at']=datetime.now(timezone.utc).isoformat()
+            try:
+                config=await position_config_fn(key,secret)
+                if config.get('execution_authorized') is not False or type(config.get('one_way_isolated_1x')) is not bool:
+                    raise ValueError('invalid configuration scope')
+                state['position_config_status']='ONE_WAY_ISOLATED_1X' if config['one_way_isolated_1x'] else 'REVIEW_REQUIRED'
+                logging.getLogger('uvicorn.error').info('GATE_POSITION_CONFIG mode=%s margin=%s leverage=%s ready=%s',
+                    config['mode'],config['margin'],config['leverage'],config['one_way_isolated_1x'])
+            except Exception:
+                state['position_config_status']='UNAVAILABLE'
+                logging.getLogger('uvicorn.error').info('GATE_POSITION_CONFIG_UNAVAILABLE')
             await asyncio.sleep(300)
 
     @asynccontextmanager
