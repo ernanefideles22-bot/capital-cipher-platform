@@ -42,42 +42,61 @@ def validate_environment(values):
     return DemoCredentials(key, secret) if key and secret else None
 
 
-def create_app(*, environment=None, transport=None, clock_ms=None):
+def create_app(*, environment=None, transport=None, clock_ms=None, status_clock=None):
     values = dict(os.environ if environment is None else environment)
     credentials = validate_environment(values)
     admin_key = values["DEMO_ADMIN_API_KEY"]
+    now = status_clock or (lambda: datetime.now(timezone.utc))
     client = BinanceFuturesDemoClient(credentials, transport=transport, clock_ms=clock_ms)
     state = {
         "status": "CHECKING", "market": "USD_M_FUTURES_DEMO", "credentials_present": credentials is not None,
         "authenticated": False, "market_reachable": False, "account_preflight_passed": False,
         "execution_enabled": False, "live_execution_available": False,
-        "checked_at": None, "error_code": None, "issues": [],
+        "checked_at": None, "error_code": None, "issues": [], "validation_in_progress": False,
         "source_revision": values.get("APP_SOURCE_REVISION", "unknown"),
     }
     account = {}
     lock = asyncio.Lock()
 
+    def account_is_fresh():
+        if not state["authenticated"] or not state["checked_at"]:
+            return False
+        age = (now() - datetime.fromisoformat(state["checked_at"])).total_seconds()
+        return 0 <= age <= 120
+
+    def public_status():
+        snapshot = dict(state)
+        if snapshot["authenticated"] and not account_is_fresh():
+            snapshot.update(status="VALIDATION_STALE", authenticated=False, account_preflight_passed=False, error_code="DEMO_VALIDATION_STALE")
+        return snapshot
+
+    def mark_failed(code):
+        nonlocal account
+        account = {}
+        state.update(status="CONNECTION_FAILED", authenticated=False, account_preflight_passed=False, market_reachable=False, error_code=code, issues=[])
+
     async def refresh():
         nonlocal account
         async with lock:
-            state.update(status="CHECKING", authenticated=False, market_reachable=False, account_preflight_passed=False, error_code=None, issues=[])
-            account = {}
+            state["validation_in_progress"] = True
             try:
                 if credentials is None:
                     await client.sync_clock()
-                    state.update(status="WAITING_FOR_CREDENTIALS", market_reachable=True)
+                    state.update(status="WAITING_FOR_CREDENTIALS", market_reachable=True, error_code=None)
                 else:
                     account = await client.validate_account()
                     state.update(
                         status="CONNECTED_READ_ONLY" if account["account_preflight_passed"] else "ACCOUNT_REVIEW_REQUIRED",
-                        market_reachable=True, authenticated=True,
+                        market_reachable=True, authenticated=True, error_code=None,
                         account_preflight_passed=account["account_preflight_passed"], issues=account["issues"],
                     )
             except DemoError as exc:
-                state.update(status="CONNECTION_FAILED", market_reachable=False, error_code=exc.code)
+                mark_failed(exc.code)
             except Exception:
-                state.update(status="CONNECTION_FAILED", market_reachable=False, error_code="DEMO_VALIDATION_FAILED")
-            state["checked_at"] = datetime.now(timezone.utc).isoformat()
+                mark_failed("DEMO_VALIDATION_FAILED")
+            finally:
+                state["validation_in_progress"] = False
+            state["checked_at"] = now().isoformat()
 
     async def monitor():
         while True:
@@ -120,16 +139,16 @@ def create_app(*, environment=None, transport=None, clock_ms=None):
     @app.get("/ready")
     async def ready():
         # This indicates authenticated read readiness only, never order readiness.
-        ready = state["authenticated"] and state["account_preflight_passed"]
+        ready = account_is_fresh() and state["account_preflight_passed"]
         return JSONResponse({"ready": ready, "scope": "READ_ONLY_ACCOUNT_PREFLIGHT", "execution_enabled": False}, status_code=200 if ready else 503)
 
     @app.get("/api/demo/status")
     async def status():
-        return dict(state)
+        return public_status()
 
     @app.get("/api/demo/account", dependencies=[Depends(require_admin)])
     async def get_account():
-        if not account:
+        if not account or not account_is_fresh():
             raise HTTPException(503, "DEMO_ACCOUNT_NOT_VALIDATED")
         return {**account, "checked_at": state["checked_at"]}
 
@@ -139,7 +158,7 @@ def create_app(*, environment=None, transport=None, clock_ms=None):
         if lock.locked():
             raise HTTPException(409, "DEMO_VALIDATION_RUNNING")
         await refresh()
-        return dict(state)
+        return public_status()
 
     @app.get("/api/demo/candles", dependencies=[Depends(require_admin)])
     async def candles(symbol: str = "BTCUSDT", timeframe: str = "15m", limit: int = Query(default=200, ge=1, le=1000)):
@@ -159,6 +178,6 @@ def create_app(*, environment=None, transport=None, clock_ms=None):
 
 PAGE = """<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Capital Cipher · Futuros Demo</title><style>
 *{box-sizing:border-box}body{margin:0;background:#0c101a;color:#edf1fa;font:16px system-ui,sans-serif;padding:28px;min-height:100vh}main{max-width:700px;margin:8vh auto}.brand{font-size:12px;letter-spacing:3px;color:#8b9bb5}.badge{display:inline-block;background:#2b2510;color:#f6ce67;padding:7px 12px;border-radius:20px;font-size:12px;margin-top:22px}h1{font-size:clamp(30px,6vw,48px);line-height:1.15;margin:20px 0}p{color:#a5b1c8;line-height:1.7}.card{padding:24px;border:1px solid #293349;border-radius:16px;background:#131b2b;margin:24px 0}.row{display:flex;justify-content:space-between;gap:20px;padding:13px 0;border-bottom:1px solid #263146}.row:last-child{border-bottom:0}.value{color:#f6ce67;text-align:right}small{color:#8b9bb5}.note{border-left:3px solid #f6ce67;padding-left:16px}code{font-size:12px;overflow-wrap:anywhere}</style><main><div class="brand">CAPITAL CIPHER</div><div class="badge">BINANCE · FUTUROS DEMO</div><h1>Conexão com a conta de testes</h1><p>Validação de acesso ao mercado e à sua conta de Futuros Demo.</p><div class="card"><div class="row"><span>Conexão</span><span class="value" id="status">Verificando…</span></div><div class="row"><span>Chaves Demo</span><span class="value" id="keys">—</span></div><div class="row"><span>Autenticação</span><span class="value" id="auth">—</span></div><div class="row"><span>Operações automáticas</span><span class="value">Desativadas</span></div></div><p id="instructions">Aguarde a primeira verificação.</p><p class="note">Esta etapa valida a conexão. Os agentes ainda não enviam ordens para a Binance Demo. A execução depende da integração das proteções e da validação do ciclo de ordens.</p><small id="checked"></small><p><small>Conta de testes com fundos virtuais.</small></p></main><script>
-const labels={CHECKING:'Verificando…',WAITING_FOR_CREDENTIALS:'Aguardando chaves',CONNECTED_READ_ONLY:'Conectada · leitura',ACCOUNT_REVIEW_REQUIRED:'Revisar conta Demo',CONNECTION_FAILED:'Falha na conexão'};
+const labels={CHECKING:'Verificando…',WAITING_FOR_CREDENTIALS:'Aguardando chaves',CONNECTED_READ_ONLY:'Conectada · leitura',ACCOUNT_REVIEW_REQUIRED:'Revisar conta Demo',CONNECTION_FAILED:'Falha na conexão',VALIDATION_STALE:'Verificação desatualizada'};
 async function update(){try{let r=await fetch('/api/demo/status',{cache:'no-store'});if(!r.ok)throw Error();let s=await r.json();document.querySelector('#status').textContent=labels[s.status]||'Verificando';document.querySelector('#keys').textContent=s.credentials_present?'Configuradas':'Pendentes';document.querySelector('#auth').textContent=s.authenticated?'Confirmada':'Pendente';document.querySelector('#instructions').textContent=s.status==='WAITING_FOR_CREDENTIALS'?'No Railway, abra o serviço capital-cipher-binance-demo e cadastre as duas variáveis de credenciais Demo.':s.authenticated?'Conta autenticada. A liberação de ordens ainda depende das proteções e dos testes de execução.':s.error_code?'Não foi possível validar a conexão. Código: '+s.error_code:'Verificando acesso à Binance Demo…';document.querySelector('#checked').textContent=s.checked_at?'Última verificação: '+new Date(s.checked_at).toLocaleString('pt-BR'):'';}catch{document.querySelector('#status').textContent='Indisponível';}}update();setInterval(update,10000);
 </script></html>"""

@@ -35,7 +35,10 @@ empty or invented credentials as placeholders. A partial pair fails startup.
 `DEMO_ADMIN_API_KEY`. This key is not the Binance API Key.
 `/ready` stays 503 until authenticated account preflight passes; its 200 means
 read-only connectivity readiness, **never authorization to place orders**.
-The account details are memory-only and revalidated every minute. Restarting
+The account details are memory-only and revalidated every minute. A successful
+result remains visible during background revalidation for at most 120 seconds;
+a failed read clears it immediately, and expired results cannot pass /ready or
+serve private account details. Restarting
 cannot restore a stale successful status. POST validate only refreshes local
 reads; all requests sent to Binance are GET.
 

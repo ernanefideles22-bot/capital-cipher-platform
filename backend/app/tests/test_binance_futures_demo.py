@@ -242,3 +242,56 @@ def test_failed_revalidation_clears_old_account_and_readiness():
 def test_credentials_repr_is_redacted():
     assert KEY not in repr(DemoCredentials(KEY, SECRET))
     assert SECRET not in repr(DemoCredentials(KEY, SECRET))
+
+
+@pytest.mark.asyncio
+async def test_fresh_account_stays_confirmed_during_revalidation_then_clears_on_failure():
+    import asyncio
+    started, release = asyncio.Event(), asyncio.Event()
+    block = False
+
+    async def handler(request):
+        if block and request.url.path == '/fapi/v3/account':
+            started.set()
+            await release.wait()
+            return httpx.Response(403)
+        return handler_for(payloads())(request)
+
+    app = create_app(environment=environment(keys=True), transport=httpx.MockTransport(handler), clock_ms=lambda: NOW)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+        await app.state.refresh()
+        block = True
+        task = asyncio.create_task(app.state.refresh())
+        try:
+            await asyncio.wait_for(started.wait(), timeout=1)
+            state = (await client.get('/api/demo/status')).json()
+            assert state['validation_in_progress'] is True
+            assert state['authenticated'] is True
+            assert state['status'] == 'CONNECTED_READ_ONLY'
+            assert (await client.get('/ready')).status_code == 200
+            assert (await client.get('/api/demo/account', headers={'X-API-Key': ADMIN})).status_code == 200
+        finally:
+            release.set()
+            await task
+        state = (await client.get('/api/demo/status')).json()
+        assert state['authenticated'] is False
+        assert state['validation_in_progress'] is False
+        assert (await client.get('/ready')).status_code == 503
+    await app.state.demo_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_expired_account_cannot_remain_ready_even_if_revalidation_stalls():
+    from datetime import datetime, timedelta, timezone
+    instant = [datetime(2026, 10, 29, tzinfo=timezone.utc)]
+    app = create_app(environment=environment(keys=True), transport=httpx.MockTransport(handler_for(payloads())), clock_ms=lambda: NOW, status_clock=lambda: instant[0])
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+        await app.state.refresh()
+        assert (await client.get('/ready')).status_code == 200
+        instant[0] += timedelta(seconds=121)
+        assert (await client.get('/ready')).status_code == 503
+        state = (await client.get('/api/demo/status')).json()
+        assert state['authenticated'] is False
+        assert state['status'] == 'VALIDATION_STALE'
+        assert (await client.get('/api/demo/account', headers={'X-API-Key': ADMIN})).status_code == 503
+    await app.state.demo_client.aclose()
