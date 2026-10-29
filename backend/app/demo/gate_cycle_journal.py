@@ -132,6 +132,10 @@ class GateCycleJournal:
             row=self.read(cycle_id)
             if row['state'] not in {'STOP_REQUIRED', 'STOP_PENDING', 'HALTED'} or not row['position']:
                 raise CycleBlocked('no reconciled position for emergency exit')
+            if row['state'] == 'HALTED':
+                last=self.db.execute('SELECT old_state,reason FROM events WHERE cycle_id=? ORDER BY seq DESC LIMIT 1', (cycle_id,)).fetchone()
+                if last != ('STOP_PENDING','stop not verified'):
+                    raise CycleBlocked('halt requires independent reconciliation')
             if self.db.execute("SELECT 1 FROM events WHERE cycle_id=? AND new_state='EMERGENCY_EXIT_PENDING'", (cycle_id,)).fetchone():
                 raise CycleBlocked('previous emergency exit outcome requires reconciliation')
             if owned_position_confirmed is not True or _quantity(confirmed_position) != _quantity(row['position']):
