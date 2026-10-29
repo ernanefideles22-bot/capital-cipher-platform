@@ -1939,7 +1939,7 @@ class OMSOrderModel(Base):
             name="ck_oms_order_environment",
         ),
         CheckConstraint(
-            "exchange IN ('BINANCE', 'BYBIT')",
+            "exchange IN ('BINANCE', 'BYBIT', 'GATE')",
             name="ck_oms_order_exchange",
         ),
         CheckConstraint(
@@ -2177,7 +2177,7 @@ class ExecutionFillModel(Base):
         CheckConstraint("price > 0", name="ck_execution_fill_price"),
         CheckConstraint("fee >= 0", name="ck_execution_fill_fee"),
         CheckConstraint(
-            "exchange IN ('BINANCE', 'BYBIT')",
+            "exchange IN ('BINANCE', 'BYBIT', 'GATE')",
             name="ck_execution_fill_exchange",
         ),
         CheckConstraint(
@@ -2229,7 +2229,7 @@ class ReconciliationRunModel(Base):
             name="ck_reconciliation_run_status",
         ),
         CheckConstraint(
-            "exchange IN ('BINANCE', 'BYBIT')",
+            "exchange IN ('BINANCE', 'BYBIT', 'GATE')",
             name="ck_reconciliation_run_exchange",
         ),
         CheckConstraint(
@@ -2296,7 +2296,7 @@ class ReconciliationMismatchModel(Base):
             name="ck_reconciliation_mismatch_severity",
         ),
         CheckConstraint(
-            "exchange IN ('BINANCE', 'BYBIT')",
+            "exchange IN ('BINANCE', 'BYBIT', 'GATE')",
             name="ck_reconciliation_mismatch_exchange",
         ),
         CheckConstraint(
@@ -2340,7 +2340,7 @@ class VenuePositionSnapshotModel(Base):
     __table_args__ = (
         CheckConstraint("quantity >= 0", name="ck_venue_position_quantity"),
         CheckConstraint(
-            "exchange IN ('BINANCE', 'BYBIT')",
+            "exchange IN ('BINANCE', 'BYBIT', 'GATE')",
             name="ck_venue_position_exchange",
         ),
         CheckConstraint(
@@ -2394,7 +2394,7 @@ class VenueBalanceSnapshotModel(Base):
             name="ck_venue_balance_nonnegative",
         ),
         CheckConstraint(
-            "exchange IN ('BINANCE', 'BYBIT')",
+            "exchange IN ('BINANCE', 'BYBIT', 'GATE')",
             name="ck_venue_balance_exchange",
         ),
         CheckConstraint(

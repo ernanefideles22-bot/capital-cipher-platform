@@ -334,6 +334,8 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
             raise ValueError(
                 "TESTNET OMS requires PostgreSQL with Month 7 migrations"
             )
+        if target_exchange not in {Exchange.BINANCE, Exchange.BYBIT}:
+            raise ValueError("TESTNET exchange has no supported execution adapter")
         credentials = EnvironmentTestnetCredentialProvider().load(
             target_exchange
         )
@@ -346,7 +348,7 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
                     receive_window_ms=settings.oms_receive_window_ms,
                 )
             )
-        else:
+        elif target_exchange == Exchange.BYBIT:
             protected_bybit_adapter = ProtectedBybitTestnetExecutionAdapter(
                 credentials,
                 base_url=settings.bybit_testnet_rest_url,
@@ -362,6 +364,8 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
             risk_manager.set_testnet_equity_provider(
                 protected_bybit_adapter.fetch_account_equity
             )
+        else:
+            raise ValueError("TESTNET exchange has no supported execution adapter")
         execution_adapters[
             (target_exchange, ExecutionEnvironment.TESTNET)
         ] = testnet_adapter

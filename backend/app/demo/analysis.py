@@ -30,7 +30,11 @@ async def analyze(payload):
     await ctx.state_machine.transition(SystemState.INITIALIZING,reason='Demo isolated analysis',actor='demo')
     await ctx.state_machine.transition(SystemState.PAPER,reason='Virtual account only',actor='demo')
     rows=payload['candles']; symbol=payload['symbol']; timeframe=payload['timeframe']
-    candles=[Candle(exchange=Exchange.BINANCE,symbol=symbol,timeframe=timeframe,
+    exchange=payload.get('exchange', 'BINANCE')
+    if exchange not in {'BINANCE', 'GATE'}:
+        raise ValueError('unsupported demo market provenance')
+    market='GATE_USDT_FUTURES_TESTNET' if exchange=='GATE' else 'USD_M_FUTURES_DEMO'
+    candles=[Candle(exchange=Exchange(exchange),symbol=symbol,timeframe=timeframe,
         open=r['open'],high=r['high'],low=r['low'],close=r['close'],volume=r['volume'],
         closed_at=datetime.fromtimestamp(r['close_time_ms']/1000,timezone.utc)) for r in rows]
     for candle in candles:
@@ -48,7 +52,7 @@ async def analyze(payload):
                     confidence=0,reason='Evidence source not available in this isolated Futures snapshot',warnings=['DEMO_EXTERNAL_EVIDENCE_UNAVAILABLE'])
             agent.timeout_ms=1000
             return await agent.run(AgentInput(agent_name=agent.name,correlation_id=correlation,
-                timestamp=stamp,symbol=symbol,timeframe=timeframe,market_context={'exchange':'BINANCE','market':'USD_M_FUTURES_DEMO'}))
+                timestamp=stamp,symbol=symbol,timeframe=timeframe,market_context={'exchange':exchange,'market':market}))
     outputs=await asyncio.gather(*(run(a) for a in ctx.agent_registry.agents.values()))
     decision=DecisionEngine().consolidate(correlation_id=correlation,symbol=symbol,timeframe=timeframe,agent_outputs=outputs)
     source='AGENTS'
@@ -65,7 +69,7 @@ async def analyze(payload):
             idempotency_key=f"demo:{symbol}:{timeframe}:{stamp.isoformat()}:{source}:{decision.candidate_action.value}")
         risk=check.model_dump(mode='json')
     return {'id':decision.decision_id,'created_at':datetime.now(timezone.utc).isoformat(),
-        'source':source,'symbol':symbol,'timeframe':timeframe,'candle_closed_at':stamp.isoformat(),
+        'source':source,'exchange':exchange,'market':market,'symbol':symbol,'timeframe':timeframe,'candle_closed_at':stamp.isoformat(),
         'reference_price':price,'decision':decision.model_dump(mode='json'),'risk':risk,
         'agents':[o.model_dump(mode='json') for o in outputs], 'total_agents':len(outputs),
         'primary_agents':['MarketDataAgent','QuantAgent','TrendAgent'],'shadow_decision_authority':False}

@@ -21,16 +21,23 @@ EquityProvider = Callable[[], Awaitable[float]]
 
 
 class VenueAwareRiskManager(RiskManager):
-    """Use Bybit venue state as the TESTNET risk source of truth."""
+    """Use explicitly scoped venue state as the TESTNET risk source of truth."""
 
     def __init__(
         self,
         *args,
         execution_environment: ExecutionEnvironment,
+        testnet_exchange: Exchange = Exchange.BYBIT,
         equity_cache_seconds: float = 2.0,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
+        if not isinstance(testnet_exchange, Exchange) or testnet_exchange not in {Exchange.BYBIT, Exchange.GATE}:
+            raise SecurityError("Unsupported TESTNET risk venue")
+        if (execution_environment == ExecutionEnvironment.TESTNET
+                and testnet_exchange == Exchange.GATE and self._repository is None):
+            raise SecurityError("Gate TESTNET risk requires durable repository")
+        self._testnet_exchange = testnet_exchange
         self.execution_environment = execution_environment
         self._equity_cache_seconds = max(0.0, equity_cache_seconds)
         self._testnet_equity_provider: EquityProvider | None = None
@@ -52,15 +59,15 @@ class VenueAwareRiskManager(RiskManager):
     async def initialize(self) -> None:
         await super().initialize()
         if self.execution_environment == ExecutionEnvironment.TESTNET:
-            self.sync_positions(await self._load_bybit_testnet_positions())
+            self.sync_positions(await self._load_testnet_positions())
             await self.effective_balance(self.initial_balance, force=True)
 
-    async def _load_bybit_testnet_positions(self) -> list[PositionExposure]:
+    async def _load_testnet_positions(self) -> list[PositionExposure]:
         if self._repository is None:
             return []
         exposures = await self._repository.load_open_position_exposures()
         orders = await self._repository.list_oms_orders(
-            exchange=Exchange.BYBIT,
+            exchange=self._testnet_exchange,
             environment=ExecutionEnvironment.TESTNET,
             limit=None,
         )
@@ -68,7 +75,7 @@ class VenueAwareRiskManager(RiskManager):
         scoped: list[PositionExposure] = []
         for exposure in exposures:
             identity = exposure.paper_order_id
-            if identity.startswith("venue:BYBIT:TESTNET:"):
+            if identity.startswith(f"venue:{self._testnet_exchange.value}:TESTNET:"):
                 scoped.append(exposure)
                 continue
             if identity.startswith("oms-reservation:"):
@@ -143,7 +150,7 @@ class VenueAwareRiskManager(RiskManager):
         if self.execution_environment != ExecutionEnvironment.TESTNET:
             await super().refresh_positions()
             return
-        self.sync_positions(await self._load_bybit_testnet_positions())
+        self.sync_positions(await self._load_testnet_positions())
         await self.effective_balance(self.initial_balance, force=True)
 
     # The PAPER engine remains available for research APIs even in a TESTNET
