@@ -9,6 +9,7 @@ import re
 import sqlite3
 from decimal import Decimal, InvalidOperation
 from app.demo.gate_stop_validation import stop_matches
+from app.demo.gate_entry_evidence import confirmed_entry
 
 
 class CycleBlocked(ValueError):
@@ -34,6 +35,7 @@ class GateCycleJournal:
         self.db.execute('PRAGMA synchronous=FULL')
         self.db.execute('CREATE TABLE IF NOT EXISTS cycles (id TEXT PRIMARY KEY, state TEXT NOT NULL, contract TEXT NOT NULL, target TEXT NOT NULL, planned TEXT NOT NULL, position TEXT, stop_id TEXT)')
         self.db.execute('CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, cycle_id TEXT NOT NULL, old_state TEXT, new_state TEXT NOT NULL, reason TEXT NOT NULL)')
+        self.db.execute('CREATE TABLE IF NOT EXISTS entry_identity (cycle_id TEXT PRIMARY KEY, client_id TEXT NOT NULL UNIQUE, order_id TEXT UNIQUE)')
 
     def close(self):
         self.db.close()
@@ -90,6 +92,65 @@ class GateCycleJournal:
 
     def record_entry_intent(self, cycle_id):
         self._transition(cycle_id, {'CREATED'}, 'ENTRY_PENDING', 'entry intent')
+
+    def record_bound_entry_intent(self, cycle_id, client_id):
+        """Persist the client id and intent together before any dispatch."""
+        if not isinstance(client_id,str) or not re.fullmatch(r't-[A-Za-z0-9_.-]{1,28}', client_id):
+            raise CycleBlocked('invalid client id')
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            current=self.read(cycle_id)
+            if current['state'] != 'CREATED':
+                raise CycleBlocked('unexpected cycle state')
+            self.db.execute('INSERT INTO entry_identity(cycle_id,client_id) VALUES (?,?)',(cycle_id,client_id))
+            self.db.execute("UPDATE cycles SET state='ENTRY_PENDING' WHERE id=?",(cycle_id,))
+            self.db.execute('INSERT INTO events(cycle_id,old_state,new_state,reason) VALUES (?,?,?,?)',
+                            (cycle_id,'CREATED','ENTRY_PENDING','bound entry intent'))
+            self.db.execute('COMMIT')
+        except sqlite3.IntegrityError:
+            self.db.execute('ROLLBACK')
+            raise CycleBlocked('entry identity already used') from None
+        except BaseException:
+            self.db.execute('ROLLBACK')
+            raise
+
+    def record_entry_acknowledgement(self, cycle_id, order_id):
+        """Store provider id exactly once; an unknown acknowledgement is not retried."""
+        if not isinstance(order_id,str) or not re.fullmatch(r'[1-9][0-9]*',order_id):
+            raise CycleBlocked('invalid order id')
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            current=self.read(cycle_id)
+            if current['state'] != 'ENTRY_PENDING':
+                raise CycleBlocked('unexpected cycle state')
+            changed=self.db.execute('UPDATE entry_identity SET order_id=? WHERE cycle_id=? AND order_id IS NULL',
+                                    (order_id,cycle_id)).rowcount
+            if changed != 1:
+                raise CycleBlocked('identity missing or acknowledgement already recorded')
+            self.db.execute('COMMIT')
+        except sqlite3.IntegrityError:
+            self.db.execute('ROLLBACK')
+            raise CycleBlocked('provider id already used') from None
+        except BaseException:
+            self.db.execute('ROLLBACK')
+            raise
+
+    def record_verified_entry(self, cycle_id, *, order, position, order_observed_at, position_observed_at, now):
+        """Use bound identifiers and independently acquired snapshots; no write authorization."""
+        row=self.read(cycle_id)
+        if row['state'] != 'ENTRY_PENDING':
+            raise CycleBlocked('unexpected cycle state')
+        identity=self.db.execute('SELECT client_id,order_id FROM entry_identity WHERE cycle_id=?',(cycle_id,)).fetchone()
+        if not identity or not identity[1]:
+            raise CycleBlocked('entry acknowledgement missing')
+        filled=confirmed_entry(order=order,position=position,contract=row['contract'],order_id=identity[1],
+                               client_id=identity[0],planned_size=row['planned'],
+                               order_observed_at=order_observed_at,position_observed_at=position_observed_at,now=now)
+        if filled is None:
+            self._transition(cycle_id, {'ENTRY_PENDING'}, 'HALTED', 'entry evidence not reconciled')
+            return False
+        self.record_entry_confirmation(cycle_id,signed_position=filled,owned_order_confirmed=True)
+        return True
 
     def record_entry_confirmation(self, cycle_id, *, signed_position, owned_order_confirmed):
         # A timeout, partial evidence, wrong ownership, or no position must halt;
@@ -165,4 +226,5 @@ class GateCycleJournal:
         self._transition(cycle_id, {'EXIT_PENDING','EMERGENCY_EXIT_PENDING'}, 'CLOSED' if flat else 'HALTED',
                          'flat confirmed' if flat else 'flat not confirmed')
         return flat
+
 
