@@ -119,6 +119,12 @@ main backend's central risk controls through its fixed private-network URL.
 Unavailable, invalid or active central controls block new entries. Existing
 protective reconciliation and exits remain independent of that read.
 
+After an acknowledged conditional POST, confirmation allows at most three
+read-only lookups with short spacing for index propagation. No protection POST
+is retried. An unconfirmed protection still halts and closes the position.
+The private protection-audit route only reads protections belonging to an
+existing journal trade and returns a fixed, credential-free field allowlist.
+
 ## Official API references
 
 Checked 2026-10-28:

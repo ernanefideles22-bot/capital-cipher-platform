@@ -180,6 +180,22 @@ async def test_missing_stop_after_entry_forces_flat_and_blocks_reentry(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_conditional_lookup_delay_retries_reads_without_repeating_protection_post(tmp_path):
+    venue=Venue();original=venue.request;delayed=set()
+    async def request(method,path,params=None,**kwargs):
+        key=(params or {}).get('clientAlgoId')
+        if method=='GET' and path.endswith('/algoOrder') and key in venue.algos and key not in delayed:
+            delayed.add(key)
+            raise VenueError('NOT_FOUND',venue_code=-2013)
+        return await original(method,path,params,**kwargs)
+    venue.request=request
+    engine=DemoExecution(venue,str(tmp_path/'ledger.sqlite'));p=proposal();engine.ledger.proposal(p)
+    assert (await engine.execute(p['id']))['state']=='PROTECTED'
+    assert len([c for c in venue.calls if c[0]=='POST' and c[1].endswith('/algoOrder')])==2
+    await engine.close_trade(p['id']);engine.ledger.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('kind',['expired','unapproved','leverage','notional','bracket','risk_budget','price_moved'])
 async def test_invalid_risk_proofs_cannot_reach_entry(tmp_path,kind):
     venue=Venue();engine=DemoExecution(venue,str(tmp_path/'ledger.sqlite'));p=proposal()

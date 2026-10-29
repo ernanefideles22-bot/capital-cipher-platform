@@ -291,6 +291,26 @@ class DemoExecution:
                 return None
             raise
 
+    @staticmethod
+    def _protection_fields(row):
+        fields=('algoId','clientAlgoId','algoStatus','symbol','orderType','positionSide','side','closePosition','workingType','triggerPrice')
+        return {k:row.get(k) for k in fields} if isinstance(row,dict) else None
+
+    async def protection_audit(self, trade_id):
+        async with self.lock:
+            trade=self.ledger.trade(trade_id)
+            if not trade:
+                raise DemoError('DEMO_TRADE_NOT_FOUND')
+            await self.venue.sync_clock()
+            return {'id':trade_id,'symbol':trade['symbol'],'state':trade['state'],
+                'expected_stop':trade['stop_loss'],'expected_take':trade['take_profit'],
+                'sl':self._protection_fields(await self._algo(trade_id,'sl')),
+                'tp':self._protection_fields(await self._algo(trade_id,'tp'))}
+
+    @staticmethod
+    def _protection_matches(row, trade, kind, order_type, price, opposite):
+        return bool(row and row.get('algoStatus') in {'NEW','WORKING'} and row.get('symbol')==trade['symbol'] and row.get('clientAlgoId')==identity(kind,trade['id']) and row.get('orderType')==order_type and row.get('positionSide')=='BOTH' and row.get('side')==opposite and row.get('closePosition') is True and row.get('workingType')=='MARK_PRICE' and number(row['triggerPrice'])==number(price))
+
     async def _protect(self, trade_id):
         trade=self.ledger.trade(trade_id)
         opposite='SELL' if trade['side']=='BUY' else 'BUY'
@@ -303,8 +323,16 @@ class DemoExecution:
                 await self.venue.request('POST','/fapi/v1/algoOrder',{'symbol':trade['symbol'],'side':opposite,'positionSide':'BOTH',
                     'algoType':'CONDITIONAL','type':order_type,'triggerPrice':price,'closePosition':'true',
                     'workingType':'MARK_PRICE','clientAlgoId':identity(kind,trade_id)})
-                existing=await self._algo(trade_id,kind)
-            if not existing or existing.get('algoStatus') not in {'NEW','WORKING'} or existing.get('symbol')!=trade['symbol'] or existing.get('clientAlgoId')!=identity(kind,trade_id) or existing.get('orderType')!=order_type or existing.get('positionSide')!='BOTH' or existing.get('side')!=opposite or existing.get('closePosition') is not True or existing.get('workingType')!='MARK_PRICE' or number(existing['triggerPrice'])!=number(price):
+                # Acknowledged conditional orders can lag in the lookup index.
+                # Retry reads only; the protection POST is never submitted twice.
+                for attempt in range(3):
+                    existing=await self._algo(trade_id,kind)
+                    if self._protection_matches(existing,trade,kind,order_type,price,opposite):
+                        break
+                    if attempt<2:
+                        await asyncio.sleep(.25)
+            if not self._protection_matches(existing,trade,kind,order_type,price,opposite):
+                self.ledger.event('PROTECTION_UNCONFIRMED',{'id':trade_id,'kind':kind,'observed':self._protection_fields(existing)})
                 raise DemoError('DEMO_PROTECTION_NOT_CONFIRMED')
             self.ledger.update(trade_id,'PROTECTING',**{kind+'_algo_id':str(existing['algoId'])})
 

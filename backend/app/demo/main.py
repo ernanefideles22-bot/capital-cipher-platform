@@ -249,6 +249,10 @@ def create_app(*, environment=None, transport=None, clock_ms=None, status_clock=
     async def execution_status():
         return execution().summary()
 
+    @app.get("/api/demo/protection-audit/{trade_id}", dependencies=[Depends(require_admin)])
+    async def protection_audit(trade_id: str):
+        return await action(lambda: execution().protection_audit(trade_id))
+
     @app.post("/api/demo/analysis", dependencies=[Depends(require_admin)])
     async def analysis(body: AnalysisRequest):
         return await action(lambda: execution().analyze(body.symbol, body.timeframe))
