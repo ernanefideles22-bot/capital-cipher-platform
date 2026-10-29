@@ -97,3 +97,19 @@ async def test_emergency_exit_requires_ownership_and_flat_reconciliation(tmp_pat
             plan=plan(),read_position=read_position,read_exit=read_exit)
         assert result=='HALTED' and len(requests)==1
     journal.close()
+
+
+def test_emergency_intent_cannot_bypass_ambiguous_regular_exit(tmp_path):
+    j=GateCycleJournal(str(tmp_path/'cycle.sqlite'))
+    j.create('trade_12345','BTC_USDT','79000',2)
+    j.record_entry_intent('trade_12345')
+    j.record_entry_confirmation('trade_12345',signed_position=2,owned_order_confirmed=True)
+    j.record_stop_intent('trade_12345')
+    j.record_stop_acknowledgement('trade_12345',stop_id='123')
+    assert j.record_stop_confirmation('trade_12345',snapshot=snapshot(),observed_at=1000,now=1001,confirmed_position=2)
+    j.record_exit_intent('trade_12345')
+    j.halt_unknown('trade_12345')
+    with pytest.raises(CycleBlocked):
+        j.record_emergency_exit_intent('trade_12345',confirmed_position=2,owned_position_confirmed=True)
+    assert j.read('trade_12345')['state']=='HALTED'
+    j.close()
