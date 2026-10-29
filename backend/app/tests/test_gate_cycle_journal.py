@@ -9,16 +9,16 @@ def setup(path, *, size=2):
     return j
 
 
-def snapshot(*, size=-2, status='open'):
-    return {'id_string':'123','status':status,'create_time':1000,'order_type':'plan-close-long-position',
-            'initial':{'contract':'BTC_USDT','size':size,'price':'0','tif':'ioc','is_reduce_only':True},
+def snapshot(*, size=0, status='open'):
+    return {'id_string':'123','status':status,'create_time':1000,'order_type':'close-long-position',
+            'initial':{'contract':'BTC_USDT','size':size,'price':'0','tif':'ioc','is_reduce_only':True,'is_close':True},
             'trigger':{'strategy_type':0,'price_type':1,'price':'79000','rule':2,'expiration':3600}}
 
 
-def confirm_stop(j, row):
+def confirm_stop(j, row, position=2):
     j.record_stop_intent('trade_12345')
     j.record_stop_acknowledgement('trade_12345',stop_id='123')
-    return j.record_stop_confirmation('trade_12345',snapshot=row,observed_at=1010,now=1010)
+    return j.record_stop_confirmation('trade_12345',snapshot=row,observed_at=1010,now=1010,confirmed_position=position)
 
 
 def test_complete_simulated_cycle_is_durable(tmp_path):
@@ -51,7 +51,7 @@ def test_bad_entry_evidence_halts(tmp_path,confirmed,size):
 def test_partial_fill_protection_uses_actual_position(tmp_path):
     j=setup(str(tmp_path/'cycle.sqlite'))
     j.record_entry_confirmation('trade_12345',signed_position=1,owned_order_confirmed=True)
-    assert not confirm_stop(j,snapshot(size=-2))
+    assert not confirm_stop(j,snapshot(),position=2)
     assert j.read('trade_12345')['state']=='HALTED'
     j.close()
 
