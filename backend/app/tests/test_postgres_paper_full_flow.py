@@ -146,8 +146,8 @@ async def test_ingest_lag_widening_preserves_history_security_and_large_backfill
     database = None
     try:
         migrations = sorted((Path(__file__).resolve().parents[3] / "supabase/migrations").glob("*.sql"))
-        assert migrations[-1].name == "20261027002000_widen_candle_ingest_lag.sql"
-        for migration in migrations[:-1]:
+        target_migration = next(m for m in migrations if m.name == "20261027002000_widen_candle_ingest_lag.sql")
+        for migration in (m for m in migrations if m.name < target_migration.name):
             async with connection.transaction():
                 await connection.execute(migration.read_text())
         now = datetime.now(timezone.utc)
@@ -169,7 +169,7 @@ async def test_ingest_lag_widening_preserves_history_security_and_large_backfill
         constraints = await connection.fetch(constraints_sql)
         previous_timeouts = (await connection.fetchval("show lock_timeout"), await connection.fetchval("show statement_timeout"))
         async with connection.transaction():
-            await connection.execute(migrations[-1].read_text())
+            await connection.execute(target_migration.read_text())
         assert await connection.fetchval(rows_sql) == before
         assert await connection.fetchrow(security_sql) == security
         assert await connection.fetch(constraints_sql) == constraints
@@ -183,7 +183,7 @@ async def test_ingest_lag_widening_preserves_history_security_and_large_backfill
         assert await connection.fetchval("select ingest_lag_ms from capital_cipher.candle_observations where symbol='SOLUSDT'") == 3_110_400_000
         after = await connection.fetchval(rows_sql)
         async with connection.transaction():
-            await connection.execute(migrations[-1].read_text())
+            await connection.execute(target_migration.read_text())
         assert await connection.fetchval(rows_sql) == after
     finally:
         if database is not None:
