@@ -109,10 +109,15 @@ class GateTestnetTransport:
                               stop_price=stop_price,tick_size=tick_size,client_id='t-stop-plan')
         return await self._request('POST',_STOP,body=plan['stop'])
 
-    async def close_position(self, *, contract):
+    async def close_position(self, *, contract, client_id=None):
         if contract not in _CONTRACTS:
             raise ValueError('invalid contract')
-        return await self._request('POST',_ORDER,body={'contract':contract,'size':0,'close':True,'price':'0','tif':'ioc','reduce_only':True})
+        body={'contract':contract,'size':0,'close':True,'price':'0','tif':'ioc','reduce_only':True}
+        if client_id is not None:
+            if not isinstance(client_id,str) or not re.fullmatch(r't-[A-Za-z0-9_.-]{1,28}',client_id):
+                raise ValueError('invalid client id')
+            body['text']=client_id
+        return await self._request('POST',_ORDER,body=body)
 
     async def get_order(self, order_id):
         if not isinstance(order_id,str) or not re.fullmatch(r'(?:[1-9][0-9]*|t-[A-Za-z0-9_.-]{1,28})',order_id):
