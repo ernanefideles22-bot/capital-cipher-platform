@@ -20,7 +20,7 @@ def test_active_matching_stop():
 @pytest.mark.parametrize('section,key,value', [
     (None,'status','finished'), (None,'id_string','124'), (None,'order_type','plan-close-short-position'), ('initial','contract','ETH_USDT'),
     ('initial','size',-2), ('initial','is_reduce_only',False), ('initial','price','79000'),
-    ('initial','tif','gtc'), ('trigger','rule',1), ('trigger','price_type',0),
+    ('initial','tif','gtc'), ('trigger','rule',1), ('trigger','price_type',0), ('trigger','rule',True),
     ('trigger','price','78000'), ('trigger','expiration',0),
 ])
 def test_rejects_unconfirmed_or_mismatched_stop(section,key,value):
