@@ -2,7 +2,8 @@ import hashlib
 import hmac
 import httpx
 import pytest
-from app.demo.gate_stop_probe import confirm_stop
+from app.demo.gate_stop_probe import confirm_stop, read_verified_stop
+from app.demo.gate_cycle_journal import GateCycleJournal
 
 
 def row():
@@ -13,6 +14,36 @@ def row():
 
 async def no_sleep(_):
     pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('use_time,expected', [(1011, True), (1020, False)])
+async def test_evidence_is_revalidated_by_journal_before_protection(tmp_path, use_time, expected):
+    transport=httpx.MockTransport(lambda req:httpx.Response(200,json=row()))
+    evidence=await read_verified_stop('key','secret',order_id='123',contract='BTC_USDT',
+        position_size=2,trigger_price='79000',transport=transport,clock=lambda:1010,sleep=no_sleep)
+    assert evidence is not None
+    snapshot,observed=evidence
+    journal=GateCycleJournal(str(tmp_path/'cycle.sqlite'))
+    journal.create('trade_12345','BTC_USDT','79000',2)
+    journal.record_entry_intent('trade_12345')
+    journal.record_entry_confirmation('trade_12345',signed_position=2,owned_order_confirmed=True)
+    journal.record_stop_intent('trade_12345')
+    journal.record_stop_acknowledgement('trade_12345',stop_id='123')
+    assert journal.record_stop_confirmation('trade_12345',snapshot=snapshot,observed_at=observed,
+           now=use_time,confirmed_position=2) is expected
+    assert journal.read('trade_12345')['state']==('PROTECTED' if expected else 'HALTED')
+    journal.close()
+
+
+@pytest.mark.asyncio
+async def test_no_evidence_returned_for_mismatched_stop():
+    wrong=row()
+    wrong['initial']['contract']='ETH_USDT'
+    evidence=await read_verified_stop('key','secret',order_id='123',contract='BTC_USDT',
+        position_size=2,trigger_price='79000',transport=httpx.MockTransport(lambda req:httpx.Response(200,json=wrong)),
+        clock=lambda:1010,sleep=no_sleep)
+    assert evidence is None
 
 
 @pytest.mark.asyncio
@@ -56,3 +87,4 @@ async def test_blocks_redirects_and_invalid_order_ids():
     assert not await confirm_stop('key','secret',order_id='123',contract='BTC_USDT',position_size=2,
                                   trigger_price='79000',transport=transport,clock=lambda:1010,sleep=no_sleep)
     assert len(calls)==3
+
