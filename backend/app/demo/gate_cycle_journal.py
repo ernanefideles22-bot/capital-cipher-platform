@@ -108,8 +108,12 @@ class GateCycleJournal:
         row=self.read(cycle_id)
         if row['state'] != 'STOP_PENDING':
             raise CycleBlocked('unexpected or unresolved state')
-        valid=_quantity(confirmed_position)==_quantity(row['position']) and stop_matches(snapshot,order_id=row['stop_id'],contract=row['contract'],
-                           position_size=row['position'],trigger_price=row['target'],observed_at=observed_at,now=now)
+        try:
+            valid=_quantity(confirmed_position)==_quantity(row['position']) and stop_matches(snapshot,order_id=row['stop_id'],contract=row['contract'],
+                               position_size=row['position'],trigger_price=row['target'],observed_at=observed_at,now=now)
+        except CycleBlocked:
+            # Missing or invalid position evidence cannot establish protection.
+            valid=False
         self._transition(cycle_id, {'STOP_PENDING'}, 'PROTECTED' if valid else 'HALTED',
                          'stop verified' if valid else 'stop not verified')
         return valid
@@ -129,3 +133,4 @@ class GateCycleJournal:
         self._transition(cycle_id, {'EXIT_PENDING'}, 'CLOSED' if flat else 'HALTED',
                          'flat confirmed' if flat else 'flat not confirmed')
         return flat
+
