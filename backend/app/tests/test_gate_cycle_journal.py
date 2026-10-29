@@ -184,3 +184,28 @@ def test_stop_left_open_never_counts_as_flat(tmp_path):
     j.close()
 
 
+@pytest.mark.parametrize('stale,expected',[(False,True),(True,False)])
+def test_bound_exit_identity_survives_restart_and_requires_current_evidence(tmp_path,stale,expected):
+    path=str(tmp_path/'exit.sqlite')
+    j=setup(path)
+    j.record_entry_confirmation('trade_12345',signed_position=2,owned_order_confirmed=True)
+    assert confirm_stop(j,snapshot())
+    j.record_bound_exit_intent('trade_12345','t-exit-1')
+    with pytest.raises(CycleBlocked):
+        j.record_verified_exit('trade_12345',order={},position={},inventory={},order_observed_at=1000,
+            position_observed_at=1000,inventory_started_at=1000,inventory_finished_at=1000,now=1000)
+    j.record_exit_acknowledgement('trade_12345','456')
+    with pytest.raises(CycleBlocked): j.record_exit_acknowledgement('trade_12345','456')
+    j.close()
+    j=GateCycleJournal(path)
+    order={'id':'456','text':'t-exit-1','contract':'BTC_USDT','status':'finished','finish_as':'filled',
+           'size':'0','left':'0','is_close':True,'is_reduce_only':True,'is_liq':False}
+    position={'contract':'BTC_USDT','mode':'single','size':'0'}
+    inventory={'positions':0,'orders':0,'conditional_orders':0,'atomic':False,'execution_authorized':False}
+    assert j.record_verified_exit('trade_12345',order=order,position=position,inventory=inventory,
+        order_observed_at=990 if stale else 1000,position_observed_at=1000,
+        inventory_started_at=1000,inventory_finished_at=1000,now=1000) is expected
+    assert j.read('trade_12345')['state']==('CLOSED' if expected else 'HALTED')
+    j.close()
+
+
