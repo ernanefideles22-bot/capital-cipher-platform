@@ -30,12 +30,13 @@ async def test_complete_simulated_cycle_signs_exact_body_and_reconciles(tmp_path
                 assert body==proposal['stop']
                 return httpx.Response(201,json={'id':123})
             if body.get('reduce_only'):
-                assert body['size']==-2
+                assert body['size']==0 and body['close'] is True
                 return httpx.Response(201,json={'id':125})
             assert body==proposal['entry']
             return httpx.Response(201,json={'id':124})
         initial=dict(proposal['stop']['initial'])
         initial['is_reduce_only']=initial.pop('reduce_only')
+        initial['is_close']=initial.pop('close')
         return httpx.Response(200,json={'id_string':'123','status':'open','create_time':1000,
           'order_type':proposal['stop']['order_type'],'initial':initial,'trigger':proposal['stop']['trigger']})
     sim=GateProtocolSimulator(httpx.MockTransport(handler),clock=lambda:1000)
@@ -50,7 +51,7 @@ async def test_complete_simulated_cycle_signs_exact_body_and_reconciles(tmp_path
     ack=await sim.submit_stop(proposal)
     journal.record_stop_acknowledgement('trade_12345',stop_id=str(ack['id']))
     observed=await sim.get_stop('123')
-    assert journal.record_stop_confirmation('trade_12345',snapshot=observed,observed_at=1010,now=1010)
+    assert journal.record_stop_confirmation('trade_12345',snapshot=observed,observed_at=1010,now=1010,confirmed_position=2)
     journal.record_exit_intent('trade_12345')
     await sim.submit_exit(proposal)
     assert journal.record_flat_confirmation('trade_12345',position=0,open_orders=0,
@@ -90,7 +91,7 @@ async def test_stop_ack_is_not_confirmation_and_bad_snapshot_halts(tmp_path):
     ack=await simulator.submit_stop(plan())
     journal.record_stop_acknowledgement('trade_12345',stop_id=str(ack['id']))
     assert journal.read('trade_12345')['state']=='STOP_PENDING'
-    assert not journal.record_stop_confirmation('trade_12345',snapshot={'id':123},observed_at=1010,now=1010)
+    assert not journal.record_stop_confirmation('trade_12345',snapshot={'id':123},observed_at=1010,now=1010,confirmed_position=2)
     assert journal.read('trade_12345')['state']=='HALTED'
     journal.close()
 
