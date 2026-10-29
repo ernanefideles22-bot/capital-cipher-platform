@@ -47,10 +47,9 @@ def build_order_plan(*, contract, signed_contracts, mark_price, stop_price,
     return {
         'environment':'GATE_TESTNET', 'execution_enabled':False, 'mode':'ONE_WAY_ISOLATED',
         'entry': {'contract':contract, 'size':amount, 'price':'0', 'tif':'ioc', 'text':client_id},
-        'stop': {'initial':{'contract':contract, 'size':-amount, 'price':'0', 'tif':'ioc', 'reduce_only':True},
+        'stop': {'initial':{'contract':contract, 'size':0, 'close':True, 'price':'0', 'tif':'ioc', 'reduce_only':True},
                  'trigger':{'strategy_type':0, 'price_type':1, 'price':format(stop,'f'),
                             'rule':2 if amount > 0 else 1, 'expiration':expiration_seconds},
-                 'order_type':'plan-close-long-position' if amount > 0 else 'plan-close-short-position',
-                 'pos_margin_mode':'isolated'},
-        'emergency_exit': {'contract':contract, 'size':-amount, 'price':'0', 'tif':'ioc', 'reduce_only':True},
+                 'order_type':'close-long-position' if amount > 0 else 'close-short-position'},
+        'emergency_exit': {'contract':contract, 'size':0, 'close':True, 'price':'0', 'tif':'ioc', 'reduce_only':True},
     }
