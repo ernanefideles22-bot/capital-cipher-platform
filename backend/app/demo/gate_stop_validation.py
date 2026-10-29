@@ -32,6 +32,9 @@ def stop_matches(snapshot, *, order_id, contract, position_size, trigger_price,
             and initial['contract'] == contract
             and initial.get('is_reduce_only') is True
             and size == -position
+            and type(trigger['strategy_type']) is int
+            and type(trigger['price_type']) is int
+            and type(trigger['rule']) is int
             and trigger['strategy_type'] == 0
             and trigger['price_type'] == 1
             and trigger['rule'] == (2 if position > 0 else 1)
