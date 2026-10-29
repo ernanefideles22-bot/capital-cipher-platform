@@ -119,8 +119,30 @@ class GateCycleJournal:
         return valid
 
     def halt_unknown(self, cycle_id):
-        self._transition(cycle_id, {'ENTRY_PENDING','STOP_REQUIRED','STOP_SUBMITTING','STOP_PENDING','EXIT_PENDING'},
+        self._transition(cycle_id, {'ENTRY_PENDING','STOP_REQUIRED','STOP_SUBMITTING','STOP_PENDING','EXIT_PENDING','EMERGENCY_EXIT_PENDING'},
                          'HALTED', 'ambiguous exchange outcome')
+
+    def record_emergency_exit_intent(self, cycle_id, *, confirmed_position, owned_position_confirmed):
+        """Record intent only after independent ownership and position evidence.
+
+        This transition does not submit or authorize an exchange request.
+        """
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            row=self.read(cycle_id)
+            if row['state'] not in {'STOP_REQUIRED', 'STOP_PENDING', 'HALTED'} or not row['position']:
+                raise CycleBlocked('no reconciled position for emergency exit')
+            if self.db.execute("SELECT 1 FROM events WHERE cycle_id=? AND new_state='EMERGENCY_EXIT_PENDING'", (cycle_id,)).fetchone():
+                raise CycleBlocked('previous emergency exit outcome requires reconciliation')
+            if owned_position_confirmed is not True or _quantity(confirmed_position) != _quantity(row['position']):
+                raise CycleBlocked('emergency exit position not independently confirmed')
+            self.db.execute("UPDATE cycles SET state='EMERGENCY_EXIT_PENDING' WHERE id=?", (cycle_id,))
+            self.db.execute('INSERT INTO events (cycle_id,old_state,new_state,reason) VALUES (?,?,?,?)',
+                            (cycle_id,row['state'],'EMERGENCY_EXIT_PENDING','emergency exit intent'))
+            self.db.execute('COMMIT')
+        except BaseException:
+            self.db.execute('ROLLBACK')
+            raise
 
     def record_exit_intent(self, cycle_id):
         self._transition(cycle_id, {'PROTECTED'}, 'EXIT_PENDING', 'exit intent')
@@ -130,7 +152,7 @@ class GateCycleJournal:
         flat = (_quantity(position) == 0 and type(open_orders) is int and open_orders == 0
                 and type(open_stop_orders) is int and open_stop_orders == 0
                 and all_positions_flat is True and exchange_confirmed is True)
-        self._transition(cycle_id, {'EXIT_PENDING'}, 'CLOSED' if flat else 'HALTED',
+        self._transition(cycle_id, {'EXIT_PENDING','EMERGENCY_EXIT_PENDING'}, 'CLOSED' if flat else 'HALTED',
                          'flat confirmed' if flat else 'flat not confirmed')
         return flat
 
