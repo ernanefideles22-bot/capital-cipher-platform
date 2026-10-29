@@ -6,8 +6,8 @@ from app.demo.gate_stop_probe import confirm_stop
 
 
 def row():
-    return {'id_string':'123','status':'open','order_type':'plan-close-long-position','create_time':1000,
-            'initial':{'contract':'BTC_USDT','size':-2,'price':'0','tif':'ioc','is_reduce_only':True},
+    return {'id_string':'123','status':'open','order_type':'close-long-position','create_time':1000,
+            'initial':{'contract':'BTC_USDT','size':0,'price':'0','tif':'ioc','is_reduce_only':True,'is_close':True},
             'trigger':{'strategy_type':0,'price_type':1,'price':'79000','rule':2,'expiration':3600}}
 
 
