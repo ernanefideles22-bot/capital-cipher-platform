@@ -30,6 +30,7 @@ export default function KillSwitchButton({ active }: { active: boolean }) {
     return (
       <div className="px-3 py-1.5 bg-red-950 border border-red-600 text-red-300 rounded font-bold text-sm animate-pulse">
         {t("systemLocked")}
+        {error && <p role="alert" className="mt-2 max-w-xs text-xs text-red-300">{error}</p>}
       </div>
     );
   }

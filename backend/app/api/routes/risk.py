@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.api.context import AppContext
 from app.api.deps import AdminRequired, get_context
 from app.schemas.api import success_response
+from app.api.routes.binance_demo import forward as demo_forward
 
 router = APIRouter(prefix="/risk")
 
@@ -49,8 +50,18 @@ async def kill_switch(
         reason=body.reason,
         actor="api",
     )
+    demo_halted = None
+    if context.settings.demo_connector_url:
+        try:
+            result = await demo_forward(context, "POST", "/api/demo/kill")
+            if result.get("halted") is not True:
+                raise HTTPException(502, "DEMO_HALT_NOT_CONFIRMED")
+            demo_halted = True
+        except HTTPException:
+            raise HTTPException(502, "PAPER_HALTED_DEMO_HALT_NOT_CONFIRMED") from None
     return success_response(
         {
+            "demo_halted": demo_halted,
             "kill_switch_active": True,
             "system_state": context.state_machine.state.value,
             "reason": body.reason,

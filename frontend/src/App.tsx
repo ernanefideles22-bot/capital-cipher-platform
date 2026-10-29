@@ -15,15 +15,16 @@ import Backtest from "./screens/Backtest";
 import Reports from "./screens/Reports";
 import Readiness from "./screens/Readiness";
 import Regimes from "./screens/Regimes";
+import Demo from "./screens/Demo";
 
-const TABS = ["Overview", "Readiness", "Market", "Agents", "Regimes", "Decisions", "Risk", "Paper", "Backtest", "Reports", "Audit"] as const;
+const TABS = ["Overview", "Readiness", "Market", "Agents", "Regimes", "Decisions", "Risk", "Paper", "Demo", "Backtest", "Reports", "Audit"] as const;
 type Tab = (typeof TABS)[number];
 type TranslationKey = Parameters<ReturnType<typeof useI18n>["t"]>[0];
 
 const NAV_GROUPS: { label: TranslationKey; tabs: Tab[] }[] = [
   { label: "controlRoom", tabs: ["Overview", "Readiness", "Market"] },
   { label: "research", tabs: ["Agents", "Regimes", "Decisions", "Backtest", "Reports"] },
-  { label: "controls", tabs: ["Risk", "Paper"] },
+  { label: "controls", tabs: ["Risk", "Paper", "Demo"] },
   { label: "records", tabs: ["Audit"] },
 ];
 
@@ -35,6 +36,7 @@ const TAB_META: Record<Tab, { short: string; label: TranslationKey; description:
   Regimes: { short: "RG", label: "agents", description: "descAgents" },
   Decisions: { short: "DC", label: "decisions", description: "descDecisions" },
   Risk: { short: "RK", label: "risk", description: "descRisk" },
+  Demo: { short: "DM", label: "paper", description: "descPaper" },
   Paper: { short: "PP", label: "paper", description: "descPaper" },
   Backtest: { short: "BT", label: "backtest", description: "descBacktest" },
   Reports: { short: "RP", label: "reports", description: "descReports" },
@@ -47,12 +49,14 @@ function formatRefresh(value: Date | null, language: Language, waiting: string):
 }
 
 function tabLabel(tab: Tab, t: ReturnType<typeof useI18n>["t"]): string {
+  if (tab === "Demo") return "Futuros Demo";
   if (tab === "Readiness") return "Readiness";
   if (tab === "Regimes") return "Regimes";
   return t(TAB_META[tab].label);
 }
 
 function tabDescription(tab: Tab, t: ReturnType<typeof useI18n>["t"]): string {
+  if (tab === "Demo") return "Conta Binance de testes, agentes e ordens protegidas com fundos virtuais";
   if (tab === "Readiness") return "Desenvolvimento e validação operacional dos testes";
   if (tab === "Regimes") return "Desempenho shadow dos especialistas por regime de mercado";
   return t(TAB_META[tab].description);
@@ -60,7 +64,7 @@ function tabDescription(tab: Tab, t: ReturnType<typeof useI18n>["t"]): string {
 
 function AppShell() {
   const { language, setLanguage, t, status: translateStatus } = useI18n();
-  const [tab, setTab] = useState<Tab>("Overview");
+  const [tab, setTab] = useState<Tab>(() => window.location.hash === "#demo" ? "Demo" : "Overview");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const systemStatus = usePolling(api.status, 5000);
@@ -77,8 +81,8 @@ function AppShell() {
           <div className="min-w-0"><div className="truncate text-sm font-bold tracking-[0.16em] text-slate-100">CAPITAL CIPHER</div><div className="mt-0.5 text-[10px] uppercase tracking-[0.18em] text-slate-500">{t("brandSubtitle")}</div></div>
         </div>
         <div className="mt-7 rounded-xl border border-emerald-900/70 bg-emerald-950/20 px-3 py-3">
-          <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-emerald-300"><span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.9)]" />{t("paperEnvironment")}</div>
-          <p className="mt-1 text-xs leading-5 text-slate-500">{t("paperDescription")}</p>
+          <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-emerald-300"><span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.9)]" />{tab === "Demo" ? "Binance Futuros Demo" : t("paperEnvironment")}</div>
+          <p className="mt-1 text-xs leading-5 text-slate-500">{tab === "Demo" ? "Conta de testes com fundos virtuais" : t("paperDescription")}</p>
         </div>
         <nav aria-label={t("controlRoom")} className="mt-7 flex-1 space-y-6 overflow-y-auto">
           {NAV_GROUPS.map((group) => <div key={group.label}>
@@ -92,7 +96,7 @@ function AppShell() {
       <div className="lg:pl-64">
         <header className="sticky top-0 z-10 border-b border-slate-800/90 bg-slate-950/90 backdrop-blur">
           <div className="flex min-h-[72px] items-center justify-between gap-3 px-4 py-3 sm:px-6 xl:px-8">
-            <div className="flex min-w-0 items-center gap-3"><button aria-label={t("openNavigation")} onClick={() => setSidebarOpen(true)} className="rounded-lg border border-slate-800 bg-slate-900 px-2.5 py-2 text-slate-300 hover:bg-slate-800 lg:hidden">☰</button><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h1 className="truncate text-sm font-semibold tracking-wide text-slate-100 sm:text-base">{tab === "Readiness" ? "Control Room / Readiness" : tabLabel(tab, t)}</h1>{systemStatus && <StatusBadge value={systemStatus.mode} />}</div><p className="mt-1 truncate text-xs text-slate-500">{tabDescription(tab, t)}</p></div></div>
+            <div className="flex min-w-0 items-center gap-3"><button aria-label={t("openNavigation")} onClick={() => setSidebarOpen(true)} className="rounded-lg border border-slate-800 bg-slate-900 px-2.5 py-2 text-slate-300 hover:bg-slate-800 lg:hidden">☰</button><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h1 className="truncate text-sm font-semibold tracking-wide text-slate-100 sm:text-base">{tab === "Readiness" ? "Control Room / Readiness" : tabLabel(tab, t)}</h1>{tab === "Demo" ? <StatusBadge value="DEMO" /> : systemStatus && <StatusBadge value={systemStatus.mode} />}</div><p className="mt-1 truncate text-xs text-slate-500">{tabDescription(tab, t)}</p></div></div>
             <div className="flex shrink-0 items-center gap-3">
               <div className="hidden text-right xl:block"><div className="text-[10px] uppercase tracking-[0.16em] text-slate-600">{t("lastRefresh")}</div><div className="mt-0.5 font-mono text-xs text-slate-400">{formatRefresh(lastRefresh, language, t("waitingTelemetry"))}</div></div>
               <div className="hidden items-center gap-2 text-xs text-slate-500 md:flex"><span className={`h-1.5 w-1.5 rounded-full ${systemStatus?.market_data === "CONNECTED" ? "bg-emerald-400" : "bg-amber-400"}`} /><span>{t("marketConnected")} {systemStatus ? translateStatus(systemStatus.market_data) : "..."}</span></div>
@@ -102,9 +106,9 @@ function AppShell() {
           </div>
         </header>
         <div className="mx-auto max-w-[1800px] px-4 pb-8 sm:px-6 xl:px-8">
-          <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-cyan-900/60 bg-cyan-950/25 px-4 py-3 text-xs text-cyan-100 shadow-[0_12px_40px_rgba(8,145,178,0.06)]"><span><span className="font-semibold tracking-wide text-cyan-200">{t("paperOnly")}</span><span className="mx-2 text-cyan-700">/</span>{t("noLiveExecution")}</span><span className="text-cyan-400/80">{t("auditedWorkflow")}</span></div>
+          <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-cyan-900/60 bg-cyan-950/25 px-4 py-3 text-xs text-cyan-100 shadow-[0_12px_40px_rgba(8,145,178,0.06)]"><span><span className="font-semibold tracking-wide text-cyan-200">{tab === "Demo" ? "BINANCE FUTUROS DEMO" : t("paperOnly")}</span><span className="mx-2 text-cyan-700">/</span>{tab === "Demo" ? "Ordens apenas com fundos virtuais" : t("noLiveExecution")}</span><span className="text-cyan-400/80">{t("auditedWorkflow")}</span></div>
           {!systemStatus && <p role="status" className="mt-4 rounded border border-amber-600 p-3 text-sm text-amber-300">{t("waitingTelemetry")}</p>}
-          <main className="py-7">{tab === "Overview" && <Overview />}{tab === "Readiness" && <Readiness />}{tab === "Market" && <Market />}{tab === "Agents" && <Agents />}{tab === "Regimes" && <Regimes />}{tab === "Decisions" && <Decisions />}{tab === "Risk" && <Risk />}{tab === "Paper" && <Paper />}{tab === "Backtest" && <Backtest />}{tab === "Reports" && <Reports />}{tab === "Audit" && <Audit />}</main>
+          <main className="py-7">{tab === "Overview" && <Overview />}{tab === "Readiness" && <Readiness />}{tab === "Market" && <Market />}{tab === "Agents" && <Agents />}{tab === "Regimes" && <Regimes />}{tab === "Decisions" && <Decisions />}{tab === "Risk" && <Risk />}{tab === "Paper" && <Paper />}{tab === "Demo" && <Demo />}{tab === "Backtest" && <Backtest />}{tab === "Reports" && <Reports />}{tab === "Audit" && <Audit />}</main>
         </div>
       </div>
     </div>
