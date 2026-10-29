@@ -71,7 +71,7 @@ class DemoExecution:
         if not daily or daily['day']!=day:
             daily={'day':day,'equity':equity}; self.ledger.flag('daily_baseline',daily)
         self.ledger.flag('equity_baseline',baseline);self.ledger.flag('equity_peak',peak)
-        recent=[t for t in self.ledger.trades() if t['state']=='CLOSED']
+        recent=[t for t in self.ledger.trades() if t['state']=='CLOSED' and t.get('source')!='OPERATIONAL_CANARY']
         losses=0
         for trade in recent:
             pnl=trade.get('realized_pnl_usdt')
@@ -440,8 +440,9 @@ class DemoExecution:
                 raise DemoError('DEMO_CANARY_PROTECTION_FAILED')
             closed=await self.close_trade(trade['id'])
             results.append({'side':side,'trade_id':trade['id'],'protected':True,'closed':closed['state']=='CLOSED'})
-        account=await self.account()
-        if account['positions'] or account['open_order_count'] or account['open_algo_order_count']:
-            raise DemoError('DEMO_CANARY_NOT_FLAT')
+        async with self.lock:
+            account=await self.account()
+            if account['positions'] or account['open_order_count'] or account['open_algo_order_count']:
+                raise DemoError('DEMO_CANARY_NOT_FLAT')
         self.ledger.flag('canary_verified',True);self.ledger.flag('canary_revision',self.revision);self.ledger.event('CANARY_PASSED',{'legs':results})
         return {'passed':True,'legs':results,'flat':True,'automatic_enabled':False}

@@ -66,7 +66,9 @@ def create_app(*, environment=None, transport=None, clock_ms=None, status_clock=
         "source_revision": values.get("APP_SOURCE_REVISION", "unknown"),
     }
     account = {}
-    lock = asyncio.Lock()
+    # Clock refresh and account snapshots share the execution lock so a
+    # revalidation cannot invalidate clock state during a signed order.
+    lock = executor.lock if executor else asyncio.Lock()
 
     def account_is_fresh():
         if not state["authenticated"] or not state["checked_at"]:

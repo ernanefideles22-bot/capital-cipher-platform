@@ -114,6 +114,20 @@ async def test_entry_confirmation_uses_lookup_after_successful_acknowledgement(t
     await engine.close_trade(p['id']);engine.ledger.close()
 
 
+def test_operational_canary_fees_do_not_count_as_strategy_loss_streak(tmp_path):
+    engine=DemoExecution(Venue(),str(tmp_path/'ledger.sqlite'))
+    for i in range(3):
+        engine.ledger.reserve({'id':f'canary-{i}','state':'CLOSED','source':'OPERATIONAL_CANARY','symbol':'ETHUSDT','side':'BUY','realized_pnl_usdt':-.02})
+    engine._drawdown_guard({'equity_usdt':4999.94})
+    assert not engine.ledger.flag('halted')
+    for i in range(3):
+        engine.ledger.reserve({'id':f'strategy-{i}','state':'CLOSED','source':'AGENTS','symbol':'ETHUSDT','side':'BUY','realized_pnl_usdt':-.02})
+    with pytest.raises(DemoError,match='DRAWDOWN_OR_LOSS_LIMIT'):
+        engine._drawdown_guard({'equity_usdt':4999.88})
+    assert engine.ledger.flag('halted')
+    engine.ledger.close()
+
+
 @pytest.mark.asyncio
 async def test_protection_failure_flattens_once_and_halts(tmp_path):
     venue=Venue();venue.failure='tp';engine=DemoExecution(venue,str(tmp_path/'ledger.sqlite'))
