@@ -44,6 +44,12 @@ class GateCycleJournal:
             raise CycleBlocked('unknown cycle')
         return dict(zip(('id','state','contract','target','planned','position','stop_id'),row))
 
+    def recovery_status(self):
+        """Report unresolved work after restart without modifying it or granting permission."""
+        rows=self.db.execute("SELECT id,state,contract FROM cycles WHERE state != 'CLOSED' ORDER BY id").fetchall()
+        return {'recovery_required':bool(rows), 'execution_authorized':False,
+                'cycles':[{'id':row[0], 'state':row[1], 'contract':row[2]} for row in rows]}
+
     def create(self, cycle_id, contract, target, signed_planned_size):
         if not isinstance(cycle_id,str) or not re.fullmatch(r'[A-Za-z0-9_-]{8,80}',cycle_id):
             raise CycleBlocked('invalid cycle id')
