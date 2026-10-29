@@ -77,10 +77,23 @@ def test_restart_during_ambiguous_submission_never_resubmits(tmp_path):
     j.close()
     j=GateCycleJournal(path)
     assert j.read('trade_12345')['state']=='ENTRY_PENDING'
+    assert j.recovery_status()=={'recovery_required':True,'execution_authorized':False,
+                                 'cycles':[{'id':'trade_12345','state':'ENTRY_PENDING','contract':'BTC_USDT'}]}
     with pytest.raises(CycleBlocked):
         j.record_entry_intent('trade_12345')
     j.halt_unknown('trade_12345')
     assert j.read('trade_12345')['state']=='HALTED'
+    j.close()
+
+
+def test_completed_cycle_does_not_require_recovery(tmp_path):
+    j=setup(str(tmp_path/'cycle.sqlite'))
+    j.record_entry_confirmation('trade_12345',signed_position=2,owned_order_confirmed=True)
+    assert confirm_stop(j,snapshot())
+    j.record_exit_intent('trade_12345')
+    assert j.record_flat_confirmation('trade_12345',position=0,open_orders=0,open_stop_orders=0,
+                                      all_positions_flat=True,exchange_confirmed=True)
+    assert j.recovery_status()=={'recovery_required':False,'execution_authorized':False,'cycles':[]}
     j.close()
 
 
