@@ -12,19 +12,21 @@ from fastapi.responses import HTMLResponse
 from app.demo.gate_readonly import GateProbeError, probe_account
 from app.demo.gate_market import fetch_candles
 from app.demo.gate_analysis import analyze_snapshot
+from app.demo.gate_reconcile import inventory
 
 KEY_VARIABLE = "CAPITAL_CIPHER_GATE_TESTNET_API_KEY"
 SECRET_VARIABLE = "CAPITAL_CIPHER_GATE_TESTNET_API_SECRET"
 
 
-def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles, research=analyze_snapshot):
+def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles, research=analyze_snapshot,
+               inventory_fn=inventory):
     values = dict(os.environ if environment is None else environment)
     key, secret = values.get(KEY_VARIABLE, "").strip(), values.get(SECRET_VARIABLE, "").strip()
     state = {"environment": "GATE_TESTNET", "status": "WAITING_FOR_CREDENTIALS",
              "authenticated": False, "execution_enabled": False, "checked_at": None,
              "market_status": "CHECKING", "market_checked_at": None,
              "research_status": "WAITING" if values.get('GATE_RESEARCH_ANALYSIS_ENABLED') == 'true' else "DISABLED",
-             "research_checked_at": None}
+             "research_checked_at": None, "inventory_status":"WAITING", "inventory_checked_at":None}
     private_account = {'equity': None}
 
     async def refresh():
@@ -99,9 +101,28 @@ def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles
                 logging.getLogger('uvicorn.error').info('GATE_RESEARCH_STATUS %s', state['research_status'])
             await asyncio.sleep(300)
 
+    async def inventory_monitor():
+        while True:
+            if not state['authenticated']:
+                state['inventory_status']='WAITING'
+                await asyncio.sleep(10)
+                continue
+            try:
+                result=await inventory_fn(key,secret)
+                if result.get('execution_authorized') is not False or result.get('atomic') is not False:
+                    raise ValueError('invalid inventory scope')
+                state['inventory_status']='AVAILABLE'
+                logging.getLogger('uvicorn.error').info('GATE_INVENTORY positions=%d orders=%d conditional_orders=%d atomic=false',
+                    result['positions'],result['orders'],result['conditional_orders'])
+            except Exception:
+                state['inventory_status']='UNAVAILABLE'
+                logging.getLogger('uvicorn.error').info('GATE_INVENTORY_UNAVAILABLE')
+            state['inventory_checked_at']=datetime.now(timezone.utc).isoformat()
+            await asyncio.sleep(300)
+
     @asynccontextmanager
     async def lifespan(app):
-        tasks = [asyncio.create_task(monitor()), asyncio.create_task(market_monitor())]
+        tasks = [asyncio.create_task(monitor()), asyncio.create_task(market_monitor()), asyncio.create_task(inventory_monitor())]
         if values.get('GATE_RESEARCH_ANALYSIS_ENABLED') == 'true':
             tasks.append(asyncio.create_task(research_monitor()))
         try:
