@@ -42,7 +42,7 @@ def test_validation_pool_supports_office_without_changing_live_connection(monkey
     assert gate.os.environ["DATABASE_URL"] == original
 
 
-async def test_invalid_validation_configuration_stops_before_database_connection(monkeypatch):
+async def test_invalid_validation_configuration_stops_before_database_connection(monkeypatch, tmp_path):
     gate = gate_module(monkeypatch)
     monkeypatch.setenv("PAPER_FULL_FLOW_VALIDATION_ENABLED", "true")
     monkeypatch.setenv("MIGRATION_DATABASE_URL", "postgresql://fixture@capital-cipher-recovered.railway.internal/capital_cipher_staging")
@@ -51,7 +51,13 @@ async def test_invalid_validation_configuration_stops_before_database_connection
     monkeypatch.setattr(gate, "validate_staging", lambda: None)
     real_path = gate.Path
     root = Path(__file__).resolve().parents[3]
-    monkeypatch.setattr(gate, "Path", lambda path: root / "supabase/migrations" if path == "/app/migrations" else real_path(path))
+    # This guard intentionally expects the approved 16-migration bundle. Keep
+    # the fixture scoped to that bundle even when later migrations are added.
+    approved = sorted((root / "supabase/migrations").glob("*.sql"))[:16]
+    assert len(approved) == 16
+    for migration in approved:
+        (tmp_path / migration.name).write_text(migration.read_text())
+    monkeypatch.setattr(gate, "Path", lambda path: tmp_path if path == "/app/migrations" else real_path(path))
     monkeypatch.setattr(gate, "validation_settings", lambda *args: (_ for _ in ()).throw(ValueError("invalid isolated pool")))
     attempted = []
     async def connect(*args, **kwargs):
