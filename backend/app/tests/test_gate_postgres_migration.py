@@ -66,6 +66,7 @@ async def test_gate_oms_entry_requires_durable_stop_and_target():
     from app.database.session import Database
     from app.execution.adapters.gate_testnet_metadata import GateTestnetMetadata
     from app.execution.adapters.gate_testnet_preparation import GateTestnetPreparationAdapter
+    from app.execution.gate_protection_validation import validate_gate_protection
     from app.oms.service import OMSService
     from app.paper_trading.engine import PaperTradingEngine
     from app.risk.venue_aware import VenueAwareRiskManager
@@ -118,11 +119,14 @@ async def test_gate_oms_entry_requires_durable_stop_and_target():
         check=await risk.check(decision,entry_price=100,atr=1,leverage=1)
         assert check.approved
         order=await oms.submit_approved(decision,check,current_price=100)
-        protected=await connection.fetchrow("""SELECT exchange,environment,stop_loss,take_profit,leverage,approval_id
+        protected=await connection.fetchrow("""SELECT oms_order_id,approval_id,exchange,environment,symbol,side,
+            execution_intent,reduce_only,stop_loss,take_profit,leverage,reference_price
             FROM capital_cipher.oms_order_protections WHERE oms_order_id=$1""",order.oms_order_id)
         assert protected["exchange"]=="GATE" and protected["environment"]=="TESTNET"
         assert float(protected["stop_loss"])==check.stop_loss and float(protected["take_profit"])==check.take_profit
         assert float(protected["leverage"])==1 and protected["approval_id"]==check.approval_id
+        result=validate_gate_protection(order,dict(protected))
+        assert result["verified"] and result["execution_authorized"] is False
         with pytest.raises(asyncpg.ObjectNotInPrerequisiteStateError, match="protection evidence is immutable"):
             await connection.execute("UPDATE capital_cipher.oms_order_protections SET stop_loss=1 WHERE oms_order_id=$1",order.oms_order_id)
         assert not await adapter.healthcheck()
