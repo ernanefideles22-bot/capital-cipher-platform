@@ -99,6 +99,21 @@ async def test_position_lookup_is_testnet_read_only():
 
 
 @pytest.mark.asyncio
+async def test_close_can_carry_bounded_client_identity_for_reconciliation():
+    calls=[]
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(201,json={'id':123})
+    c=client(handler,enabled=True,ack='GATE_TESTNET_VIRTUAL_FUNDS_ONLY')
+    await c.close_position(contract='BTC_USDT',client_id='t-exit-1')
+    assert json.loads(calls[0].content)['text']=='t-exit-1'
+    with pytest.raises(ValueError):
+        await c.close_position(contract='BTC_USDT',client_id='../../unsafe')
+    assert len(calls)==1
+    await c.close()
+
+
+@pytest.mark.asyncio
 async def test_read_failure_is_sanitized():
     c=client(lambda req:httpx.Response(403,text='dummy-secret'))
     with pytest.raises(GateReadError) as error: await c.get_stop('123')
