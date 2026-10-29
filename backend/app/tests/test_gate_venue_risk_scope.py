@@ -57,3 +57,19 @@ async def test_gate_without_repository_fails_closed():
     with pytest.raises(SecurityError, match="durable repository"):
         VenueAwareRiskManager(RiskLimits(),SystemStateMachine(),AuditService(),
             execution_environment=ExecutionEnvironment.TESTNET,testnet_exchange=Exchange.GATE)
+
+
+def test_gate_cannot_fall_through_to_bybit_adapter(monkeypatch):
+    from app.api.context import build_context
+    from app.core.config import Settings
+    from app.execution.credentials import EnvironmentTestnetCredentialProvider
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("No credentials should be read for an unsupported adapter")
+    monkeypatch.setattr(EnvironmentTestnetCredentialProvider, "load", forbidden)
+    settings=Settings(_env_file=None, APP_ENV="test", DATABASE_URL="postgresql+asyncpg://x:x@localhost/x",
+        OMS_EXECUTION_ENVIRONMENT="TESTNET", OMS_TESTNET_ENABLED=True,
+        OMS_TESTNET_ACKNOWLEDGEMENT="TESTNET_ONLY_NO_REAL_FUNDS").model_copy(
+            update={"oms_testnet_exchange":"GATE"})
+    with pytest.raises(ValueError, match="no supported execution adapter"):
+        build_context(settings, with_database=True)
