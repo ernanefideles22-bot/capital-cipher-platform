@@ -97,6 +97,38 @@ def test_completed_cycle_does_not_require_recovery(tmp_path):
     j.close()
 
 
+def test_bound_entry_identity_survives_restart_and_evidence_is_reconciled(tmp_path):
+    path=str(tmp_path/'bound.sqlite')
+    j=GateCycleJournal(path)
+    j.create('trade_12345','BTC_USDT','79000',2)
+    j.record_bound_entry_intent('trade_12345','t-cycle-1')
+    j.record_entry_acknowledgement('trade_12345','123')
+    j.close()
+    j=GateCycleJournal(path)
+    order={'id':'123','contract':'BTC_USDT','text':'t-cycle-1','size':'2','left':'1',
+           'status':'finished','finish_as':'ioc','is_close':False,'is_reduce_only':False}
+    position={'contract':'BTC_USDT','mode':'single','size':'1'}
+    assert j.record_verified_entry('trade_12345',order=order,position=position,
+                                   order_observed_at=1000,position_observed_at=1001,now=1002)
+    assert j.read('trade_12345')['state']=='STOP_REQUIRED'
+    assert j.read('trade_12345')['position']=='1'
+    j.close()
+
+
+def test_unknown_ack_blocks_and_wrong_entry_evidence_halts(tmp_path):
+    j=GateCycleJournal(str(tmp_path/'bound.sqlite'))
+    j.create('trade_12345','BTC_USDT','79000',2)
+    j.record_bound_entry_intent('trade_12345','t-cycle-1')
+    with pytest.raises(CycleBlocked):
+        j.record_verified_entry('trade_12345',order={},position={},order_observed_at=1000,position_observed_at=1000,now=1000)
+    assert j.read('trade_12345')['state']=='ENTRY_PENDING'
+    j.record_entry_acknowledgement('trade_12345','123')
+    with pytest.raises(CycleBlocked): j.record_entry_acknowledgement('trade_12345','123')
+    assert not j.record_verified_entry('trade_12345',order={},position={},order_observed_at=1000,position_observed_at=1000,now=1000)
+    assert j.read('trade_12345')['state']=='HALTED'
+    j.close()
+
+
 def test_unresolved_cycle_blocks_other_connections_and_restart(tmp_path):
     path=str(tmp_path/'cycle.sqlite')
     first=setup(path)
@@ -150,4 +182,5 @@ def test_stop_left_open_never_counts_as_flat(tmp_path):
     assert not j.record_flat_confirmation('trade_12345',position=0,open_orders=0,open_stop_orders=1,all_positions_flat=True,exchange_confirmed=True)
     assert j.read('trade_12345')['state']=='HALTED'
     j.close()
+
 
