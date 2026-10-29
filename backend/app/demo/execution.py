@@ -7,7 +7,7 @@ import json
 import math
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_DOWN, ROUND_CEILING, ROUND_FLOOR
 
 from app.demo.binance import DemoError
@@ -31,15 +31,17 @@ def identity(kind, token):
 
 
 class DemoExecution:
-    def __init__(self, venue, path, *, analysis_fn=None):
+    def __init__(self, venue, path, *, analysis_fn=None, entry_guard=None):
         self.venue=venue
         self.ledger=DemoLedger(path)
         self.lock=asyncio.Lock()
         self._analysis_fn=analysis_fn
+        self._entry_guard=entry_guard
         self.analysis_lock=asyncio.Lock()
         self.canary_lock=asyncio.Lock()
         self.revision=os.getenv("APP_SOURCE_REVISION", "local")
         self.latest_analysis=None
+        self.last_account=None
         self.last_error=None
         self.limits={'max_notional_usdt':200,'risk_per_trade_percent':.1,'max_open_positions':1,
             'leverage':1,'max_daily_drawdown_percent':2,'max_total_drawdown_percent':5,'max_consecutive_losses':3}
@@ -48,13 +50,40 @@ class DemoExecution:
         return {'capability':'BINANCE_FUTURES_DEMO','execution_available':True,'automatic_enabled':bool(self.ledger.flag('automatic')),
             'halted':bool(self.ledger.flag('halted')),'canary_verified':self.canary_passed(),
             'limits':self.limits,'last_error':self.last_error,'trades':self.ledger.trades(),'events':self.ledger.events(),
-            'analysis':self.latest_analysis,'live_execution_available':False}
+            'analysis':self.latest_analysis,'observation':self.observation(),'live_execution_available':False}
+
+    def observation(self):
+        campaign=self.ledger.flag('observation')
+        if not campaign:
+            return None
+        rows=self.ledger.observation_rows(campaign['id'])
+        closed=[t for t in rows['trades'] if t['state']=='CLOSED']
+        settled=[t for t in closed if t.get('realized_pnl_usdt') is not None]
+        latest=rows['latest_analysis']
+        account=self.last_account or {}
+        return {**campaign,'source_revision':self.revision,
+            'automatic_enabled':bool(self.ledger.flag('automatic')),'halted':bool(self.ledger.flag('halted')),
+            'canary_verified':self.canary_passed(),'last_error':self.last_error,
+            'analysis_count':rows['analysis_count'],'wait_count':rows['wait_count'],
+            'risk_approved_count':rows['risk_approved_count'],
+            'last_candle':latest['candle_closed_at'] if latest else None,
+            'last_decision':{k:v for k,v in latest['decision'].items() if k in {'candidate_action','confidence','reason'}} if latest else None,
+            'primary_agents':[{k:a.get(k) for k in ('agent_name','signal','status','confidence','reason')} for a in latest['agents'] if a['agent_name'] in latest['primary_agents']] if latest else [],
+            'agent_status_counts':{status:sum(a['status']==status for a in latest['agents']) for status in {a['status'] for a in latest['agents']}} if latest else {},
+            'trade_count':len(rows['trades']),'closed_count':len(closed),'settled_count':len(settled),'pending_pnl_count':len(closed)-len(settled),
+            'net_realized_pnl_usdt':sum(t['realized_pnl_usdt'] for t in settled),
+            'fees_usdt':sum(t.get('fees_usdt',0) for t in settled),
+            'wins':sum(t['realized_pnl_usdt']>0 for t in settled),'losses':sum(t['realized_pnl_usdt']<0 for t in settled),
+            'active_trade_count':len(self.ledger.active()),'equity_usdt':account.get('equity_usdt'),
+            'unrealized_pnl_usdt':account.get('unrealized_pnl_usdt'),
+            'account_checked_at':account.get('checked_at'),'attribution':'PRIMARY_ENSEMBLE_ONLY_SHADOW_NOT_CAUSAL'}
 
     def canary_passed(self):
         return bool(self.ledger.flag("canary_verified")) and self.ledger.flag("canary_revision")==self.revision
 
     async def account(self):
-        return await self.venue.validate_account()
+        self.last_account={**await self.venue.validate_account(),'checked_at':utc()}
+        return self.last_account
 
     @staticmethod
     def _account_guard(account):
@@ -104,7 +133,7 @@ class DemoExecution:
             'tick':number(filters['PRICE_FILTER']['tickSize']),
             'notional':number(filters['MIN_NOTIONAL'].get('notional',filters['MIN_NOTIONAL'].get('minNotional')))}
 
-    async def analyze(self, symbol='ETHUSDT', timeframe='15m', *, canary_side=None):
+    async def analyze(self, symbol='ETHUSDT', timeframe='15m', *, canary_side=None, automatic=False):
         if symbol not in {'BTCUSDT','ETHUSDT','SOLUSDT'} or timeframe not in {'1m','5m','15m','1h','4h'}:
             raise DemoError('DEMO_ANALYSIS_SCOPE_INVALID')
         if self.analysis_lock.locked():
@@ -142,6 +171,8 @@ class DemoExecution:
                     result=json.loads(out)
                 except ValueError:
                     raise DemoError('DEMO_AGENT_OUTPUT_INVALID') from None
+            if automatic and not canary_side and self.ledger.flag('automatic') and self.ledger.flag('observation'):
+                result['observation_id']=self.ledger.flag('observation')['id']
             self.latest_analysis=self.ledger.proposal(result)
             self.ledger.event('AGENT_ANALYSIS',{'id':result['id'],'symbol':symbol,'action':result['decision']['candidate_action'],'agents':result['total_agents']})
             return result
@@ -153,7 +184,12 @@ class DemoExecution:
                 return existing
             if self.ledger.flag('halted'):
                 raise DemoError('DEMO_KILL_SWITCH_ACTIVE')
+            if self._entry_guard:
+                await self._entry_guard()
             proposal=self.ledger.get_proposal(proposal_id)
+            campaign=self.ledger.flag('observation')
+            if proposal.get('observation_id') and (not campaign or proposal['observation_id']!=campaign['id'] or datetime.fromisoformat(campaign['expires_at'])<=datetime.now(timezone.utc)):
+                raise DemoError('DEMO_OBSERVATION_EXPIRED')
             risk=proposal.get('risk') or {}
             if not risk.get('approved') or not risk.get('approval_id') or risk.get('risk_status') not in {'APPROVED','REDUCED'}:
                 raise DemoError('DEMO_CENTRAL_RISK_NOT_APPROVED')
@@ -190,6 +226,8 @@ class DemoExecution:
                 'notional_usdt':float(qty*mark),'leverage':1,'source':proposal['source'],'approval_id':risk['approval_id'],
                 'risk_check':risk,'signal_key':f"{symbol}:{proposal['timeframe']}:{proposal['candle_closed_at']}:{proposal['source']}:{side}" + (':'+proposal_id if proposal['source']=='OPERATIONAL_CANARY' else ''),
                 'created_at':utc(),'realized_pnl_usdt':None}
+            if proposal.get('observation_id'):
+                trade['observation_id']=proposal['observation_id']
             self.ledger.reserve(trade)
             try:
                 # Configuration is idempotent, but ambiguous writes still halt the intent.
@@ -204,6 +242,11 @@ class DemoExecution:
                     raise DemoError('DEMO_LEVERAGE_OR_MARGIN_NOT_CONFIRMED')
                 if self.ledger.flag('halted'):
                     raise DemoError('DEMO_KILL_SWITCH_ACTIVE')
+                if self._entry_guard:
+                    await self._entry_guard()
+                if proposal.get('observation_id') and datetime.fromisoformat(self.ledger.flag('observation')['expires_at'])<=datetime.now(timezone.utc):
+                    self.ledger.flag('automatic',False)
+                    raise DemoError('DEMO_OBSERVATION_EXPIRED')
                 self.ledger.update(proposal_id,'ENTRY_SENDING')
                 await self.venue.request('POST','/fapi/v1/order',{'symbol':symbol,'side':side,'positionSide':'BOTH','type':'MARKET',
                     'quantity':text_number(qty),'newClientOrderId':identity('en',proposal_id),'newOrderRespType':'RESULT'})
@@ -248,6 +291,26 @@ class DemoExecution:
                 return None
             raise
 
+    @staticmethod
+    def _protection_fields(row):
+        fields=('algoId','clientAlgoId','algoStatus','symbol','orderType','positionSide','side','closePosition','workingType','triggerPrice')
+        return {k:row.get(k) for k in fields} if isinstance(row,dict) else None
+
+    async def protection_audit(self, trade_id):
+        async with self.lock:
+            trade=self.ledger.trade(trade_id)
+            if not trade:
+                raise DemoError('DEMO_TRADE_NOT_FOUND')
+            await self.venue.sync_clock()
+            return {'id':trade_id,'symbol':trade['symbol'],'state':trade['state'],
+                'expected_stop':trade['stop_loss'],'expected_take':trade['take_profit'],
+                'sl':self._protection_fields(await self._algo(trade_id,'sl')),
+                'tp':self._protection_fields(await self._algo(trade_id,'tp'))}
+
+    @staticmethod
+    def _protection_matches(row, trade, kind, order_type, price, opposite):
+        return bool(row and row.get('algoStatus') in {'NEW','WORKING'} and row.get('symbol')==trade['symbol'] and row.get('clientAlgoId')==identity(kind,trade['id']) and row.get('orderType')==order_type and row.get('positionSide')=='BOTH' and row.get('side')==opposite and row.get('closePosition') is True and row.get('workingType')=='MARK_PRICE' and number(row['triggerPrice'])==number(price))
+
     async def _protect(self, trade_id):
         trade=self.ledger.trade(trade_id)
         opposite='SELL' if trade['side']=='BUY' else 'BUY'
@@ -260,8 +323,16 @@ class DemoExecution:
                 await self.venue.request('POST','/fapi/v1/algoOrder',{'symbol':trade['symbol'],'side':opposite,'positionSide':'BOTH',
                     'algoType':'CONDITIONAL','type':order_type,'triggerPrice':price,'closePosition':'true',
                     'workingType':'MARK_PRICE','clientAlgoId':identity(kind,trade_id)})
-                existing=await self._algo(trade_id,kind)
-            if not existing or existing.get('algoStatus') not in {'NEW','WORKING'} or existing.get('symbol')!=trade['symbol'] or existing.get('clientAlgoId')!=identity(kind,trade_id) or existing.get('orderType')!=order_type or existing.get('positionSide')!='BOTH' or existing.get('side')!=opposite or existing.get('closePosition') is not True or existing.get('workingType')!='MARK_PRICE' or number(existing['triggerPrice'])!=number(price):
+                # Acknowledged conditional orders can lag in the lookup index.
+                # Retry reads only; the protection POST is never submitted twice.
+                for attempt in range(3):
+                    existing=await self._algo(trade_id,kind)
+                    if self._protection_matches(existing,trade,kind,order_type,price,opposite):
+                        break
+                    if attempt<2:
+                        await asyncio.sleep(.25)
+            if not self._protection_matches(existing,trade,kind,order_type,price,opposite):
+                self.ledger.event('PROTECTION_UNCONFIRMED',{'id':trade_id,'kind':kind,'observed':self._protection_fields(existing)})
                 raise DemoError('DEMO_PROTECTION_NOT_CONFIRMED')
             self.ledger.update(trade_id,'PROTECTING',**{kind+'_algo_id':str(existing['algoId'])})
 
@@ -339,8 +410,13 @@ class DemoExecution:
         entries=[r for r in fills if str(r['orderId'])==trade['entry_order_id']]
         if sum(float(r['qty']) for r in exits)+1e-12<float(trade['quantity']) or sum(float(r['qty']) for r in entries)+1e-12<float(trade['quantity']):
             return None
-        value=sum(float(r['realizedPnl'])-float(r['commission']) for r in fills)
-        return value if math.isfinite(value) else None
+        gross=sum(float(r['realizedPnl']) for r in fills)
+        fees=sum(float(r['commission']) for r in fills)
+        value=gross-fees
+        if not all(math.isfinite(v) for v in (gross,fees,value)):
+            return None
+        self.ledger.update(trade_id,trade['state'],gross_realized_pnl_usdt=gross,fees_usdt=fees)
+        return value
 
     async def reconcile(self):
         async with self.lock:
@@ -394,14 +470,26 @@ class DemoExecution:
             if self.ledger.flag('halted') or not self.canary_passed():
                 raise DemoError('DEMO_CANARY_REQUIRED_OR_KILL_SWITCH_ACTIVE')
             async with self.lock:
+                if self._entry_guard:
+                    await self._entry_guard()
                 await self._reconcile_locked()
                 if self.ledger.active() or self.ledger.flag('halted'):
                     raise DemoError('DEMO_ACTIVE_TRADE_OR_HALT_EXISTS')
                 account=await self.account();self._account_guard(account);self._drawdown_guard(account)
+                campaign=self.ledger.flag('observation')
+                if not campaign or datetime.fromisoformat(campaign['expires_at'])<=datetime.now(timezone.utc):
+                    started=datetime.now(timezone.utc)
+                    campaign={'id':identity('obs',utc()),'started_at':started.isoformat(),
+                        'expires_at':(started+timedelta(hours=48)).isoformat(),'baseline_equity_usdt':account['equity_usdt'],
+                        'symbol':'ETHUSDT','timeframe':'15m','starting_revision':self.revision}
+                    self.ledger.flag('observation',campaign);self.ledger.event('OBSERVATION_STARTED',campaign)
         self.ledger.flag('automatic',bool(enabled));self.ledger.event('AUTOMATIC_MODE',{'enabled':bool(enabled)})
         return self.summary()
 
     async def cycle(self):
+        campaign=self.ledger.flag('observation')
+        if self.ledger.flag('automatic') and campaign and datetime.fromisoformat(campaign['expires_at'])<=datetime.now(timezone.utc):
+            self.ledger.flag('automatic',False);self.ledger.event('OBSERVATION_EXPIRED',{'id':campaign['id']})
         if not self.ledger.active() and not self.ledger.flag('automatic'):
             pending=[t for t in self.ledger.trades()[:10] if t['state']=='CLOSED' and t.get('entry_order_id') and t.get('realized_pnl_usdt') is None]
             if pending:
@@ -415,7 +503,18 @@ class DemoExecution:
         await self.reconcile()
         if not self.ledger.flag('automatic') or self.ledger.active() or self.ledger.flag('halted'):
             return
-        proposal=await self.analyze()
+        if self.analysis_lock.locked():
+            return
+        # Check the venue's latest closed candle before running the cohort or
+        # writing a proposal. Repeated monitor ticks must not fill the volume.
+        async with self.lock:
+            candles=await self.venue.candles(symbol='ETHUSDT',timeframe='15m',limit=2)
+        if not candles:
+            return
+        closed_at=datetime.fromtimestamp(candles[-1]['close_time_ms']/1000,timezone.utc).isoformat()
+        if self.ledger.flag('last_auto_candle')==closed_at:
+            return
+        proposal=await self.analyze(automatic=True)
         candle=proposal['candle_closed_at']
         if self.ledger.flag('last_auto_candle')==candle:
             return

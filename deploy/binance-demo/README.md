@@ -88,6 +88,43 @@ reduce-only exits are verified; a canary does not claim every future trigger or
 exchange outage has been tested. Full control/analysis/position/event views are
 in the main frontend, not only the standalone connector status page.
 
+## Supervised observation
+
+An authenticated automatic start opens a 48-hour observation window with an
+immutable ID, baseline equity and starting revision in the existing persistent
+journal. Pausing and resuming within that window preserves the baseline. At
+expiry the monitor disables new automatic entries; existing positions retain
+their venue protections and reconciliation. Restarts still pause automation.
+The window is an operational review period, not a profitability threshold.
+
+The cohort runs once per new venue-confirmed closed ETHUSDT/15m candle while
+the executor is flat. Waiting ticks do not rerun 300 agents or store repeated
+proposals. Decisions during held positions are not sampled by this entry cycle.
+Automatic analyses and trades carry the observation ID; manual analyses and
+canaries do not enter campaign performance. Full ensemble outputs remain in
+the proposal journal for later agent evaluation. Attribution is to the three
+primary agents as an ensemble; shadow correlation is not causal PnL.
+
+The private execution snapshot includes observation metrics. An authenticated
+Railway operator can also read `DEMO_OBSERVATION` JSON runtime log lines emitted
+about once a minute: decision counts/reasons, primary outputs, confirmed net
+realized PnL, fees, pending settlements, equity, open-trade count and halt state.
+These summaries contain no credentials or provider response bodies. Aggregates
+use the full campaign rather than the dashboard's latest-100 history. Missing
+fill settlement is reported separately and never treated as a profitable exit.
+Net PnL already deducts commissions; do not deduct them again.
+
+Before enabling automation or submitting any entry, the executor reads the
+main backend's central risk controls through its fixed private-network URL.
+Unavailable, invalid or active central controls block new entries. Existing
+protective reconciliation and exits remain independent of that read.
+
+After an acknowledged conditional POST, confirmation allows at most three
+read-only lookups with short spacing for index propagation. No protection POST
+is retried. An unconfirmed protection still halts and closes the position.
+The private protection-audit route only reads protections belonging to an
+existing journal trade and returns a fixed, credential-free field allowlist.
+
 ## Official API references
 
 Checked 2026-10-28:

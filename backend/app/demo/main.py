@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import json
 import logging
 import os
+import httpx
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -57,7 +59,20 @@ def create_app(*, environment=None, transport=None, clock_ms=None, status_clock=
     enabled = values.get("DEMO_EXECUTION_ENABLED", "false").lower() == "true"
     client_type = FuturesDemoVenue if enabled else BinanceFuturesDemoClient
     client = client_type(credentials, transport=transport, clock_ms=clock_ms)
-    executor = DemoExecution(client, values["DEMO_STATE_ROOT"]+"/execution.sqlite3") if enabled else None
+    async def central_entry_guard():
+        # Only read central controls; this boundary never accesses PAPER storage.
+        try:
+            async with httpx.AsyncClient(timeout=8,trust_env=False,follow_redirects=False) as controls:
+                response=await controls.get('http://capital-cipher-backend.railway.internal:8080/api/v1/risk/status')
+            payload=response.json()
+            data=payload['data']
+            if response.status_code!=200 or payload.get('success') is not True or data.get('kill_switch_active') is not False or data.get('durable_control_active') is not False:
+                raise DemoError('DEMO_CENTRAL_CONTROL_BLOCKED')
+        except DemoError:
+            raise
+        except Exception:
+            raise DemoError('DEMO_CENTRAL_CONTROL_UNAVAILABLE') from None
+    executor = DemoExecution(client, values["DEMO_STATE_ROOT"]+"/execution.sqlite3",entry_guard=central_entry_guard) if enabled else None
     state = {
         "status": "CHECKING", "market": "USD_M_FUTURES_DEMO", "credentials_present": credentials is not None,
         "authenticated": False, "market_reachable": False, "account_preflight_passed": False,
@@ -102,6 +117,8 @@ def create_app(*, environment=None, transport=None, clock_ms=None, status_clock=
                     state.update(status="WAITING_FOR_CREDENTIALS", market_reachable=True, error_code=None)
                 else:
                     account = await client.validate_account()
+                    if executor:
+                        executor.last_account={**account,'checked_at':now().isoformat()}
                     state.update(
                         status="CONNECTED_READ_ONLY" if account["account_preflight_passed"] else "ACCOUNT_REVIEW_REQUIRED",
                         market_reachable=True, authenticated=True, error_code=None,
@@ -121,6 +138,7 @@ def create_app(*, environment=None, transport=None, clock_ms=None, status_clock=
             await asyncio.sleep(60)
 
     async def execution_monitor():
+        logged_at=0
         while True:
             try:
                 await executor.cycle()
@@ -128,6 +146,14 @@ def create_app(*, environment=None, transport=None, clock_ms=None, status_clock=
                 executor.last_error = exc.code if isinstance(exc, DemoError) else "DEMO_EXECUTION_MONITOR_FAILED"
                 executor.ledger.flag("automatic", False)
                 executor.ledger.flag("halted", True)
+            stamp=asyncio.get_running_loop().time()
+            if stamp-logged_at>=60:
+                report=executor.observation()
+                if report:
+                    # Railway's authenticated logs are the supervision source;
+                    # no credentials, signed URLs or provider bodies are logged.
+                    logging.getLogger('uvicorn.error').info('DEMO_OBSERVATION %s',json.dumps(report,allow_nan=False,separators=(',',':')))
+                logged_at=stamp
             await asyncio.sleep(10)
 
     @asynccontextmanager
@@ -222,6 +248,10 @@ def create_app(*, environment=None, transport=None, clock_ms=None, status_clock=
     @app.get("/api/demo/execution", dependencies=[Depends(require_admin)])
     async def execution_status():
         return execution().summary()
+
+    @app.get("/api/demo/protection-audit/{trade_id}", dependencies=[Depends(require_admin)])
+    async def protection_audit(trade_id: str):
+        return await action(lambda: execution().protection_audit(trade_id))
 
     @app.post("/api/demo/analysis", dependencies=[Depends(require_admin)])
     async def analysis(body: AnalysisRequest):
