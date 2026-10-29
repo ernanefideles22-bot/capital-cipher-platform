@@ -1,0 +1,100 @@
+import pytest
+from app.demo.gate_cycle_journal import GateCycleJournal, CycleBlocked
+
+
+def setup(path, *, size=2):
+    j=GateCycleJournal(path)
+    j.create('trade_12345','BTC_USDT','79000',size)
+    j.record_entry_intent('trade_12345')
+    return j
+
+
+def snapshot(*, size=-2, status='open'):
+    return {'id_string':'123','status':status,'create_time':1000,'order_type':'plan-close-long-position',
+            'initial':{'contract':'BTC_USDT','size':size,'price':'0','tif':'ioc','is_reduce_only':True},
+            'trigger':{'strategy_type':0,'price_type':1,'price':'79000','rule':2,'expiration':3600}}
+
+
+def confirm_stop(j, row):
+    j.record_stop_intent('trade_12345')
+    j.record_stop_acknowledgement('trade_12345',stop_id='123')
+    return j.record_stop_confirmation('trade_12345',snapshot=row,observed_at=1010,now=1010)
+
+
+def test_complete_simulated_cycle_is_durable(tmp_path):
+    path=str(tmp_path/'cycle.sqlite')
+    j=setup(path)
+    j.record_entry_confirmation('trade_12345',signed_position=2,owned_order_confirmed=True)
+    assert confirm_stop(j,snapshot())
+    assert j.read('trade_12345')['state']=='PROTECTED'
+    j.record_exit_intent('trade_12345')
+    assert j.record_flat_confirmation('trade_12345',position=0,open_owned_orders=0,exchange_confirmed=True)
+    j.close()
+    j=GateCycleJournal(path)
+    assert j.read('trade_12345')['state']=='CLOSED'
+    with pytest.raises(CycleBlocked):
+        j.record_entry_intent('trade_12345')
+    assert j.db.execute('SELECT COUNT(*) FROM events').fetchone()[0]==8
+    j.close()
+
+
+@pytest.mark.parametrize('confirmed,size',[(False,2),(True,0),(True,-2),(True,3)])
+def test_bad_entry_evidence_halts(tmp_path,confirmed,size):
+    j=setup(str(tmp_path/'cycle.sqlite'))
+    j.record_entry_confirmation('trade_12345',signed_position=size,owned_order_confirmed=confirmed)
+    assert j.read('trade_12345')['state']=='HALTED'
+    with pytest.raises(CycleBlocked):
+        j.record_stop_intent('trade_12345')
+    j.close()
+
+
+def test_partial_fill_protection_uses_actual_position(tmp_path):
+    j=setup(str(tmp_path/'cycle.sqlite'))
+    j.record_entry_confirmation('trade_12345',signed_position=1,owned_order_confirmed=True)
+    assert not confirm_stop(j,snapshot(size=-2))
+    assert j.read('trade_12345')['state']=='HALTED'
+    j.close()
+
+
+def test_restart_during_ambiguous_submission_never_resubmits(tmp_path):
+    path=str(tmp_path/'cycle.sqlite')
+    j=setup(path)
+    j.close()
+    j=GateCycleJournal(path)
+    assert j.read('trade_12345')['state']=='ENTRY_PENDING'
+    with pytest.raises(CycleBlocked):
+        j.record_entry_intent('trade_12345')
+    j.halt_unknown('trade_12345')
+    assert j.read('trade_12345')['state']=='HALTED'
+    j.close()
+
+
+def test_stop_submission_lost_ack_remains_blocked_after_restart(tmp_path):
+    path=str(tmp_path/'cycle.sqlite')
+    j=setup(path)
+    j.record_entry_confirmation('trade_12345',signed_position=2,owned_order_confirmed=True)
+    j.record_stop_intent('trade_12345')
+    j.close()
+    j=GateCycleJournal(path)
+    assert j.read('trade_12345')['state']=='STOP_SUBMITTING'
+    with pytest.raises(CycleBlocked):
+        j.record_stop_intent('trade_12345')
+    j.halt_unknown('trade_12345')
+    with pytest.raises(CycleBlocked):
+        j.record_exit_intent('trade_12345')
+    j.close()
+
+
+@pytest.mark.parametrize('status,position,orders,confirmed', [
+    ('finished',0,0,True), ('open',1,0,True), ('open',0,1,True), ('open',0,0,False),
+])
+def test_unconfirmed_protection_or_close_halts(tmp_path,status,position,orders,confirmed):
+    j=setup(str(tmp_path/'cycle.sqlite'))
+    j.record_entry_confirmation('trade_12345',signed_position=2,owned_order_confirmed=True)
+    if not confirm_stop(j,snapshot(status=status)):
+        assert j.read('trade_12345')['state']=='HALTED'
+    else:
+        j.record_exit_intent('trade_12345')
+        assert not j.record_flat_confirmation('trade_12345',position=position,open_owned_orders=orders,exchange_confirmed=confirmed)
+        assert j.read('trade_12345')['state']=='HALTED'
+    j.close()
