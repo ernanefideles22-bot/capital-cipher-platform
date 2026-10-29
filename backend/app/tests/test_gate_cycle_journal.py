@@ -28,7 +28,7 @@ def test_complete_simulated_cycle_is_durable(tmp_path):
     assert confirm_stop(j,snapshot())
     assert j.read('trade_12345')['state']=='PROTECTED'
     j.record_exit_intent('trade_12345')
-    assert j.record_flat_confirmation('trade_12345',position=0,open_owned_orders=0,exchange_confirmed=True)
+    assert j.record_flat_confirmation('trade_12345',position=0,open_orders=0,open_stop_orders=0,all_positions_flat=True,exchange_confirmed=True)
     j.close()
     j=GateCycleJournal(path)
     assert j.read('trade_12345')['state']=='CLOSED'
@@ -95,6 +95,16 @@ def test_unconfirmed_protection_or_close_halts(tmp_path,status,position,orders,c
         assert j.read('trade_12345')['state']=='HALTED'
     else:
         j.record_exit_intent('trade_12345')
-        assert not j.record_flat_confirmation('trade_12345',position=position,open_owned_orders=orders,exchange_confirmed=confirmed)
+        assert not j.record_flat_confirmation('trade_12345',position=position,open_orders=orders,open_stop_orders=0,all_positions_flat=True,exchange_confirmed=confirmed)
         assert j.read('trade_12345')['state']=='HALTED'
+    j.close()
+
+
+def test_stop_left_open_never_counts_as_flat(tmp_path):
+    j=setup(str(tmp_path/'cycle.sqlite'))
+    j.record_entry_confirmation('trade_12345',signed_position=2,owned_order_confirmed=True)
+    assert confirm_stop(j,snapshot())
+    j.record_exit_intent('trade_12345')
+    assert not j.record_flat_confirmation('trade_12345',position=0,open_orders=0,open_stop_orders=1,all_positions_flat=True,exchange_confirmed=True)
+    assert j.read('trade_12345')['state']=='HALTED'
     j.close()
