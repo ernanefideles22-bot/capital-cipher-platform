@@ -10,6 +10,7 @@ import sqlite3
 from decimal import Decimal, InvalidOperation
 from app.demo.gate_stop_validation import stop_matches
 from app.demo.gate_entry_evidence import confirmed_entry
+from app.demo.gate_exit_evidence import confirmed_exit
 
 
 class CycleBlocked(ValueError):
@@ -36,6 +37,7 @@ class GateCycleJournal:
         self.db.execute('CREATE TABLE IF NOT EXISTS cycles (id TEXT PRIMARY KEY, state TEXT NOT NULL, contract TEXT NOT NULL, target TEXT NOT NULL, planned TEXT NOT NULL, position TEXT, stop_id TEXT)')
         self.db.execute('CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, cycle_id TEXT NOT NULL, old_state TEXT, new_state TEXT NOT NULL, reason TEXT NOT NULL)')
         self.db.execute('CREATE TABLE IF NOT EXISTS entry_identity (cycle_id TEXT PRIMARY KEY, client_id TEXT NOT NULL UNIQUE, order_id TEXT UNIQUE)')
+        self.db.execute('CREATE TABLE IF NOT EXISTS exit_identity (cycle_id TEXT PRIMARY KEY, client_id TEXT NOT NULL UNIQUE, order_id TEXT UNIQUE)')
 
     def close(self):
         self.db.close()
@@ -102,6 +104,8 @@ class GateCycleJournal:
             current=self.read(cycle_id)
             if current['state'] != 'CREATED':
                 raise CycleBlocked('unexpected cycle state')
+            if self.db.execute('SELECT 1 FROM exit_identity WHERE client_id=?',(client_id,)).fetchone():
+                raise CycleBlocked('entry identity conflicts with exit')
             self.db.execute('INSERT INTO entry_identity(cycle_id,client_id) VALUES (?,?)',(cycle_id,client_id))
             self.db.execute("UPDATE cycles SET state='ENTRY_PENDING' WHERE id=?",(cycle_id,))
             self.db.execute('INSERT INTO events(cycle_id,old_state,new_state,reason) VALUES (?,?,?,?)',
@@ -123,6 +127,8 @@ class GateCycleJournal:
             current=self.read(cycle_id)
             if current['state'] != 'ENTRY_PENDING':
                 raise CycleBlocked('unexpected cycle state')
+            if self.db.execute('SELECT 1 FROM exit_identity WHERE order_id=?',(order_id,)).fetchone():
+                raise CycleBlocked('entry order id conflicts with exit')
             changed=self.db.execute('UPDATE entry_identity SET order_id=? WHERE cycle_id=? AND order_id IS NULL',
                                     (order_id,cycle_id)).rowcount
             if changed != 1:
@@ -217,6 +223,66 @@ class GateCycleJournal:
 
     def record_exit_intent(self, cycle_id):
         self._transition(cycle_id, {'PROTECTED'}, 'EXIT_PENDING', 'exit intent')
+
+    def record_bound_exit_intent(self, cycle_id, client_id):
+        """Persist an exit id with intent before any future dispatch."""
+        if not isinstance(client_id,str) or not re.fullmatch(r't-[A-Za-z0-9_.-]{1,28}',client_id):
+            raise CycleBlocked('invalid exit client id')
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            row=self.read(cycle_id)
+            if row['state'] != 'PROTECTED':
+                raise CycleBlocked('position is not confirmed protected')
+            if self.db.execute('SELECT 1 FROM entry_identity WHERE client_id=?',(client_id,)).fetchone():
+                raise CycleBlocked('exit identity conflicts with entry')
+            self.db.execute('INSERT INTO exit_identity(cycle_id,client_id) VALUES (?,?)',(cycle_id,client_id))
+            self.db.execute("UPDATE cycles SET state='EXIT_PENDING' WHERE id=?",(cycle_id,))
+            self.db.execute('INSERT INTO events(cycle_id,old_state,new_state,reason) VALUES (?,?,?,?)',
+                            (cycle_id,'PROTECTED','EXIT_PENDING','bound exit intent'))
+            self.db.execute('COMMIT')
+        except sqlite3.IntegrityError:
+            self.db.execute('ROLLBACK')
+            raise CycleBlocked('exit identity already used') from None
+        except BaseException:
+            self.db.execute('ROLLBACK')
+            raise
+
+    def record_exit_acknowledgement(self, cycle_id, order_id):
+        if not isinstance(order_id,str) or not re.fullmatch(r'[1-9][0-9]*',order_id):
+            raise CycleBlocked('invalid exit order id')
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            if self.read(cycle_id)['state'] != 'EXIT_PENDING':
+                raise CycleBlocked('unexpected cycle state')
+            if self.db.execute('SELECT 1 FROM entry_identity WHERE order_id=?',(order_id,)).fetchone():
+                raise CycleBlocked('exit order id conflicts with entry')
+            changed=self.db.execute('UPDATE exit_identity SET order_id=? WHERE cycle_id=? AND order_id IS NULL',
+                                    (order_id,cycle_id)).rowcount
+            if changed != 1:
+                raise CycleBlocked('exit identity missing or already acknowledged')
+            self.db.execute('COMMIT')
+        except sqlite3.IntegrityError:
+            self.db.execute('ROLLBACK')
+            raise CycleBlocked('exit provider id already used') from None
+        except BaseException:
+            self.db.execute('ROLLBACK')
+            raise
+
+    def record_verified_exit(self, cycle_id, *, order, position, inventory, order_observed_at,
+                             position_observed_at, inventory_started_at, inventory_finished_at, now):
+        row=self.read(cycle_id)
+        if row['state'] != 'EXIT_PENDING':
+            raise CycleBlocked('unexpected cycle state')
+        identity=self.db.execute('SELECT client_id,order_id FROM exit_identity WHERE cycle_id=?',(cycle_id,)).fetchone()
+        if not identity or not identity[1]:
+            raise CycleBlocked('exit acknowledgement missing; reconcile without retry')
+        valid=confirmed_exit(order=order,position=position,inventory=inventory,contract=row['contract'],
+            order_id=identity[1],client_id=identity[0],order_observed_at=order_observed_at,
+            position_observed_at=position_observed_at,inventory_started_at=inventory_started_at,
+            inventory_finished_at=inventory_finished_at,now=now)
+        self._transition(cycle_id, {'EXIT_PENDING'}, 'CLOSED' if valid else 'HALTED',
+                         'exit verified' if valid else 'exit evidence not reconciled')
+        return valid
 
     def record_flat_confirmation(self, cycle_id, *, position, open_orders, open_stop_orders,
                                  all_positions_flat, exchange_confirmed):
