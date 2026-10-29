@@ -102,6 +102,8 @@ def test_bound_entry_identity_survives_restart_and_evidence_is_reconciled(tmp_pa
     j=GateCycleJournal(path)
     j.create('trade_12345','BTC_USDT','79000',2)
     j.record_bound_entry_intent('trade_12345','t-cycle-1')
+    with pytest.raises(CycleBlocked,match='requires exchange evidence'):
+        j.record_entry_confirmation('trade_12345',signed_position=2,owned_order_confirmed=True)
     j.record_entry_acknowledgement('trade_12345','123')
     j.close()
     j=GateCycleJournal(path)
@@ -191,6 +193,9 @@ def test_bound_exit_identity_survives_restart_and_requires_current_evidence(tmp_
     j.record_entry_confirmation('trade_12345',signed_position=2,owned_order_confirmed=True)
     assert confirm_stop(j,snapshot())
     j.record_bound_exit_intent('trade_12345','t-exit-1')
+    with pytest.raises(CycleBlocked,match='requires exchange evidence'):
+        j.record_flat_confirmation('trade_12345',position=0,open_orders=0,open_stop_orders=0,
+                                   all_positions_flat=True,exchange_confirmed=True)
     with pytest.raises(CycleBlocked):
         j.record_verified_exit('trade_12345',order={},position={},inventory={},order_observed_at=1000,
             position_observed_at=1000,inventory_started_at=1000,inventory_finished_at=1000,now=1000)
