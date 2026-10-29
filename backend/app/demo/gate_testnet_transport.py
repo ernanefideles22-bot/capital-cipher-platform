@@ -65,7 +65,8 @@ class GateTestnetTransport:
             valid=bool(re.fullmatch(re.escape(_STOP)+r'/[1-9][0-9]*',path))
         elif method=='GET':
             valid=bool(re.fullmatch(re.escape(_ORDER)+r'/(?:[1-9][0-9]*|t-[A-Za-z0-9_.-]{1,28})',path)
-                       or re.fullmatch(re.escape(_STOP)+r'/[1-9][0-9]*',path))
+                       or re.fullmatch(re.escape(_STOP)+r'/[1-9][0-9]*',path)
+                       or path in {'/api/v4/futures/usdt/positions/'+c for c in _CONTRACTS})
         else:
             valid=False
         if not valid:
@@ -118,6 +119,12 @@ class GateTestnetTransport:
             raise ValueError('invalid order id')
         return await self._request('GET',_ORDER+'/'+order_id)
 
+    async def get_position(self, contract):
+        """Read one Testnet position; no account mutation or permission to trade."""
+        if contract not in _CONTRACTS:
+            raise ValueError('invalid contract')
+        return await self._request('GET','/api/v4/futures/usdt/positions/'+contract)
+
     async def get_stop(self, order_id):
         if not isinstance(order_id,str) or not re.fullmatch(r'[1-9][0-9]*',order_id):
             raise ValueError('invalid stop id')
@@ -127,3 +134,4 @@ class GateTestnetTransport:
         if not isinstance(order_id,str) or not re.fullmatch(r'[1-9][0-9]*',order_id):
             raise ValueError('invalid stop id')
         return await self._request('DELETE',_STOP+'/'+order_id)
+
