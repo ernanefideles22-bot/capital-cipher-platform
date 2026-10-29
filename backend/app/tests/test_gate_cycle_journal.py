@@ -56,6 +56,21 @@ def test_partial_fill_protection_uses_actual_position(tmp_path):
     j.close()
 
 
+@pytest.mark.parametrize('position',[None, True, 'NaN', 'garbage'])
+def test_invalid_position_evidence_halts_and_persists(tmp_path, position):
+    path=str(tmp_path/'cycle.sqlite')
+    j=setup(path)
+    j.record_entry_confirmation('trade_12345',signed_position=2,owned_order_confirmed=True)
+    assert not confirm_stop(j,snapshot(),position=position)
+    assert j.read('trade_12345')['state']=='HALTED'
+    j.close()
+    j=GateCycleJournal(path)
+    assert j.read('trade_12345')['state']=='HALTED'
+    with pytest.raises(CycleBlocked):
+        j.create('other_12345','BTC_USDT','79000',1)
+    j.close()
+
+
 def test_restart_during_ambiguous_submission_never_resubmits(tmp_path):
     path=str(tmp_path/'cycle.sqlite')
     j=setup(path)
@@ -122,3 +137,4 @@ def test_stop_left_open_never_counts_as_flat(tmp_path):
     assert not j.record_flat_confirmation('trade_12345',position=0,open_orders=0,open_stop_orders=1,all_positions_flat=True,exchange_confirmed=True)
     assert j.read('trade_12345')['state']=='HALTED'
     j.close()
+
