@@ -158,6 +158,7 @@ class ShadowValidationService:
                 registrations=registrations,
                 sequence=sequence,
                 replay_at=candles[candle_index].closed_at,
+                exchange=candles[0].exchange.value,
                 recovery=recovery,
                 degradation_scenario=scenario,
                 reconciliation=reconciliation,
@@ -191,6 +192,8 @@ class ShadowValidationService:
         definition: ShadowCampaignDefinition,
         candles: list[Candle],
     ) -> None:
+        if candles and any(c.exchange != candles[0].exchange for c in candles):
+            raise ValueError("Replay must use one exchange")
         if len(candles) != definition.replay_candle_count:
             raise ValueError("Replay candle count differs from campaign definition")
         if candle_dataset_fingerprint(candles) != definition.dataset_fingerprint:
@@ -231,6 +234,7 @@ class ShadowValidationService:
         registrations,
         sequence: int,
         replay_at,
+        exchange: str,
         recovery: RecoveryCoordinator,
         degradation_scenario: str | None,
         reconciliation,
@@ -268,7 +272,7 @@ class ShadowValidationService:
                         symbol=definition.symbol,
                         timeframe=definition.timeframe,
                         market_context={
-                            "exchange": "BINANCE",
+                            "exchange": exchange,
                             "campaign_id": definition.campaign_id,
                             "replay": True,
                             "order_authority": False,

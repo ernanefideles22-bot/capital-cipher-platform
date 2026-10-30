@@ -131,7 +131,10 @@ class AppContext:
     shadow_office: ShadowOffice | None = None
 
 
-def build_context(settings: Settings, *, with_database: bool = False) -> AppContext:
+def build_context(
+    settings: Settings, *, with_database: bool = False,
+    external_evidence_enabled: bool = True,
+) -> AppContext:
     state_machine = SystemStateMachine()
     candle_store = CandleStore()
     target_environment = ExecutionEnvironment(
@@ -425,6 +428,7 @@ def build_context(settings: Settings, *, with_database: bool = False) -> AppCont
         *build_month8_shadow_specialists(
             candle_store,
             specialist_evidence_service,
+            external_evidence_enabled=external_evidence_enabled,
         ),
         *build_month9_shadow_specialists(candle_store),
         *build_month10_shadow_specialists(candle_store),

@@ -7,6 +7,12 @@ content-addressed evidence bundle; a reviewer independent of the development
 team must attest that exact bundle before even a local TESTNET canary rehearsal
 can pass.
 
+The dedicated Gate demo service additionally supports the owner-controlled
+virtual-funds policy in [gate-demo-owner-release.md](gate-demo-owner-release.md).
+It has a separate identity, one-canary budget and measured-evidence acceptance;
+it does not populate or bypass the external-attestation contracts described here.
+The main application continues using this original release protocol.
+
 ## Delivered boundary
 
 | Control | Result |

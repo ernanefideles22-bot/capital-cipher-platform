@@ -47,9 +47,12 @@ Existing service and volume:
   `GATE_OMS_ACKNOWLEDGEMENT=GATE_TESTNET_VIRTUAL_FUNDS_ONLY`.
 
 The write flag is **not** release authorization. Every entry and dispatch also
-requires a fresh `APPROVED_TESTNET` decision from the existing release-readiness
-service for the exact published commit, clear durable central risk, a valid
-account lease and reconciled account state. No release evidence, independent
+requires an exact-revision release, clear durable central risk, a valid account
+lease and reconciled account state. By default this is the existing external
+audit `APPROVED_TESTNET` decision. The separately configured
+[owner-controlled Gate demo policy](gate-demo-owner-release.md) supports an
+explicit one-order canary and requires acceptance of measured evidence before
+agent mode; it never creates an independent attestation. No release evidence, independent
 attestation, canary result or approval is fabricated by this runtime.
 
 A requested connection that cannot initialize causes `/health` to return 503.
@@ -69,6 +72,6 @@ when `POSTGRES_TEST_URL` is absent; CI supplies PostgreSQL.
 
 Do not equate CI success with a verified exchange trade. Connect in read-only
 mode first. Autonomous writes remain blocked until the exact deployed revision
-has the required release decision and a Gate Testnet entry/stop/exit observation
-has been independently accepted. Preserve current journals and any unresolved
+has the required release and accepted Gate Testnet entry/stop/exit evidence.
+Owner grants and external audit attestations remain distinct authorization bases. Preserve current journals and any unresolved
 halt; never replace a journal to make the status clear.

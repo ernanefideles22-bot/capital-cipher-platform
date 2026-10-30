@@ -26,7 +26,7 @@ async def analyze(payload):
         SYSTEM_MODE='PAPER', OMS_EXECUTION_ENVIRONMENT='PAPER', OMS_TESTNET_ENABLED=False,
         OFFICE_ASYNC_ENABLED=False, RISK_PER_TRADE_PERCENT=.1, MAX_OPEN_POSITIONS=1,
         DEFAULT_LEVERAGE=1, MAX_LEVERAGE_SIMULATED=1, PAPER_INITIAL_BALANCE=payload['equity'])
-    ctx=build_context(settings, with_database=False)
+    ctx=build_context(settings, with_database=False, external_evidence_enabled=False)
     await ctx.state_machine.transition(SystemState.INITIALIZING,reason='Demo isolated analysis',actor='demo')
     await ctx.state_machine.transition(SystemState.PAPER,reason='Virtual account only',actor='demo')
     rows=payload['candles']; symbol=payload['symbol']; timeframe=payload['timeframe']

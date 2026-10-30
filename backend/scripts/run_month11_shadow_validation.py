@@ -4,6 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
+
+_NETWORK_ATTEMPTS = []
+
+
+def deny_network(event, args):
+    """CLI-only audit hook: block IP sockets and DNS before an external call."""
+    if event == "socket.getaddrinfo" or (
+        event in {"socket.connect", "socket.sendto"} and isinstance(args[-1], tuple)
+    ):
+        _NETWORK_ATTEMPTS.append(event)
+        raise RuntimeError("Shadow replay does not permit network access")
+
+
 from datetime import datetime, timedelta, timezone
 
 from app.api.context import build_context
@@ -22,7 +36,7 @@ def _candles() -> list[Candle]:
         open_price = close * (0.999 if index % 2 else 1.001)
         rows.append(
             Candle(
-                exchange=Exchange.BINANCE,
+                exchange=Exchange.GATE,
                 symbol="BTCUSDT",
                 timeframe="15m",
                 open=open_price,
@@ -38,6 +52,14 @@ def _candles() -> list[Candle]:
 
 async def main() -> int:
     settings = Settings(
+        _env_file=None,
+        APP_ENV="test",
+        DATABASE_URL="",
+        REDIS_URL=None,
+        SYSTEM_MODE="PAPER",
+        OMS_EXECUTION_ENVIRONMENT="PAPER",
+        OMS_TESTNET_ENABLED=False,
+        OFFICE_ASYNC_ENABLED=False,
         AGENT_MAX_CONCURRENCY=32,
         AGENT_WORKER_ENABLED=False,
         BACKFILL_WORKER_ENABLED=False,
@@ -45,7 +67,9 @@ async def main() -> int:
         OMS_RECONCILIATION_ENABLED=False,
         OPERATIONS_MONITOR_ENABLED=False,
     )
-    context = build_context(settings, with_database=False)
+    context = build_context(
+        settings, with_database=False, external_evidence_enabled=False
+    )
     candles = _candles()
     definition = ShadowCampaignDefinition(
         replay_start_at=candles[0].closed_at,
@@ -57,6 +81,10 @@ async def main() -> int:
     report = await context.shadow_validation_service.run(definition, candles)
     payload = {
         "month": 11,
+        "market_provenance": "GATE_SYNTHETIC_REPLAY",
+        "external_evidence_enabled": False,
+        "network_attempt_count": len(_NETWORK_ATTEMPTS),
+        "real_exchange_execution_proven": False,
         "execution_mode": "PAPER",
         "live_execution_attempted": False,
         "registered_agents": len(context.agent_registry.registrations()),
@@ -69,8 +97,9 @@ async def main() -> int:
         ],
     }
     print(json.dumps(payload, indent=2, sort_keys=True))
-    return 0 if report.status == "PASSED" else 1
+    return 0 if report.status == "PASSED" and not _NETWORK_ATTEMPTS else 1
 
 
 if __name__ == "__main__":
+    sys.addaudithook(deny_network)
     raise SystemExit(asyncio.run(main()))

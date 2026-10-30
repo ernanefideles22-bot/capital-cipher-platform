@@ -611,13 +611,15 @@ class ExternalEvidenceSpecialist(BaseAgent):
 def build_month8_shadow_specialists(
     store: CandleStore,
     evidence_service,
+    *, external_evidence_enabled: bool = True,
 ) -> list[BaseAgent]:
     technical = [
         Month8TechnicalSpecialist(store, definition)
         for definition in TECHNICAL_DEFINITIONS
     ]
-    derivatives_collector = BinanceUsdMDerivativesEvidenceCollector(
-        evidence_service
+    derivatives_collector = (
+        BinanceUsdMDerivativesEvidenceCollector(evidence_service)
+        if external_evidence_enabled else None
     )
     external = [
         ExternalEvidenceSpecialist(

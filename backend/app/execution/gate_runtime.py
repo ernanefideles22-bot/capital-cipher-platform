@@ -1,7 +1,8 @@
 """Dedicated Gate Testnet composition root; no PAPER staging controls are relaxed.
 
 Connects research -> central risk -> durable OMS -> the protected Gate adapter.
-Writes still require a fresh revision-specific ReleaseReadiness decision.
+Writes require a current exact-revision release: external-audit policy or the
+separately acknowledged, bounded owner-controlled Gate virtual-funds policy.
 """
 
 import asyncio
@@ -26,6 +27,7 @@ from app.execution.adapters.gate_testnet import GateTestnetExecutionAdapter, num
 from app.execution.adapters.gate_testnet_metadata import GateTestnetMetadata
 from app.execution.gate_protection_store import GateProtectionStore
 from app.execution.gate_equity import GateEquityBaseline
+from app.execution.gate_demo_release import GateDemoOwnerGrant, GateDemoRelease
 from app.market_data.store import CandleStore
 from app.oms.service import OMSService
 from app.oms.reconciliation import ReconciliationService
@@ -126,6 +128,7 @@ class GateOMSConnection:
         candle_store,
         market_fetch=fetch_candles,
         clock=time.time,
+        demo_release=None,
     ):
         self.repository, self.risk, self.oms = repository, risk, oms
         self.adapter, self.reconciliation, self.audit = adapter, reconciliation, audit
@@ -141,6 +144,7 @@ class GateOMSConnection:
         self.last_order_id = None
         self.release_authorized = False
         self.central_risk_clear = False
+        self.demo_release = demo_release
 
     async def entry_authorized(self):
         control = await self.repository.load_risk_control_state()
@@ -172,6 +176,13 @@ class GateOMSConnection:
         async with self._lock:
             if not await self.entry_authorized():
                 self.status = "ENTRY_BLOCKED"
+                return {"status": self.status}
+            if self.demo_release is not None and not self.demo_release.may_queue():
+                self.status = (
+                    "CANARY_BUDGET_CONSUMED"
+                    if self.demo_release.grant.mode == "CANARY_ONLY"
+                    else "ENTRY_BLOCKED"
+                )
                 return {"status": self.status}
             if self.journal.recovery_status()["recovery_required"]:
                 self.status = "POSITION_OR_RECOVERY_PENDING"
@@ -285,6 +296,8 @@ class GateOMSConnection:
             order = await self.oms.submit_approved(
                 decision, check, current_price=float(mark)
             )
+            if self.demo_release is not None:
+                self.demo_release.reserve(order)
             self.last_order_id = order.oms_order_id
             self.status = "QUEUED"
             return {"status": self.status, "oms_order_id": order.oms_order_id}
@@ -308,23 +321,17 @@ class GateOMSConnection:
                     raise SecurityError("Gate protected cycle has no OMS order")
                 state = await self.adapter.reconcile_protected_order(order)
                 if state["state"] == "PROTECTED":
-                    proof = await self.adapter._protection.verify(order)
-                    metadata, observed = await self.metadata(order.symbol)
-                    if not 0 <= number(self.clock()) - number(observed) <= 10:
-                        raise SecurityError("Gate exit quote stale")
-                    mark = number(metadata["mark_price"])
-                    target = number(proof["take_profit"])
-                    reached = (
-                        mark >= target if order.side.value == "BUY" else mark <= target
-                    )
-                    # Close before stop expiration; no cancel-and-replace gap.
                     if (
-                        reached
-                        or state["expires_at"] - self.clock() <= 180
-                        or not await self.entry_authorized()
+                        self.demo_release is not None
+                        and self.demo_release.grant.mode == "CANARY_ONLY"
                     ):
+                        self.demo_release.record_protected(
+                            order, await self.adapter.capture_canary_protection(order)
+                        )
                         state = await self.adapter.close_protected_order(order)
-                        state["cause"] = "TARGET" if reached else "SAFETY"
+                        state["cause"] = "OWNER_CANARY"
+                    else:
+                        state = await self._monitor_protected(order, state)
                 if state["state"] == "CLOSED":
                     await self.audit.record(
                         correlation_id=order.correlation_id,
@@ -334,19 +341,107 @@ class GateOMSConnection:
                         payload=state,
                     )
                 await self.reconcile()
-                self.status = state["state"]
+                if (
+                    state["state"] == "CLOSED"
+                    and self.demo_release is not None
+                    and self.demo_release.grant.mode == "CANARY_ONLY"
+                ):
+                    await self._record_canary_close(order)
+                    self.status = "AWAITING_OWNER_CANARY_ACCEPTANCE"
+                else:
+                    self.status = state["state"]
                 return
-            # A separate switch connects the durable OMS without authorizing writes.
-            if not self.writes_enabled:
-                await self.entry_authorized()
-                self.status = "CONNECTED_READ_ONLY"
-                return
+            if (
+                self.demo_release is not None
+                and self.demo_release.grant.mode == "CANARY_ONLY"
+            ):
+                slot = self.demo_release.slot()
+                if slot is None:
+                    self.status = "WAITING_FOR_CANARY_SIGNAL"
+                    return
+                row = self.journal.db.execute(
+                    "SELECT state FROM cycles WHERE id=?", (slot,)
+                ).fetchone()
+                if row is not None:
+                    # Never dispatch a second canary after no-fill, successful
+                    # close or crash. Recovery can only collect existing reads.
+                    owned_exit = self.journal.db.execute(
+                        "SELECT 1 FROM exit_identity WHERE cycle_id=?", (slot,)
+                    ).fetchone()
+                    if not owned_exit:
+                        self.status = "CANARY_UNFILLED"
+                        return
+                    if (
+                        row[0] == "CLOSED"
+                        and not self.demo_release.status()["canary_evidence_sha256"]
+                    ):
+                        order = await self.repository.load_oms_order(slot)
+                        await self._record_canary_close(order)
+                    self.status = "AWAITING_OWNER_CANARY_ACCEPTANCE"
+                    return
             if not await self.entry_authorized():
                 self.status = "ENTRY_BLOCKED"
                 return
             await self.oms.dispatch_once()
             await self.reconcile()
-            self.status = "OPERATIONAL"
+            self.status = (
+                "CANARY_VALIDATING"
+                if self.demo_release is not None
+                and self.demo_release.grant.mode == "CANARY_ONLY"
+                else "OPERATIONAL"
+            )
+
+    async def _record_canary_close(self, order):
+        run = await self.reconcile()
+        control = await self.repository.load_risk_control_state()
+        if (
+            control is None
+            or control.active
+            or self.risk.kill_switch_active
+            or self.risk.position_exposures()
+        ):
+            raise SecurityError("Gate canary has unresolved central risk")
+        payload = await self.adapter.capture_canary_close(order)
+        payload.update(
+            reconciliation_run_id=run.run_id,
+            reconciliation_status=run.status.value,
+            risk_clear=True,
+        )
+        sha = self.demo_release.record_closed(order, payload)
+        await self.audit.record(
+            correlation_id=order.correlation_id,
+            audit_type="GATE_DEMO_CANARY_EVIDENCE_VERIFIED",
+            entity_type="oms_order",
+            entity_id=order.oms_order_id,
+            payload={
+                "canary_sha256": sha,
+                "entry_order_id": payload["entry_order_id"],
+                "stop_id": payload["stop_id"],
+                "exit_order_id": str(
+                    payload["exit"].get("id_string") or payload["exit"]["id"]
+                ),
+                "reconciliation_run_id": run.run_id,
+                "automatic_agents_enabled": False,
+            },
+        )
+
+    async def _monitor_protected(self, order, state):
+        proof = await self.adapter._protection.verify(order)
+        metadata, observed = await self.metadata(order.symbol)
+        if not 0 <= number(self.clock()) - number(observed) <= 10:
+            raise SecurityError("Gate exit quote stale")
+        mark = number(metadata["mark_price"])
+        target = number(proof["take_profit"])
+        reached = mark >= target if order.side.value == "BUY" else mark <= target
+        # Close before stop expiration; no cancel-and-replace gap.
+        if (
+            reached
+            or state["expires_at"] - self.clock() <= 180
+            or not await self.entry_authorized()
+        ):
+            state = await self.adapter.close_protected_order(order)
+            state["cause"] = "TARGET" if reached else "SAFETY"
+        return state
 
     async def run(self, stop):
         while not stop.is_set():
@@ -447,8 +542,18 @@ async def connect_gate_oms(values, journal, *, mount_verified):
             equity_baseline_store=GateEquityBaseline(journal),
         )
         release = ReleaseReadinessService(repository)
+        demo_release = None
+        if values.get("GATE_DEMO_OWNER_GRANT_JSON"):
+            grant = GateDemoOwnerGrant.model_validate_json(
+                values["GATE_DEMO_OWNER_GRANT_JSON"]
+            )
+            demo_release = GateDemoRelease(
+                journal, grant, source_revision=revision, account_binding=binding
+            )
 
         async def released():
+            if demo_release is not None:
+                return await demo_release.authorized()
             return await release.runtime_authorized(revision)
 
         holder = {}
@@ -468,6 +573,9 @@ async def connect_gate_oms(values, journal, *, mount_verified):
             account_guard=guard,
             exit_guard=exit_guard,
             execution_enabled=enabled,
+            entry_order_guard=(
+                demo_release.authorize_order if demo_release is not None else None
+            ),
         )
         risk.set_testnet_equity_provider(adapter.fetch_account_equity)
         await risk.initialize()
@@ -503,6 +611,7 @@ async def connect_gate_oms(values, journal, *, mount_verified):
             release_guard=released,
             writes_enabled=enabled,
             candle_store=store,
+            demo_release=demo_release,
         )
         holder["flow"] = flow
         yield flow
