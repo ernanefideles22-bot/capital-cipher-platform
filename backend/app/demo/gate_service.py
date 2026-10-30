@@ -110,8 +110,11 @@ def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles
                             await runtime['flow'].process_analysis(result)
                         last_candle = candle
                     state['research_status'] = 'AVAILABLE'
-                except Exception:
+                except Exception as exc:
                     state['research_status'] = 'UNAVAILABLE'
+                    logging.getLogger('uvicorn.error').warning(
+                        'GATE_RESEARCH_FAILED error_type=%s stage=%s',
+                        type(exc).__name__, getattr(runtime['flow'], 'analysis_stage', 'ANALYSIS'))
                 state['research_checked_at'] = datetime.now(timezone.utc).isoformat()
                 logging.getLogger('uvicorn.error').info('GATE_RESEARCH_STATUS %s', state['research_status'])
             await asyncio.sleep(300)

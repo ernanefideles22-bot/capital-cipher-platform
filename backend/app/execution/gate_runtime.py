@@ -146,6 +146,7 @@ class GateOMSConnection:
         self.last_order_id = None
         self.release_authorized = False
         self.central_risk_clear = False
+        self.analysis_stage = "IDLE"
         self.demo_release = demo_release
 
     async def entry_authorized(self):
@@ -176,6 +177,7 @@ class GateOMSConnection:
 
     async def process_analysis(self, result):
         async with self._lock:
+            self.analysis_stage = "CONTROL_CHECK"
             if not await self.entry_authorized():
                 self.status = "ENTRY_BLOCKED"
                 return {"status": self.status}
@@ -221,10 +223,13 @@ class GateOMSConnection:
                 is not None
             ):
                 return {"status": "ALREADY_EVALUATED"}
+            self.analysis_stage = "RECONCILE"
             await self.reconcile()
+            self.analysis_stage = "REFRESH_RISK"
             await self.risk.refresh_positions()
             # Independently refresh Gate candles and mark, never reuse the
             # credential-free research process's advisory risk approval.
+            self.analysis_stage = "MARKET_REFRESH"
             rows = await self.market_fetch(
                 decision.symbol, decision.timeframe, limit=200
             )
@@ -284,6 +289,7 @@ class GateOMSConnection:
                 }
             )
             await self.repository.save_decision(decision)
+            self.analysis_stage = "RISK_CHECK"
             check = await self.risk.check(
                 decision,
                 entry_price=float(mark),
@@ -295,11 +301,13 @@ class GateOMSConnection:
             if not check.approved:
                 self.status = "RISK_REJECTED"
                 return {"status": self.status, "risk_check_id": check.risk_check_id}
+            self.analysis_stage = "OMS_QUEUE"
             order = await self.oms.submit_approved(
                 decision, check, current_price=float(mark)
             )
             if self.demo_release is not None:
                 self.demo_release.reserve(order)
+            self.analysis_stage = "QUEUED"
             self.last_order_id = order.oms_order_id
             self.status = "QUEUED"
             return {"status": self.status, "oms_order_id": order.oms_order_id}
