@@ -260,13 +260,20 @@ class Repository:
         session,
         *,
         lock_paper: bool,
+        gate_testnet_only: bool = False,
     ) -> list[PositionExposure]:
+        # Gate's central risk manager approves a venue-scoped portfolio. The
+        # atomic consumer must compare that SAME scope, while still locking
+        # every Gate reservation and checking the shared durable kill state.
+        # Default callers retain the existing global/PAPER portfolio behavior.
         paper_statement = select(PaperOrderModel).where(
             PaperOrderModel.status == PaperOrderStatus.FILLED.value
         )
         if lock_paper:
             paper_statement = paper_statement.with_for_update()
-        paper_rows = list(await session.scalars(paper_statement))
+        paper_rows = (
+            [] if gate_testnet_only else list(await session.scalars(paper_statement))
+        )
         exposures = [
             PositionExposure(
                 paper_order_id=row.id,
@@ -281,7 +288,9 @@ class Repository:
         ]
         testnet_order_statement = select(OMSOrderModel).where(
             OMSOrderModel.environment
-            == ExecutionEnvironment.TESTNET.value
+            == ExecutionEnvironment.TESTNET.value,
+            (OMSOrderModel.exchange == Exchange.GATE.value
+             if gate_testnet_only else True),
         )
         if lock_paper:
             testnet_order_statement = (
@@ -341,6 +350,8 @@ class Repository:
                 == ExecutionEnvironment.TESTNET.value,
                 ReconciliationRunModel.status
                 != ReconciliationRunStatus.FAILED.value,
+                (ReconciliationRunModel.exchange == Exchange.GATE.value
+                 if gate_testnet_only else True),
             )
             .subquery()
         )
@@ -3298,6 +3309,10 @@ class Repository:
                     exposures = await self._durable_position_exposures(
                         session,
                         lock_paper=True,
+                        gate_testnet_only=(
+                            order.exchange == Exchange.GATE
+                            and order.environment == ExecutionEnvironment.TESTNET
+                        ),
                     )
                     if stored.position_snapshot_hash != _exposure_snapshot_hash(
                         exposures
