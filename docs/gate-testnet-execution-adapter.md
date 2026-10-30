@@ -1,5 +1,8 @@
 # Gate Testnet execution adapter
 
+The dedicated opt-in runtime is documented in [Gate OMS agent flow](gate-oms-agent-flow.md).
+The original adapter increment is described below.
+
 `GateTestnetExecutionAdapter` implements the execution-adapter interface for Gate
 USDT perpetual futures. It is deliberately not registered in `build_context` and
 does not change the deployed read-only service. Constructor and transport write

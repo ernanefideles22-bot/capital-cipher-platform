@@ -57,7 +57,8 @@ class GateTestnetExecutionAdapter(GateTestnetPreparationAdapter):
         journal,
         protection_store,
         account_guard,
-        execution_enabled=False
+        execution_enabled=False,
+        exit_guard=None
     ):
         super().__init__(metadata_provider, clock)
         if not callable(account_guard):
@@ -66,11 +67,13 @@ class GateTestnetExecutionAdapter(GateTestnetPreparationAdapter):
         self._journal = journal
         self._protection = protection_store
         self._guard = account_guard
+        self._exit_guard = exit_guard or account_guard
         self._enabled = execution_enabled is True
         self._lock = asyncio.Lock()
 
-    async def _authorize(self):
-        if not self._enabled or await self._guard() is not True:
+    async def _authorize(self, *, exit_only=False):
+        guard = self._exit_guard if exit_only else self._guard
+        if not self._enabled or await guard() is not True:
             raise SecurityError(
                 "Gate execution disabled or central controls unavailable"
             )
@@ -422,7 +425,7 @@ class GateTestnetExecutionAdapter(GateTestnetPreparationAdapter):
     async def close_protected_order(self, order):
         """Close only this reconciled protected cycle; never clear an old halt."""
         async with self._lock:
-            await self._authorize()
+            await self._authorize(exit_only=True)
             self._scope(order)
             cycle = order.oms_order_id
             row = self._journal.read(cycle)
@@ -519,6 +522,81 @@ class GateTestnetExecutionAdapter(GateTestnetPreparationAdapter):
                     "Gate close unresolved; do not retry"
                 ) from None
 
+    async def fetch_account_equity(self):
+        account = await self._transport.account()
+        if account.get("currency") != "USDT":
+            raise SecurityError("Gate settlement mismatch")
+        equity = number(account["total"]) + number(account["unrealised_pnl"])
+        if equity <= 0:
+            raise SecurityError("Gate virtual equity unavailable")
+        return float(equity)
+
+    async def reconcile_protected_order(self, order):
+        """Prove an exchange-triggered exit by its conditional-order linkage."""
+        async with self._lock:
+            self._scope(order)
+            row = self._journal.read(order.oms_order_id)
+            if row["state"] != "PROTECTED" or row["contract"] != CONTRACTS.get(
+                order.symbol
+            ):
+                raise SecurityError("Gate cycle requires operator reconciliation")
+            stop = await self._transport.get_stop(row["stop_id"])
+            stop_time = self._clock()
+            position = await self._transport.get_position(row["contract"])
+            if stop.get("status") == "open":
+                if (
+                    position.get("contract") != row["contract"]
+                    or position.get("mode") != "single"
+                    or number(position["size"]) != number(row["position"])
+                    or not stop_matches(
+                        stop,
+                        order_id=row["stop_id"],
+                        contract=row["contract"],
+                        position_size=row["position"],
+                        trigger_price=row["target"],
+                        observed_at=stop_time,
+                        now=self._clock(),
+                    )
+                ):
+                    self._journal.halt_protection(row["id"])
+                    raise SecurityError("Gate live stop or position no longer verified")
+                return {
+                    "state": "PROTECTED",
+                    "expires_at": float(
+                        number(stop["create_time"])
+                        + number(stop["trigger"]["expiration"])
+                    ),
+                }
+            generated = str(stop.get("trade_id") or "")
+            if (
+                stop.get("status") != "finished"
+                or stop.get("finish_as") != "succeeded"
+                or not generated.isdecimal()
+                or int(generated) <= 0
+            ):
+                self._journal.halt_protection(row["id"])
+                raise SecurityError("Gate stop ended without a proven exit")
+            close = await self._transport.get_order(generated)
+            close_time = self._clock()
+            counts, started, finished, *_ = await self._inventory()
+            position = await self._transport.get_position(row["contract"])
+            pos_time = self._clock()
+            if not self._journal.record_verified_stop_exit(
+                row["id"],
+                stop=stop,
+                order=close,
+                position=position,
+                inventory=counts,
+                stop_observed_at=stop_time,
+                order_observed_at=close_time,
+                position_observed_at=pos_time,
+                inventory_started_at=started,
+                inventory_finished_at=finished,
+                now=self._clock(),
+            ):
+                raise SecurityError("Gate generated stop exit not reconciled")
+            return {"state": "CLOSED", "venue_order_id": generated, "cause": "STOP"}
+
     async def fetch_state(self, *, symbols=None):
         async with self._lock:
             return await self._fetch_state(symbols=symbols)
@@ -577,6 +655,16 @@ class GateTestnetExecutionAdapter(GateTestnetPreparationAdapter):
                 ):
                     self._journal.halt_protection(row["id"])
                     raise ValueError("active protection or position changed")
+            owned_contracts = {
+                c["contract"]
+                for c in self._journal.recovery_status()["cycles"]
+                if c["state"] == "PROTECTED"
+            }
+            if any(
+                number(p["size"]) != 0 and p.get("contract") not in owned_contracts
+                for p in positions
+            ):
+                raise ValueError("orphan Gate position")
             account = await self._transport.account()
             if account["currency"] != "USDT":
                 raise ValueError("wrong settlement")
@@ -636,6 +724,16 @@ class GateTestnetExecutionAdapter(GateTestnetPreparationAdapter):
                             unrealized_pnl=float(number(p["unrealised_pnl"])),
                         )
                     )
+                managed_fills = {
+                    str(oid): cycle
+                    for cycle, oid in self._journal.db.execute(
+                        "SELECT e.cycle_id,e.order_id FROM entry_identity e JOIN cycles c ON c.id=e.cycle_id WHERE c.contract=? "
+                        "UNION ALL SELECT e.cycle_id,e.order_id FROM exit_identity e JOIN cycles c ON c.id=e.cycle_id WHERE c.contract=? "
+                        "UNION ALL SELECT e.cycle_id,e.order_id FROM stop_exit_identity e JOIN cycles c ON c.id=e.cycle_id WHERE c.contract=?",
+                        (CONTRACTS[symbol],) * 3,
+                    )
+                    if oid is not None
+                }
                 for f in await self._transport.rows(
                     "fills", contract=CONTRACTS[symbol]
                 ):
@@ -649,6 +747,7 @@ class GateTestnetExecutionAdapter(GateTestnetPreparationAdapter):
                     result.fills.append(
                         ExecutionFill(
                             fill_id=str(f["id"]),
+                            oms_order_id=managed_fills.get(str(f["order_id"])),
                             venue_order_id=str(f["order_id"]),
                             client_order_id=f.get("text"),
                             exchange=Exchange.GATE,

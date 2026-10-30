@@ -390,11 +390,11 @@ class Repository:
             reconciled_symbols.update(
                 (row.exchange, row.symbol) for row in position_rows
             )
-            if Exchange.BYBIT.value in reconciled_exchanges:
+            if reconciled_exchanges & {Exchange.BYBIT.value, Exchange.GATE.value}:
                 reconciled_symbols.update(
                     (row.exchange, row.symbol)
                     for row in testnet_order_rows
-                    if row.exchange == Exchange.BYBIT.value
+                    if row.exchange in {Exchange.BYBIT.value, Exchange.GATE.value} and row.exchange in reconciled_exchanges
                 )
             balance_rows = list(
                 await session.scalars(
@@ -3412,16 +3412,25 @@ class Repository:
         *,
         worker_id: str,
         lease_seconds: float,
+        exchange: Exchange | None = None,
+        environment: ExecutionEnvironment | None = None,
     ) -> tuple[ExecutionCommand, OMSOrder] | None:
         """Lease one command; PostgreSQL workers skip rows leased elsewhere."""
 
+        if (exchange is None) != (environment is None):
+            raise ValidationError('Execution queue scope requires venue and environment')
+        scope=[]
+        if exchange is not None:
+            scoped=select(OMSOrderModel.oms_order_id).where(OMSOrderModel.exchange==exchange.value,
+                OMSOrderModel.environment==environment.value)
+            scope=[ExecutionCommandModel.oms_order_id.in_(scoped)]
         now = _now()
         lease_until = now + timedelta(seconds=max(1.0, lease_seconds))
         try:
             async with self._db.session() as session, session.begin():
                 expired_rows = list(
                     await session.scalars(
-                        select(ExecutionCommandModel)
+                        select(ExecutionCommandModel).where(*scope)
                         .where(
                             ExecutionCommandModel.status
                             == ExecutionCommandStatus.LEASED.value,
@@ -3479,7 +3488,7 @@ class Repository:
                     expired.last_error_type = "LEASE_EXPIRED"
                     expired.completed_at = now
                 statement = (
-                    select(ExecutionCommandModel)
+                    select(ExecutionCommandModel).where(*scope)
                     .where(
                         ExecutionCommandModel.attempt_count
                         < ExecutionCommandModel.max_attempts,
