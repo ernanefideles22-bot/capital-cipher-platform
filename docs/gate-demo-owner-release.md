@@ -30,9 +30,16 @@ server. Never use a fixture digest or an invented successful report.
 ## Two explicit stages
 
 1. **CANARY_ONLY:** A server-side owner grant authorizes one centrally approved
-   agent signal, not a forced BUY/SELL. BTCUSDT / 15m only, MARKET IOC, at most
+   operation. The default `canary_trigger=AGENT_SIGNAL` waits for an actual
+   agent BUY/SELL. An explicit `canary_trigger=TECHNICAL_PROBE` instead schedules
+   one mechanical BUY from the executor tick, without waiting for or changing
+   an agent signal. BTCUSDT / 15m only, MARKET IOC, at most
    50 USDT, one position, isolated 1x and the existing 0.1% central risk cap.
-   WAIT and risk rejection remain blocked. The order ID is reserved durably
+   Agent HOLD/WAIT never becomes a trade signal. Technical probes use the
+   distinct strategy `GATE_TECHNICAL_CANARY`, reason and warning fields, and
+   `strategy_performance_sample=false` in the measured report. This is execution
+   evidence only; its PnL is not a profitability sample for agent strategies.
+   The same actual central risk check can reject either path. The order ID is reserved durably
    before the dispatcher can send it. Another queue command cannot use that
    reservation. Restart, expiry or a new grant ID do not replenish the canary
    budget for the same revision and account.
@@ -67,6 +74,21 @@ python scripts/prepare_gate_demo_grant.py \
   --authorization-reference '<owner authorization reference>' \
   --mode CANARY_ONLY --hours 1
 ```
+
+For the separately identified mechanical test, add
+`--canary-trigger TECHNICAL_PROBE` to this preparation command. The proposed
+server grant must explicitly contain that trigger. No public write endpoint or
+research payload can select it; research cannot claim the reserved technical
+strategy. Existing grants without the field keep their original behavior and
+immutable stored representation. `AGENTS` grants reject the technical trigger.
+
+The mechanical key is account/revision scoped and the monitor serializes it
+under the existing flow lock. An evaluated rejection or interrupted queue step
+becomes `TECHNICAL_CANARY_REVIEW_REQUIRED`; it never issues a fresh risk identity
+to retry the same test. Writes-off, expired authorization, kill state, lease
+loss, stale market data, pending recovery and the existing one-canary budget
+still block it. The protected close and subsequent owner acceptance are
+unchanged. A risk-reducing exit remains possible after grant expiry.
 
 Publish the exact tested revision on the existing service with writes **off**.
 The owner-controlled Railway configuration then supplies:
