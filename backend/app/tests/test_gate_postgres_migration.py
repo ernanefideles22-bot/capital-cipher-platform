@@ -57,9 +57,13 @@ async def test_gate_migration_preserves_existing_evidence_and_rejects_other_venu
 
 
 @pytest.mark.skipif(not os.environ.get("POSTGRES_TEST_URL"), reason="POSTGRES_TEST_URL is not configured")
-async def test_gate_oms_entry_requires_durable_stop_and_target():
+@pytest.mark.parametrize("reference_price", [100, 77165.43, 80321.17])
+async def test_gate_oms_entry_requires_durable_stop_and_target(reference_price):
     import asyncpg
     import httpx
+    import math
+    from decimal import Decimal
+    from app.core.errors import SecurityError
     from app.audit.service import AuditService
     from app.core.state_machine import SystemState, SystemStateMachine
     from app.database.repositories.repository import Repository
@@ -117,22 +121,33 @@ async def test_gate_oms_entry_requires_durable_stop_and_target():
             paper_engine=paper,risk_manager=risk,audit_service=audit,repository=repository,release_guard=release,
             adapters={(Exchange.GATE,ExecutionEnvironment.TESTNET):adapter})
         decision=make_decision(CandidateAction.BUY)
-        check=await risk.check(decision,entry_price=100,atr=1,leverage=1)
+        check=await risk.check(decision,entry_price=reference_price,atr=1,leverage=1)
         assert check.approved
-        order=await oms.submit_approved(decision,check,current_price=100)
+        order=await oms.submit_approved(decision,check,current_price=reference_price)
+        order=await repository.load_oms_order(order.oms_order_id)
         protected=await connection.fetchrow("""SELECT oms_order_id,approval_id,exchange,environment,symbol,side,
             execution_intent,reduce_only,stop_loss,take_profit,leverage,reference_price
             FROM capital_cipher.oms_order_protections WHERE oms_order_id=$1""",order.oms_order_id)
         assert protected["exchange"]=="GATE" and protected["environment"]=="TESTNET"
         assert float(protected["stop_loss"])==check.stop_loss and float(protected["take_profit"])==check.take_profit
         assert float(protected["leverage"])==1 and protected["approval_id"]==check.approval_id
-        result=validate_gate_protection(order,dict(protected))
-        assert result["verified"] and result["execution_authorized"] is False
+        if Decimal(str(order.reference_price)) != protected["reference_price"]:
+            with pytest.raises(SecurityError):
+                validate_gate_protection(order,dict(protected))
         stored=await GateProtectionStore(database).verify(order)
         assert stored["verified"] and stored["execution_authorized"] is False
+        different=order.model_copy(update={"reference_price":math.nextafter(order.reference_price,math.inf)})
+        with pytest.raises(SecurityError):
+            await GateProtectionStore(database).verify(different)
         with pytest.raises(asyncpg.ObjectNotInPrerequisiteStateError, match="protection evidence is immutable"):
             await connection.execute("UPDATE capital_cipher.oms_order_protections SET stop_loss=1 WHERE oms_order_id=$1",order.oms_order_id)
         assert not await adapter.healthcheck()
+        # Corruption injection is confined to this disposable local database.
+        # Distinct NUMERIC values that round to the same float must still fail.
+        await connection.execute("ALTER TABLE capital_cipher.oms_order_protections DISABLE TRIGGER trg_oms_order_protections_immutable")
+        await connection.execute("UPDATE capital_cipher.oms_order_protections SET reference_price=reference_price+0.000000000000001 WHERE oms_order_id=$1",order.oms_order_id)
+        with pytest.raises(SecurityError):
+            await GateProtectionStore(database).verify(order)
     finally:
         if provider is not None: await provider.aclose()
         if database is not None: await database.dispose()

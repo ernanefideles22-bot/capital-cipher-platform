@@ -23,9 +23,17 @@ class GateProtectionStore:
 
     async def verify(self, order):
         try:
-            query=text("SELECT oms_order_id,approval_id,exchange,environment,symbol,side,"
-                       "execution_intent,reduce_only,stop_loss,take_profit,leverage,reference_price "
-                       "FROM capital_cipher.oms_order_protections WHERE oms_order_id=:id")
+            # Compare the original NUMERIC values exactly in PostgreSQL before
+            # projecting into the same float representation used by OMSOrder.
+            # No tick-size or price-distance tolerance is used.
+            query=text("SELECT p.oms_order_id,p.approval_id,p.exchange,p.environment,p.symbol,p.side,"
+                       "p.execution_intent,p.reduce_only,p.stop_loss,p.take_profit,p.leverage,"
+                       "CAST(p.reference_price AS DOUBLE PRECISION) AS reference_price "
+                       "FROM capital_cipher.oms_order_protections p "
+                       "JOIN capital_cipher.oms_orders o ON o.oms_order_id=p.oms_order_id "
+                       "AND o.approval_id=p.approval_id "
+                       "WHERE p.oms_order_id=:id AND p.reference_price=o.reference_price "
+                       "AND p.leverage=o.leverage")
             async with self._database.engine.connect() as connection:
                 row=(await connection.execute(query,{"id":order.oms_order_id})).mappings().one_or_none()
             return validate_gate_protection(order,row)
