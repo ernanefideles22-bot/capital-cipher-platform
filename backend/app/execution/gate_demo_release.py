@@ -20,6 +20,7 @@ from app.demo.gate_exit_evidence import confirmed_exit
 from app.demo.gate_stop_validation import stop_matches
 
 ACK = "GATE_TESTNET_VIRTUAL_FUNDS_ONLY"
+TECHNICAL_CANARY_STRATEGY = "GATE_TECHNICAL_CANARY"
 
 
 def digest(payload):
@@ -41,6 +42,7 @@ class GateDemoOwnerGrant(BaseModel):
     environment: Literal["GATE_TESTNET"]
     acknowledgement: Literal["GATE_TESTNET_VIRTUAL_FUNDS_ONLY"]
     mode: Literal["CANARY_ONLY", "AGENTS"]
+    canary_trigger: Literal["AGENT_SIGNAL", "TECHNICAL_PROBE"] = "AGENT_SIGNAL"
     issued_at: AwareDatetime
     expires_at: AwareDatetime
     accepted_canary_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
@@ -53,6 +55,8 @@ class GateDemoOwnerGrant(BaseModel):
             raise ValueError("Gate demo owner grant is valid for at most 24 hours")
         if (self.mode == "AGENTS") != (self.accepted_canary_sha256 is not None):
             raise ValueError("Only AGENTS mode requires an accepted real canary digest")
+        if self.mode == "AGENTS" and self.canary_trigger != "AGENT_SIGNAL":
+            raise ValueError("Technical probes only belong to the canary stage")
         return self
 
 
@@ -88,7 +92,16 @@ class GateDemoRelease:
                 )
         payload = json.dumps(
             {
-                "grant": grant.model_dump(mode="json"),
+                # Preserve the exact representation of grants written before
+                # canary_trigger existed, including on a service restart.
+                "grant": grant.model_dump(
+                    mode="json",
+                    exclude=(
+                        {"canary_trigger"}
+                        if "canary_trigger" not in grant.model_fields_set
+                        else set()
+                    ),
+                ),
                 "account_binding": account_binding,
             },
             sort_keys=True,
@@ -204,6 +217,8 @@ class GateDemoRelease:
             or not 0 < order.requested_notional <= 50
             or order.order_type.value != "MARKET"
             or order.time_in_force.value != "IOC"
+            or (order.strategy == TECHNICAL_CANARY_STRATEGY)
+            != (self.grant.canary_trigger == "TECHNICAL_PROBE")
         ):
             raise SecurityError("Gate owner release order exceeds its scope")
 
@@ -312,6 +327,9 @@ class GateDemoRelease:
             "grant_id": self.grant.grant_id,
             "technical_evidence_sha256": self.grant.technical_evidence_sha256,
             "order_id": order.oms_order_id,
+            "canary_trigger": self.grant.canary_trigger,
+            "strategy": order.strategy,
+            "strategy_performance_sample": False,
             "limits": {"max_notional_usdt": 50, "max_positions": 1, "leverage": 1},
             "protected": protected,
             "closed": payload,
@@ -337,6 +355,7 @@ class GateDemoRelease:
         return {
             "policy": "OWNER_GATE_DEMO",
             "mode": self.grant.mode,
+            "canary_trigger": self.grant.canary_trigger,
             "grant_current": self.current(),
             "canary_reserved": self.slot() is not None,
             "canary_evidence_sha256": row[0] if row else None,

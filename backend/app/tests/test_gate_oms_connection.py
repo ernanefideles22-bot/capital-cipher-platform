@@ -159,9 +159,11 @@ async def flow(tmp_path):
 
     class Protection:
         async def verify(self, oms_order):
-            stored = await repo.load_central_risk_evaluation_by_key(
-                f"gate-agents:BTCUSDT:15m:{STAMP.isoformat()}"
-            )
+            key = f"gate-agents:BTCUSDT:15m:{STAMP.isoformat()}"
+            if oms_order.strategy == "GATE_TECHNICAL_CANARY":
+                release = holder["flow"].demo_release
+                key = f"gate-technical-canary:{release.binding}:{release.grant.source_revision}"
+            stored = await repo.load_central_risk_evaluation_by_key(key)
             check, _ = stored
             return validate_gate_protection(
                 oms_order,

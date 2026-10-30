@@ -29,7 +29,11 @@ from app.execution.adapters.gate_testnet import GateTestnetExecutionAdapter, num
 from app.execution.adapters.gate_testnet_metadata import GateTestnetMetadata
 from app.execution.gate_protection_store import GateProtectionStore
 from app.execution.gate_equity import GateEquityBaseline
-from app.execution.gate_demo_release import GateDemoOwnerGrant, GateDemoRelease
+from app.execution.gate_demo_release import (
+    GateDemoOwnerGrant,
+    GateDemoRelease,
+    TECHNICAL_CANARY_STRATEGY,
+)
 from app.market_data.store import CandleStore
 from app.oms.service import OMSService
 from app.oms.reconciliation import ReconciliationService
@@ -211,6 +215,12 @@ class GateOMSConnection:
                 or not 0 <= self.clock() - candle.timestamp() <= 960
             ):
                 raise SecurityError("Gate agent signal is stale")
+            if decision.strategy == TECHNICAL_CANARY_STRATEGY:
+                raise SecurityError(
+                    "Agent research cannot impersonate a technical probe"
+                )
+            if self.technical_canary():
+                return {"status": "TECHNICAL_CANARY_PENDING"}
             if decision.candidate_action not in {
                 CandidateAction.BUY,
                 CandidateAction.SELL,
@@ -223,94 +233,137 @@ class GateOMSConnection:
                 is not None
             ):
                 return {"status": "ALREADY_EVALUATED"}
-            self.analysis_stage = "RECONCILE"
-            await self.reconcile()
-            self.analysis_stage = "REFRESH_RISK"
-            await self.risk.refresh_positions()
-            # Independently refresh Gate candles and mark, never reuse the
-            # credential-free research process's advisory risk approval.
-            self.analysis_stage = "MARKET_REFRESH"
+            return await self._queue_decision(decision, candle, key)
+
+    def technical_canary(self):
+        return bool(
+            self.demo_release is not None
+            and self.demo_release.grant.mode == "CANARY_ONLY"
+            and self.demo_release.grant.canary_trigger == "TECHNICAL_PROBE"
+        )
+
+    async def _queue_technical_canary(self):
+        """One explicit mechanical test, never impersonating an agent signal.
+
+        Called only under the flow lock after the same entry controls. Its
+        durable key is account/revision scoped, so rejection or an interrupted
+        queue operation requires review rather than a fresh attempt.
+        """
+        key = (
+            f"gate-technical-canary:{self.demo_release.binding}:"
+            f"{self.demo_release.grant.source_revision}"
+        )
+        if await self.repository.load_central_risk_evaluation_by_key(key) is not None:
+            self.status = "TECHNICAL_CANARY_REVIEW_REQUIRED"
+            return
+        rows = await self.market_fetch("BTCUSDT", "15m", limit=200)
+        if len(rows) < 60:
+            raise SecurityError("Gate technical canary market history unavailable")
+        candle = datetime.fromtimestamp(rows[-1]["close_time_ms"] / 1000, timezone.utc)
+        if not 0 <= self.clock() - candle.timestamp() <= 960:
+            raise SecurityError("Gate technical canary candle is stale")
+        decision = Decision(
+            correlation_id=str(uuid5(NAMESPACE_URL, key)),
+            symbol="BTCUSDT",
+            timeframe="15m",
+            candidate_action=CandidateAction.BUY,
+            confidence=100,
+            strategy=TECHNICAL_CANARY_STRATEGY,
+            reason="Mechanical Gate Testnet execution probe; no strategy signal or profit evidence",
+            warnings=["EXCLUDE_FROM_STRATEGY_PERFORMANCE"],
+        )
+        result = await self._queue_decision(decision, candle, key, rows=rows)
+        if result["status"] == "QUEUED":
+            logging.getLogger("uvicorn.error").info(
+                "GATE_TECHNICAL_CANARY_QUEUED order_id=%s", result["oms_order_id"]
+            )
+
+    async def _queue_decision(self, decision, candle, key, *, rows=None):
+        """Common actual risk/OMS path; caller holds the flow lock."""
+        self.analysis_stage = "RECONCILE"
+        await self.reconcile()
+        self.analysis_stage = "REFRESH_RISK"
+        await self.risk.refresh_positions()
+        # Independently refresh Gate candles and mark, never reuse the
+        # credential-free research process's advisory risk approval.
+        self.analysis_stage = "MARKET_REFRESH"
+        if rows is None:
             rows = await self.market_fetch(
                 decision.symbol, decision.timeframe, limit=200
             )
-            candles = [
-                Candle(
-                    exchange=Exchange.GATE,
-                    symbol=decision.symbol,
-                    timeframe=decision.timeframe,
-                    open=r["open"],
-                    high=r["high"],
-                    low=r["low"],
-                    close=r["close"],
-                    volume=r["volume"],
-                    closed_at=datetime.fromtimestamp(
-                        r["close_time_ms"] / 1000, timezone.utc
-                    ),
-                )
-                for r in rows
-            ]
-            if len(candles) < 60 or candles[-1].closed_at != candle:
-                raise SecurityError("Gate signal candle no longer matches market data")
-            existing = self.candle_store.latest(
-                "GATE", decision.symbol, decision.timeframe
+        candles = [
+            Candle(
+                exchange=Exchange.GATE,
+                symbol=decision.symbol,
+                timeframe=decision.timeframe,
+                open=r["open"],
+                high=r["high"],
+                low=r["low"],
+                close=r["close"],
+                volume=r["volume"],
+                closed_at=datetime.fromtimestamp(
+                    r["close_time_ms"] / 1000, timezone.utc
+                ),
             )
-            for item in candles:
-                if existing is None or item.closed_at > existing.closed_at:
-                    self.candle_store.add(item)
-            metadata, observed = await self.metadata(decision.symbol)
-            mark, tick = number(metadata["mark_price"]), number(
-                metadata["order_price_round"]
-            )
-            if (
-                not 0 <= number(self.clock()) - number(observed) <= 10
-                or min(mark, tick) <= 0
-            ):
-                raise SecurityError("Gate market metadata invalid")
-            atr = indicators.atr(candles)
-            if atr is None or atr <= 0:
-                raise SecurityError("Gate ATR unavailable")
-            distance = number(atr) * Decimal("1.5")
-            stop = (
-                ((mark - distance) / tick).to_integral_value(rounding=ROUND_FLOOR)
-                * tick
-                if decision.candidate_action == CandidateAction.BUY
-                else ((mark + distance) / tick).to_integral_value(
-                    rounding=ROUND_CEILING
-                )
-                * tick
-            )
-            adjusted_atr = float(abs(mark - stop) / Decimal("1.5"))
-            stable = str(uuid5(NAMESPACE_URL, key))
-            decision = decision.model_copy(
-                update={
-                    "decision_id": stable,
-                    "correlation_id": stable,
-                    "created_at": candle,
-                }
-            )
-            await self.repository.save_decision(decision)
-            self.analysis_stage = "RISK_CHECK"
-            check = await self.risk.check(
-                decision,
-                entry_price=float(mark),
-                atr=adjusted_atr,
-                leverage=1,
-                max_notional_override=50,
-                idempotency_key=key,
-            )
-            if not check.approved:
-                self.status = "RISK_REJECTED"
-                return {"status": self.status, "risk_check_id": check.risk_check_id}
-            self.analysis_stage = "OMS_QUEUE"
-            order = await self.oms.submit_approved(
-                decision, check, current_price=float(mark)
-            )
-            if self.demo_release is not None:
-                self.demo_release.reserve(order)
-            self.analysis_stage = "QUEUED"
-            self.last_order_id = order.oms_order_id
-            self.status = "QUEUED"
-            return {"status": self.status, "oms_order_id": order.oms_order_id}
+            for r in rows
+        ]
+        if len(candles) < 60 or candles[-1].closed_at != candle:
+            raise SecurityError("Gate signal candle no longer matches market data")
+        existing = self.candle_store.latest("GATE", decision.symbol, decision.timeframe)
+        for item in candles:
+            if existing is None or item.closed_at > existing.closed_at:
+                self.candle_store.add(item)
+        metadata, observed = await self.metadata(decision.symbol)
+        mark, tick = number(metadata["mark_price"]), number(
+            metadata["order_price_round"]
+        )
+        if (
+            not 0 <= number(self.clock()) - number(observed) <= 10
+            or min(mark, tick) <= 0
+        ):
+            raise SecurityError("Gate market metadata invalid")
+        atr = indicators.atr(candles)
+        if atr is None or atr <= 0:
+            raise SecurityError("Gate ATR unavailable")
+        distance = number(atr) * Decimal("1.5")
+        stop = (
+            ((mark - distance) / tick).to_integral_value(rounding=ROUND_FLOOR) * tick
+            if decision.candidate_action == CandidateAction.BUY
+            else ((mark + distance) / tick).to_integral_value(rounding=ROUND_CEILING)
+            * tick
+        )
+        adjusted_atr = float(abs(mark - stop) / Decimal("1.5"))
+        stable = str(uuid5(NAMESPACE_URL, key))
+        decision = decision.model_copy(
+            update={
+                "decision_id": stable,
+                "correlation_id": stable,
+                "created_at": candle,
+            }
+        )
+        await self.repository.save_decision(decision)
+        self.analysis_stage = "RISK_CHECK"
+        check = await self.risk.check(
+            decision,
+            entry_price=float(mark),
+            atr=adjusted_atr,
+            leverage=1,
+            max_notional_override=50,
+            idempotency_key=key,
+        )
+        if not check.approved:
+            self.status = "RISK_REJECTED"
+            return {"status": self.status, "risk_check_id": check.risk_check_id}
+        self.analysis_stage = "OMS_QUEUE"
+        order = await self.oms.submit_approved(
+            decision, check, current_price=float(mark)
+        )
+        if self.demo_release is not None:
+            self.demo_release.reserve(order)
+        self.analysis_stage = "QUEUED"
+        self.last_order_id = order.oms_order_id
+        self.status = "QUEUED"
+        return {"status": self.status, "oms_order_id": order.oms_order_id}
 
     async def tick(self):
         async with self._lock:
@@ -368,7 +421,16 @@ class GateOMSConnection:
             ):
                 slot = self.demo_release.slot()
                 if slot is None:
-                    self.status = "WAITING_FOR_CANARY_SIGNAL"
+                    if not await self.entry_authorized():
+                        self.status = "ENTRY_BLOCKED"
+                        return
+                    if not self.demo_release.may_queue():
+                        self.status = "CANARY_BUDGET_CONSUMED"
+                        return
+                    if self.technical_canary():
+                        await self._queue_technical_canary()
+                    else:
+                        self.status = "WAITING_FOR_CANARY_SIGNAL"
                     return
                 row = self.journal.db.execute(
                     "SELECT state FROM cycles WHERE id=?", (slot,)

@@ -18,6 +18,11 @@ def main():
         "--mode", choices=["CANARY_ONLY", "AGENTS"], default="CANARY_ONLY"
     )
     parser.add_argument("--accepted-canary-sha256")
+    parser.add_argument(
+        "--canary-trigger",
+        choices=["AGENT_SIGNAL", "TECHNICAL_PROBE"],
+        default="AGENT_SIGNAL",
+    )
     args = parser.parse_args()
     now = datetime.now(timezone.utc)
     grant = GateDemoOwnerGrant(
@@ -30,6 +35,7 @@ def main():
         environment="GATE_TESTNET",
         acknowledgement=ACK,
         mode=args.mode,
+        canary_trigger=args.canary_trigger,
         issued_at=now,
         expires_at=now + timedelta(hours=args.hours),
         accepted_canary_sha256=args.accepted_canary_sha256,

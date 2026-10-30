@@ -71,6 +71,12 @@ def wire(connection, authorization=None):
         {"expires_at": datetime.fromtimestamp(NOW, timezone.utc) + timedelta(days=2)},
         {"source_revision": "main"},
         {"unexpected_override": True},
+        {"canary_trigger": "ANY_ORDER"},
+        {
+            "mode": "AGENTS",
+            "accepted_canary_sha256": "a" * 64,
+            "canary_trigger": "TECHNICAL_PROBE",
+        },
     ],
 )
 def test_owner_grant_rejects_unsafe_or_ambiguous_scope(changes):
@@ -367,3 +373,160 @@ async def test_public_status_does_not_label_canary_as_automatic_agents(flow, tmp
             assert payload["execution_enabled"] is False
             assert payload["demo_release"]["mode"] == "CANARY_ONLY"
             assert "authorization_reference" not in json.dumps(payload)
+
+
+@pytest.mark.asyncio
+async def test_technical_probe_runs_despite_hold_once_and_records_separate_purpose(
+    flow,
+):
+    import asyncio
+
+    connection, venue, _, _ = flow
+    authorization = grant(canary_trigger="TECHNICAL_PROBE")
+    release = wire(connection, authorization)
+    assert (await connection.process_analysis(analysis("HOLD")))[
+        "status"
+    ] == "TECHNICAL_CANARY_PENDING"
+    assert not venue.writes and release.slot() is None
+    # Concurrent ticks serialize queue creation and dispatch; the actual shared
+    # risk manager and OMS must approve/reserve exactly one bounded command.
+    await asyncio.gather(connection.tick(), connection.tick())
+    assert venue.writes == ["entry", "stop"]
+    stored = await connection.repository.load_oms_order(release.slot())
+    assert stored.strategy == "GATE_TECHNICAL_CANARY"
+    assert stored.leverage == 1 and 0 < stored.requested_notional <= 50
+    await connection.tick()
+    assert venue.writes == ["entry", "stop", "close", "cancel_stop"]
+    assert connection.status == "AWAITING_OWNER_CANARY_ACCEPTANCE"
+    sha = release.status()["canary_evidence_sha256"]
+    report = json.loads(
+        release.db.execute(
+            "SELECT payload FROM gate_demo_canary_evidence WHERE sha256=?", (sha,)
+        ).fetchone()[0]
+    )
+    assert report["canary_trigger"] == "TECHNICAL_PROBE"
+    assert report["strategy_performance_sample"] is False
+    assert report["strategy"] == stored.strategy
+    assert not release.accepted()
+    # Restarting/replacing the grant cannot turn a completed probe into another
+    # entry, and a new grant ID cannot replenish this account/revision's budget.
+    wire(connection, authorization)
+    await connection.tick()
+    replacement = wire(connection, grant(canary_trigger="TECHNICAL_PROBE"))
+    await connection.tick()
+    assert not replacement.may_queue() and len(venue.writes) == 4
+    assert connection.status == "CANARY_BUDGET_CONSUMED"
+    accepted = wire(connection, grant(mode="AGENTS", accepted_canary_sha256=sha))
+    assert accepted.accepted() and await accepted.authorized()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocked", ["writes_off", "expired", "kill", "lease"])
+async def test_technical_probe_cannot_bypass_entry_controls(flow, blocked):
+    connection, venue, _, _ = flow
+    release = wire(connection, grant(canary_trigger="TECHNICAL_PROBE"))
+    if blocked == "writes_off":
+        connection.writes_enabled = False
+    elif blocked == "expired":
+        release.clock = lambda: NOW + 7200
+    elif blocked == "kill":
+        await connection.risk.trigger_kill_switch(
+            reason="Test existing halt", actor="test"
+        )
+    else:
+
+        async def lost():
+            return False
+
+        connection.lease.valid = lost
+    if blocked == "lease":
+        with pytest.raises(SecurityError):
+            await connection.tick()
+    else:
+        await connection.tick()
+    assert not venue.writes and release.slot() is None
+    assert release.status()["canary_evidence_sha256"] is None
+
+
+@pytest.mark.asyncio
+async def test_technical_probe_keeps_stop_failure_and_risk_rejection_fail_closed(flow):
+    connection, venue, _, _ = flow
+    release = wire(connection, grant(canary_trigger="TECHNICAL_PROBE"))
+    await connection.tick()
+    venue.failure = "stop"
+    with pytest.raises(SecurityError):
+        await connection.tick()
+    assert release.status()["canary_evidence_sha256"] is None
+    assert not release.may_queue()
+    assert connection.journal.recovery_status()["recovery_required"]
+
+
+@pytest.mark.asyncio
+async def test_technical_probe_rejected_risk_is_not_retried_under_new_identity(flow):
+    connection, venue, _, _ = flow
+    release = wire(connection, grant(canary_trigger="TECHNICAL_PROBE"))
+    connection.risk.state.consecutive_losses = 100
+    await connection.tick()
+    assert connection.status == "RISK_REJECTED"
+    await connection.tick()
+    assert connection.status == "TECHNICAL_CANARY_REVIEW_REQUIRED"
+    assert not venue.writes and release.slot() is None
+
+
+@pytest.mark.asyncio
+async def test_probe_rejects_stale_market_without_queue_or_fake_evidence(flow):
+    connection, venue, _, _ = flow
+    release = wire(connection, grant(canary_trigger="TECHNICAL_PROBE"))
+    market = connection.market_fetch
+
+    async def stale(*args, **kwargs):
+        rows = await market(*args, **kwargs)
+        for row in rows:
+            row["close_time_ms"] -= 3600000
+        return rows
+
+    connection.market_fetch = stale
+    with pytest.raises(SecurityError):
+        await connection.tick()
+    assert not venue.writes and release.slot() is None
+    assert release.status()["canary_evidence_sha256"] is None
+
+
+@pytest.mark.asyncio
+async def test_agent_research_cannot_select_reserved_technical_strategy(flow):
+    connection, venue, _, _ = flow
+    wire(connection)
+    result = analysis()
+    result["decision"]["strategy"] = "GATE_TECHNICAL_CANARY"
+    with pytest.raises(SecurityError):
+        await connection.process_analysis(result)
+    assert not venue.writes
+
+
+def test_legacy_grant_representation_survives_new_field_and_restart(tmp_path):
+    path = tmp_path / "legacy.db"
+    authorization = grant()
+    journal = GateCycleJournal(path)
+    # Match the exact pre-trigger record, without regenerating or editing it.
+    old_payload = json.dumps(
+        {
+            "grant": authorization.model_dump(mode="json", exclude={"canary_trigger"}),
+            "account_binding": BINDING,
+        },
+        sort_keys=True,
+    )
+    policy(journal, authorization)
+    stored = journal.db.execute(
+        "SELECT payload FROM gate_demo_grants WHERE id=?", (authorization.grant_id,)
+    ).fetchone()[0]
+    assert stored == old_payload
+    journal.close()
+    journal = GateCycleJournal(path)
+    try:
+        parsed = GateDemoOwnerGrant.model_validate_json(
+            json.dumps(json.loads(old_payload)["grant"])
+        )
+        release = policy(journal, parsed)
+        assert release.grant.canary_trigger == "AGENT_SIGNAL"
+    finally:
+        journal.close()
