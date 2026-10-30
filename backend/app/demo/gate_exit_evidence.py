@@ -3,13 +3,11 @@ from decimal import Decimal, InvalidOperation
 import re
 
 
-def confirmed_exit(*, order, position, inventory, contract, order_id, client_id,
-                   order_observed_at, position_observed_at, inventory_started_at,
-                   inventory_finished_at, now):
-    """Confirm a close from separately acquired reads, not an atomic account snapshot.
+def confirmed_close_order(*, order, position, contract, order_id, client_id,
+                          order_observed_at, position_observed_at, now):
+    """Validate only an owned reduce-only close, before canceling its stop.
 
-    The caller must also ensure exclusive ownership of the account and secure
-    independent exchange reads. A valid result never authorizes a new order.
+    This does not certify flat account inventory or release the journal slot.
     """
     try:
         if contract not in {'BTC_USDT','ETH_USDT','SOL_USDT'}:
@@ -18,33 +16,44 @@ def confirmed_exit(*, order, position, inventory, contract, order_id, client_id,
             return False
         if not isinstance(client_id,str) or not re.fullmatch(r't-[A-Za-z0-9_.-]{1,28}',client_id):
             return False
-        if not all(isinstance(x,dict) for x in (order,position,inventory)):
-            return False
-        raw=(order['size'],order['left'],position['size'],order_observed_at,
-             position_observed_at,inventory_started_at,inventory_finished_at,now)
+        raw=(order['size'],order['left'],position['size'],order_observed_at,position_observed_at,now)
         if any(isinstance(x,bool) or x is None for x in raw):
             return False
-        size,left,pos,order_t,pos_t,started,finished,current=(Decimal(str(x)) for x in raw)
-        if any(not n.is_finite() for n in (size,left,pos,order_t,pos_t,started,finished,current)):
+        size,left,pos,order_t,pos_t,current=(Decimal(str(x)) for x in raw)
+        if any(not n.is_finite() for n in (size,left,pos,order_t,pos_t,current)):
             return False
-        if min(order_t,pos_t,started,finished,current) <= 0:
-            return False
-        if not (0 <= current-order_t <= 5 and 0 <= current-pos_t <= 5
-                and 0 <= finished-started <= 5 and 0 <= current-finished <= 5):
-            return False
-        if str(order.get('id_string') or order.get('id') or '') != order_id:
-            return False
-        if order['text'] != client_id or order['contract'] != contract or position['contract'] != contract:
-            return False
-        if order['status'] != 'finished' or order['finish_as'] != 'filled':
-            return False
-        if order.get('is_close') is not True or order.get('is_reduce_only') is not True or order.get('is_liq') is not False:
-            return False
-        if size != 0 or left != 0 or pos != 0 or position.get('mode') != 'single':
-            return False
-        if inventory.get('execution_authorized') is not False or inventory.get('atomic') is not False:
-            return False
-        return all(type(inventory.get(key)) is int and inventory[key] == 0
-                   for key in ('positions','orders','conditional_orders'))
-    except (KeyError,TypeError,ValueError,InvalidOperation,OverflowError):
+        return (min(order_t,pos_t,current) > 0
+                and 0 <= current-order_t <= 5 and 0 <= current-pos_t <= 5
+                and str(order.get('id_string') or order.get('id') or '') == order_id
+                and order['text'] == client_id and order['contract'] == contract and position['contract'] == contract
+                and order['status'] == 'finished' and order['finish_as'] == 'filled'
+                and order.get('is_close') is True and order.get('is_reduce_only') is True
+                and order.get('is_liq') is False and size == 0 and left == 0 and pos == 0
+                and position.get('mode') == 'single')
+    except (KeyError,TypeError,ValueError,InvalidOperation,OverflowError,AttributeError):
+        return False
+
+
+def confirmed_exit(*, order, position, inventory, contract, order_id, client_id,
+                   order_observed_at, position_observed_at, inventory_started_at,
+                   inventory_finished_at, now):
+    """Confirm a bound close AND independently read flat account inventory.
+
+    Separate reads are not atomic. The caller must hold exclusive account
+    ownership. This validator never authorizes a new order.
+    """
+    if not confirmed_close_order(order=order,position=position,contract=contract,
+            order_id=order_id,client_id=client_id,order_observed_at=order_observed_at,
+            position_observed_at=position_observed_at,now=now):
+        return False
+    try:
+        raw=(inventory_started_at,inventory_finished_at,now)
+        if any(isinstance(x,bool) or x is None for x in raw): return False
+        started,finished,current=(Decimal(str(x)) for x in raw)
+        if any(not n.is_finite() for n in (started,finished,current)): return False
+        return (min(started,finished,current)>0 and 0<=finished-started<=5 and 0<=current-finished<=5
+            and inventory.get('execution_authorized') is False and inventory.get('atomic') is False
+            and all(type(inventory.get(key)) is int and inventory[key]==0
+                    for key in ('positions','orders','conditional_orders')))
+    except (KeyError,TypeError,ValueError,InvalidOperation,OverflowError,AttributeError):
         return False
