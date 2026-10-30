@@ -37,11 +37,12 @@ def test_missing_credentials_do_not_probe():
 
 def test_success_exposes_status_only():
     env = {KEY_VARIABLE: 'private-key', SECRET_VARIABLE: 'private-secret'}
-    with TestClient(create_app(environment=env, probe=lambda *args: {'total': '123'}, market_fetch=fake_market, inventory_fn=fake_inventory, position_config_fn=fake_position_config)) as client:
+    with TestClient(create_app(environment=env, probe=lambda *args: {'total': '123456789.123456789'}, market_fetch=fake_market, inventory_fn=fake_inventory, position_config_fn=fake_position_config)) as client:
         data = status_after_refresh(client)
         assert data['status'] == 'CONNECTED_READ_ONLY'
         assert data['execution_enabled'] is False
-        assert 'private' not in str(data) and '123' not in str(data)
+        assert 'private' not in str(data) and '123456789.123456789' not in str(data)
+        assert not {'account', 'balance', 'total', 'equity', 'available'} & set(data)
 
 
 def test_failure_never_leaks_credentials():

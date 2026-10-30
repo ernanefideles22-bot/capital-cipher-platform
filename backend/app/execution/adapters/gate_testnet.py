@@ -58,7 +58,8 @@ class GateTestnetExecutionAdapter(GateTestnetPreparationAdapter):
         protection_store,
         account_guard,
         execution_enabled=False,
-        exit_guard=None
+        exit_guard=None,
+        entry_order_guard=None,
     ):
         super().__init__(metadata_provider, clock)
         if not callable(account_guard):
@@ -69,6 +70,7 @@ class GateTestnetExecutionAdapter(GateTestnetPreparationAdapter):
         self._guard = account_guard
         self._exit_guard = exit_guard or account_guard
         self._enabled = execution_enabled is True
+        self._entry_order_guard = entry_order_guard
         self._lock = asyncio.Lock()
 
     async def _authorize(self, *, exit_only=False):
@@ -163,6 +165,8 @@ class GateTestnetExecutionAdapter(GateTestnetPreparationAdapter):
     async def submit_order(self, order):
         async with self._lock:
             await self._authorize()
+            if self._entry_order_guard is not None:
+                await self._entry_order_guard(order)
             plan, metadata, proof, observed = await self._plan(order)
             contract = plan["entry"]["contract"]
             counts, *_ = await self._inventory()
@@ -199,6 +203,8 @@ class GateTestnetExecutionAdapter(GateTestnetPreparationAdapter):
             self._journal.record_bound_entry_intent(cycle, order.client_order_id)
             try:
                 await self._authorize()
+                if self._entry_order_guard is not None:
+                    await self._entry_order_guard(order)
                 if not 0 <= number(self._clock()) - number(observed) <= 10:
                     raise SecurityError("entry metadata expired before dispatch")
                 ack = await self._transport.place_entry(
@@ -521,6 +527,48 @@ class GateTestnetExecutionAdapter(GateTestnetPreparationAdapter):
                 raise AmbiguousExecutionError(
                     "Gate close unresolved; do not retry"
                 ) from None
+
+    async def capture_canary_protection(self, order):
+        """Fresh signed responses for a reserved canary; read-only, not approval."""
+        async with self._lock:
+            self._scope(order)
+            row = self._journal.read(order.oms_order_id)
+            if row["state"] != "PROTECTED":
+                raise SecurityError("Canary is not protected")
+            identity = self._journal.db.execute(
+                "SELECT client_id,order_id FROM entry_identity WHERE cycle_id=?", (row["id"],)
+            ).fetchone()
+            if not identity or identity[0] != order.client_order_id:
+                raise SecurityError("Canary entry identity unavailable")
+            entry = await self._transport.get_order(identity[1])
+            entry_time = self._clock()
+            stop = await self._transport.get_stop(row["stop_id"])
+            stop_time = self._clock()
+            position = await self._transport.get_position(row["contract"])
+            return dict(state="PROTECTED", order_id=row["id"], entry_order_id=identity[1],
+                        stop_id=row["stop_id"], entry=entry, stop=stop, position=position,
+                        entry_observed_at=entry_time, stop_observed_at=stop_time,
+                        position_observed_at=self._clock())
+
+    async def capture_canary_close(self, order):
+        """Fresh signed terminal close and complete flat inventory, no writes."""
+        async with self._lock:
+            self._scope(order)
+            row = self._journal.read(order.oms_order_id)
+            if row["state"] != "CLOSED":
+                raise SecurityError("Canary is not closed")
+            entry = self._journal.db.execute("SELECT order_id FROM entry_identity WHERE cycle_id=?", (row["id"],)).fetchone()
+            exit_identity = self._journal.db.execute("SELECT order_id FROM exit_identity WHERE cycle_id=?", (row["id"],)).fetchone()
+            if not entry or not exit_identity:
+                raise SecurityError("Owned canary close identity unavailable")
+            counts, started, finished, *_ = await self._inventory()
+            close = await self._transport.get_order(exit_identity[0])
+            close_time = self._clock()
+            position = await self._transport.get_position(row["contract"])
+            return dict(state="CLOSED", order_id=row["id"], entry_order_id=entry[0], stop_id=row["stop_id"],
+                        exit=close, position=position, inventory=counts,
+                        exit_observed_at=close_time, position_observed_at=self._clock(),
+                        inventory_started_at=started, inventory_finished_at=finished)
 
     async def fetch_account_equity(self):
         account = await self._transport.account()
