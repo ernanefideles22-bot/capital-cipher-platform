@@ -7,6 +7,8 @@ separately acknowledged, bounded owner-controlled Gate virtual-funds policy.
 
 import asyncio
 import hashlib
+import json
+import logging
 import os
 import time
 from contextlib import asynccontextmanager
@@ -311,6 +313,7 @@ class GateOMSConnection:
                 await self.entry_authorized()
                 self.status = "CONNECTED_READ_ONLY"
                 return
+            await self.entry_authorized()
             cycles = self.journal.recovery_status()["cycles"]
             if cycles:
                 if len(cycles) != 1 or cycles[0]["state"] != "PROTECTED":
@@ -423,6 +426,30 @@ class GateOMSConnection:
                 "reconciliation_run_id": run.run_id,
                 "automatic_agents_enabled": False,
             },
+        )
+        protected = json.loads(
+            self.demo_release.db.execute(
+                "SELECT payload FROM gate_demo_protected_observations WHERE order_id=?",
+                (order.oms_order_id,),
+            ).fetchone()[0]
+        )
+        logging.getLogger("uvicorn.error").info(
+            "GATE_DEMO_CANARY_VERIFIED %s",
+            json.dumps(
+                {
+                    "sha256": sha,
+                    "entry_order_id": payload["entry_order_id"],
+                    "stop_id": payload["stop_id"],
+                    "exit_order_id": str(
+                        payload["exit"].get("id_string") or payload["exit"]["id"]
+                    ),
+                    "stop_observed_at": protected["stop_observed_at"],
+                    "exit_observed_at": payload["exit_observed_at"],
+                    "reconciliation_run_id": run.run_id,
+                    "automatic_agents_enabled": False,
+                },
+                sort_keys=True,
+            ),
         )
 
     async def _monitor_protected(self, order, state):

@@ -321,10 +321,12 @@ async def test_measured_canary_report_is_immutable_and_bound_to_revision(flow):
 async def test_public_status_does_not_label_canary_as_automatic_agents(flow, tmp_path):
     from contextlib import asynccontextmanager
     from httpx import ASGITransport, AsyncClient
+    import asyncio
     from app.demo.gate_service import create_app
 
     connection, _, _, _ = flow
     wire(connection)
+    await connection.entry_authorized()
     connection.status = "CANARY_VALIDATING"
 
     async def no_worker(stop):
@@ -340,7 +342,12 @@ async def test_public_status_does_not_label_canary_as_automatic_agents(flow, tmp
         return [{}] * 60
 
     app = create_app(
-        environment={"GATE_OMS_CONNECTION_ENABLED": "true"},
+        environment={
+            "GATE_OMS_CONNECTION_ENABLED": "true",
+            "CAPITAL_CIPHER_GATE_TESTNET_API_KEY": "dummy",
+            "CAPITAL_CIPHER_GATE_TESTNET_API_SECRET": "dummy",
+        },
+        probe=lambda *args: {"total": "1000"},
         storage_path=str(tmp_path),
         mount_check=lambda _: True,
         oms_connector=connector,
@@ -350,7 +357,12 @@ async def test_public_status_does_not_label_canary_as_automatic_agents(flow, tmp
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as client:
-            payload = (await client.get("/api/gate/status")).json()
+            for _ in range(100):
+                payload = (await client.get("/api/gate/status")).json()
+                if payload["authenticated"]:
+                    break
+                await asyncio.sleep(0.01)
+            assert payload["status"] == "CONNECTED_TESTNET"
             assert payload["canary_execution_enabled"] is True
             assert payload["execution_enabled"] is False
             assert payload["demo_release"]["mode"] == "CANARY_ONLY"
