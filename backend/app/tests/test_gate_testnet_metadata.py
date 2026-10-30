@@ -60,3 +60,12 @@ async def test_unknown_symbol_never_reaches_network():
     with pytest.raises(GateMetadataUnavailable): await provider("BTC_USDT/../../")
     assert not calls
     await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_tick_size_is_retained_for_exact_stop_validation():
+    data=payload(); data['order_price_round']='0.1'
+    provider=GateTestnetMetadata(transport=httpx.MockTransport(lambda req:httpx.Response(200,json=data)),clock=lambda:1000)
+    result,_=await provider('BTCUSDT')
+    assert result['order_price_round']=='0.1' and 'extraneous' not in result
+    await provider.aclose()

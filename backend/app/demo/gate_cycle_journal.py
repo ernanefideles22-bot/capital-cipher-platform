@@ -9,8 +9,8 @@ import re
 import sqlite3
 from decimal import Decimal, InvalidOperation
 from app.demo.gate_stop_validation import stop_matches
-from app.demo.gate_entry_evidence import confirmed_entry
-from app.demo.gate_exit_evidence import confirmed_exit
+from app.demo.gate_entry_evidence import confirmed_entry, confirmed_no_fill
+from app.demo.gate_exit_evidence import confirmed_exit, confirmed_close_order
 
 
 class CycleBlocked(ValueError):
@@ -38,6 +38,7 @@ class GateCycleJournal:
         self.db.execute('CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, cycle_id TEXT NOT NULL, old_state TEXT, new_state TEXT NOT NULL, reason TEXT NOT NULL)')
         self.db.execute('CREATE TABLE IF NOT EXISTS entry_identity (cycle_id TEXT PRIMARY KEY, client_id TEXT NOT NULL UNIQUE, order_id TEXT UNIQUE)')
         self.db.execute('CREATE TABLE IF NOT EXISTS exit_identity (cycle_id TEXT PRIMARY KEY, client_id TEXT NOT NULL UNIQUE, order_id TEXT UNIQUE)')
+        self.db.execute('CREATE TABLE IF NOT EXISTS terminal_entry_snapshots (cycle_id TEXT PRIMARY KEY, payload TEXT NOT NULL)')
 
     def close(self):
         self.db.close()
@@ -53,6 +54,23 @@ class GateCycleJournal:
         rows=self.db.execute("SELECT id,state,contract FROM cycles WHERE state != 'CLOSED' ORDER BY id").fetchall()
         return {'recovery_required':bool(rows), 'execution_authorized':False,
                 'cycles':[{'id':row[0], 'state':row[1], 'contract':row[2]} for row in rows]}
+
+    def cache_terminal_entry(self, cycle_id, snapshot):
+        """Preserve a verified terminal entry for exchange history retention limits."""
+        from app.schemas.oms import OMSOrderStatus
+        row=self.read(cycle_id)
+        identity=self.db.execute('SELECT client_id,order_id FROM entry_identity WHERE cycle_id=?',(cycle_id,)).fetchone()
+        if (row['state'] not in {'PROTECTED','CLOSED'} or not identity
+                or (snapshot.client_order_id,snapshot.venue_order_id) != identity
+                or snapshot.exchange.value!='GATE' or snapshot.environment.value!='TESTNET'
+                or snapshot.symbol.replace('USDT','_USDT')!=row['contract']
+                or snapshot.status not in {OMSOrderStatus.FILLED,OMSOrderStatus.CANCELED}):
+            raise CycleBlocked('terminal entry not verified')
+        payload=snapshot.model_dump_json()
+        prior=self.db.execute('SELECT payload FROM terminal_entry_snapshots WHERE cycle_id=?',(cycle_id,)).fetchone()
+        if prior and prior[0]!=payload:
+            raise CycleBlocked('terminal evidence is immutable')
+        self.db.execute('INSERT OR IGNORE INTO terminal_entry_snapshots(cycle_id,payload) VALUES (?,?)',(cycle_id,payload))
 
     def create(self, cycle_id, contract, target, signed_planned_size):
         if not isinstance(cycle_id,str) or not re.fullmatch(r'[A-Za-z0-9_-]{8,80}',cycle_id):
@@ -161,6 +179,19 @@ class GateCycleJournal:
     def record_entry_confirmation(self, cycle_id, *, signed_position, owned_order_confirmed):
         self._record_entry_confirmation(cycle_id,signed_position=signed_position,owned_order_confirmed=owned_order_confirmed,verified=False)
 
+    def record_verified_no_fill(self, cycle_id, **evidence):
+        row=self.read(cycle_id)
+        if row['state'] != 'ENTRY_PENDING':
+            raise CycleBlocked('unexpected cycle state')
+        identity=self.db.execute('SELECT client_id,order_id FROM entry_identity WHERE cycle_id=?',(cycle_id,)).fetchone()
+        if not identity or not identity[1]:
+            raise CycleBlocked('entry identity unavailable')
+        valid=confirmed_no_fill(contract=row['contract'],planned_size=row['planned'],
+            client_id=identity[0],order_id=identity[1],**evidence)
+        self._transition(cycle_id, {'ENTRY_PENDING'}, 'CLOSED' if valid else 'HALTED',
+                         'zero fill verified' if valid else 'zero fill not reconciled')
+        return valid
+
     def _record_entry_confirmation(self, cycle_id, *, signed_position, owned_order_confirmed, verified):
         # A timeout, partial evidence, wrong ownership, or no position must halt;
         # a pending/unknown write is never submitted a second time by this class.
@@ -199,6 +230,10 @@ class GateCycleJournal:
     def halt_unknown(self, cycle_id):
         self._transition(cycle_id, {'ENTRY_PENDING','STOP_REQUIRED','STOP_SUBMITTING','STOP_PENDING','EXIT_PENDING','EMERGENCY_EXIT_PENDING'},
                          'HALTED', 'ambiguous exchange outcome')
+
+    def halt_protection(self, cycle_id):
+        """Latch changed/missing protection; never release the account slot."""
+        self._transition(cycle_id, {'PROTECTED'}, 'HALTED', 'protection no longer verified')
 
     def record_emergency_exit_intent(self, cycle_id, *, confirmed_position, owned_position_confirmed):
         """Record intent only after independent ownership and position evidence.
@@ -257,7 +292,7 @@ class GateCycleJournal:
             raise CycleBlocked('invalid exit order id')
         self.db.execute('BEGIN IMMEDIATE')
         try:
-            if self.read(cycle_id)['state'] != 'EXIT_PENDING':
+            if self.read(cycle_id)['state'] not in {'EXIT_PENDING','EMERGENCY_EXIT_PENDING'}:
                 raise CycleBlocked('unexpected cycle state')
             if self.db.execute('SELECT 1 FROM entry_identity WHERE order_id=?',(order_id,)).fetchone():
                 raise CycleBlocked('exit order id conflicts with entry')
@@ -272,6 +307,51 @@ class GateCycleJournal:
         except BaseException:
             self.db.execute('ROLLBACK')
             raise
+
+    def record_bound_emergency_exit_intent(self, cycle_id, *, client_id, order, position,
+                                         order_observed_at, position_observed_at, now):
+        """Bind one risk-reducing attempt only to independently proven entry exposure.
+
+        This cannot resume HALTED work or authorize a subsequent entry. Completion
+        of an emergency close always requires operator reconciliation.
+        """
+        if not isinstance(client_id,str) or not re.fullmatch(r't-[A-Za-z0-9_.-]{1,28}',client_id):
+            raise CycleBlocked('invalid emergency exit identity')
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            row=self.read(cycle_id)
+            if row['state'] not in {'STOP_REQUIRED','STOP_SUBMITTING','STOP_PENDING'}:
+                raise CycleBlocked('emergency exit requires a newly reconciled entry')
+            entry=self.db.execute('SELECT client_id,order_id FROM entry_identity WHERE cycle_id=?',(cycle_id,)).fetchone()
+            if not entry or not entry[1] or self.db.execute('SELECT 1 FROM entry_identity WHERE client_id=?',(client_id,)).fetchone():
+                raise CycleBlocked('emergency exit ownership unavailable')
+            filled=confirmed_entry(order=order,position=position,contract=row['contract'],order_id=entry[1],
+                client_id=entry[0],planned_size=row['planned'],order_observed_at=order_observed_at,
+                position_observed_at=position_observed_at,now=now)
+            if filled is None or _quantity(filled) != _quantity(row['position']):
+                raise CycleBlocked('emergency position not independently confirmed')
+            self.db.execute('INSERT INTO exit_identity(cycle_id,client_id) VALUES (?,?)',(cycle_id,client_id))
+            self.db.execute("UPDATE cycles SET state='EMERGENCY_EXIT_PENDING' WHERE id=?",(cycle_id,))
+            self.db.execute('INSERT INTO events(cycle_id,old_state,new_state,reason) VALUES (?,?,?,?)',
+                (cycle_id,row['state'],'EMERGENCY_EXIT_PENDING','bound emergency exit intent'))
+            self.db.execute('COMMIT')
+        except BaseException:
+            self.db.execute('ROLLBACK')
+            raise
+
+    def record_emergency_close_observation(self, cycle_id, *, order, position,
+                                          order_observed_at, position_observed_at, now):
+        """Record a close without releasing an unresolved protection/account halt."""
+        row=self.read(cycle_id)
+        if row['state'] != 'EMERGENCY_EXIT_PENDING':
+            raise CycleBlocked('no pending emergency exit')
+        identity=self.db.execute('SELECT client_id,order_id FROM exit_identity WHERE cycle_id=?',(cycle_id,)).fetchone()
+        valid=bool(identity and identity[1]) and confirmed_close_order(order=order,position=position,
+            contract=row['contract'],order_id=identity[1],client_id=identity[0],
+            order_observed_at=order_observed_at,position_observed_at=position_observed_at,now=now)
+        self._transition(cycle_id, {'EMERGENCY_EXIT_PENDING'}, 'HALTED',
+                         'emergency close verified; account reconciliation required' if valid else 'emergency close unconfirmed')
+        return valid
 
     def record_verified_exit(self, cycle_id, *, order, position, inventory, order_observed_at,
                              position_observed_at, inventory_started_at, inventory_finished_at, now):

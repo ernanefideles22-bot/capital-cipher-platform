@@ -33,6 +33,9 @@ class GateTestnetMetadata:
                 raise ValueError()
             result={key:payload[key] for key in ("name","quanto_multiplier","order_size_min",
                                                   "order_size_max","in_delisting")}
+            for key in ("order_price_round", "mark_price"):
+                if key in payload:
+                    result[key] = payload[key]
             observed=self._clock()
             if isinstance(observed,bool) or not isinstance(observed,(int,float)) or not math.isfinite(observed) or observed <= 0:
                 raise ValueError()

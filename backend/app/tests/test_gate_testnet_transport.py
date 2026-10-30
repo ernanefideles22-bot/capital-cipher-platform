@@ -120,3 +120,39 @@ async def test_read_failure_is_sanitized():
     assert 'dummy-secret' not in str(error.value)
     await c.close()
 
+
+
+@pytest.mark.asyncio
+async def test_inventory_query_is_signed_and_pages_are_not_silently_truncated():
+    calls=[]
+    def handler(request):
+        calls.append(request)
+        assert request.url.host=='api-testnet.gateapi.io'
+        query=request.url.query.decode()
+        digest=hashlib.sha512(request.content).hexdigest()
+        signed=f'GET\n{request.url.path}\n{query}\n{digest}\n1000'
+        assert request.headers['SIGN']==hmac.new(b'dummy-secret',signed.encode(),hashlib.sha512).hexdigest()
+        assert request.url.params['contract']=='BTC_USDT'
+        offset=int(request.url.params['offset'])
+        return httpx.Response(200,json=[{'id':i} for i in range(1+offset,min(102,101+offset))])
+    c=client(handler)
+    rows=await c.rows('fills',contract='BTC_USDT')
+    assert len(rows)==101 and len(calls)==2
+    await c.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('kind',['duplicates','saturation','malformed','read_error'])
+async def test_incomplete_inventory_never_becomes_empty_account(kind):
+    calls=[]
+    def handler(request):
+        calls.append(request)
+        offset=int(request.url.params['offset'])
+        if kind=='read_error': return httpx.Response(503,text='dummy-secret')
+        if kind=='malformed': return httpx.Response(200,json=[None])
+        if kind=='duplicates': offset=0
+        return httpx.Response(200,json=[{'id':i} for i in range(offset+1,offset+101)])
+    c=client(handler)
+    with pytest.raises(GateReadError): await c.rows('orders',status='open')
+    assert len(calls)==(20 if kind=='saturation' else 2 if kind=='duplicates' else 1)
+    await c.close()

@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import json
 import re
+from urllib.parse import urlencode
 import httpx
 
 from app.demo.gate_order_plan import build_order_plan
@@ -55,7 +56,7 @@ class GateTestnetTransport:
     async def close(self):
         await self._client.aclose()
 
-    async def _request(self, method, path, *, body=None):
+    async def _request(self, method, path, *, body=None, query=None, expect_list=False):
         write=method in {'POST','DELETE'}
         if write and not self._writes_enabled:
             raise GateWriteDisabled('testnet writes disabled')
@@ -66,25 +67,29 @@ class GateTestnetTransport:
         elif method=='GET':
             valid=bool(re.fullmatch(re.escape(_ORDER)+r'/(?:[1-9][0-9]*|t-[A-Za-z0-9_.-]{1,28})',path)
                        or re.fullmatch(re.escape(_STOP)+r'/[1-9][0-9]*',path)
-                       or path in {'/api/v4/futures/usdt/positions/'+c for c in _CONTRACTS})
+                       or path in {'/api/v4/futures/usdt/positions/'+c for c in _CONTRACTS}
+                       or path in {'/api/v4/futures/usdt/accounts','/api/v4/futures/usdt/positions',_ORDER,_STOP,'/api/v4/futures/usdt/my_trades'})
         else:
             valid=False
         if not valid:
             raise ValueError('blocked endpoint')
+        query_text=urlencode(query or [])
         payload=b'' if body is None else json.dumps(body,separators=(',',':'),allow_nan=False).encode()
         t=self._clock()
         if isinstance(t,bool) or not isinstance(t,(int,float)) or not (0 < t < 100000000000):
             raise ValueError('untrusted clock')
         timestamp=str(int(t))
         digest=hashlib.sha512(payload).hexdigest()
-        signature=hmac.new(self._credentials.secret.encode(),f'{method}\n{path}\n\n{digest}\n{timestamp}'.encode(),hashlib.sha512).hexdigest()
+        signature=hmac.new(self._credentials.secret.encode(),f'{method}\n{path}\n{query_text}\n{digest}\n{timestamp}'.encode(),hashlib.sha512).hexdigest()
         headers={'KEY':self._credentials.key,'Timestamp':timestamp,'SIGN':signature,'Accept':'application/json','Content-Type':'application/json'}
         try:
-            result=await self._client.request(method,_HOST+path,content=payload,headers=headers)
+            result=await self._client.request(method,_HOST+path+('?' + query_text if query_text else ''),content=payload,headers=headers)
             if result.status_code not in ({200,201} if write else {200}):
                 raise ValueError('unexpected provider status')
+            if len(result.content) > 2_000_000:
+                raise ValueError('oversized provider response')
             data=result.json()
-            if not isinstance(data,dict):
+            if not isinstance(data,list if expect_list else dict):
                 raise ValueError('unexpected provider response')
             if write:
                 order_id=str(data.get('id_string') or data.get('id') or '')
@@ -139,4 +144,42 @@ class GateTestnetTransport:
         if not isinstance(order_id,str) or not re.fullmatch(r'[1-9][0-9]*',order_id):
             raise ValueError('invalid stop id')
         return await self._request('DELETE',_STOP+'/'+order_id)
+
+
+    async def account(self):
+        return await self._request('GET','/api/v4/futures/usdt/accounts')
+
+    async def rows(self, kind, *, contract=None, status=None):
+        paths={'positions':'positions','orders':'orders','stops':'price_orders','fills':'my_trades'}
+        if kind not in paths or (contract is not None and contract not in _CONTRACTS):
+            raise ValueError('invalid inventory scope')
+        query=[]
+        if contract is not None: query.append(('contract',contract))
+        if status is not None:
+            if kind not in {'orders','stops'} or status not in {'open','finished'}:
+                raise ValueError('invalid inventory status')
+            query.append(('status',status))
+        path='/api/v4/futures/usdt/'+paths[kind]
+        if kind == 'positions':
+            data=await self._request('GET',path,query=query,expect_list=True)
+            if any(not isinstance(row,dict) for row in data):
+                raise GateReadError('invalid position inventory')
+            return data
+        query.append(('limit','100'))
+        collected,seen=[],set()
+        # Never silently truncate a full page. A bounded scan that cannot prove
+        # completeness is unavailable; it must not report an empty account.
+        for offset in range(0,2000,100):
+            page=await self._request('GET',path,query=query+[('offset',str(offset))],expect_list=True)
+            if len(page)>100 or any(not isinstance(row,dict) for row in page):
+                raise GateReadError('invalid inventory page')
+            for row in page:
+                oid=str(row.get('id_string') or row.get('id') or '')
+                if not re.fullmatch(r'[1-9][0-9]*',oid) or oid in seen:
+                    raise GateReadError('inventory changed or invalid identity')
+                seen.add(oid)
+            collected.extend(page)
+            if len(page)<100:
+                return collected
+        raise GateReadError('inventory incomplete; reconciliation checkpoint required')
 

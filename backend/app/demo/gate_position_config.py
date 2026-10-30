@@ -13,8 +13,8 @@ class ConfigUnavailable(Exception):
     pass
 
 
-def interpret_position_config(row):
-    if not isinstance(row,dict) or row.get('contract')!='BTC_USDT':
+def interpret_position_config(row, *, contract='BTC_USDT'):
+    if contract not in {'BTC_USDT','ETH_USDT','SOL_USDT'} or not isinstance(row,dict) or row.get('contract')!=contract:
         raise ConfigUnavailable('invalid contract')
     try:
         mode=row['mode']
