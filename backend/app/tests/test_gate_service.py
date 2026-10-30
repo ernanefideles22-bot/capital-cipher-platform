@@ -140,3 +140,36 @@ def test_inventory_runs_in_read_only_scope_without_public_balances():
         assert data['position_config_status']=='ONE_WAY_ISOLATED_1X'
         assert 'positions' not in data and 'secret' not in str(data)
 
+
+
+def test_requested_oms_connection_failure_is_not_reported_healthy(tmp_path):
+    from contextlib import asynccontextmanager
+    @asynccontextmanager
+    async def fail(*args,**kwargs):
+        raise RuntimeError('private connection material')
+        yield
+    with TestClient(create_app(environment={'GATE_OMS_CONNECTION_ENABLED':'true'},
+            probe=lambda *args:{},market_fetch=fake_market,inventory_fn=fake_inventory,
+            position_config_fn=fake_position_config,storage_path=str(tmp_path),mount_check=lambda _:True,
+            oms_connector=fail)) as client:
+        assert client.get('/health').status_code==503
+        state=client.get('/api/gate/status').json()
+        assert state['oms_connection_status']=='CONNECTION_FAILED'
+        assert state['execution_enabled'] is False and 'private' not in str(state)
+
+
+def test_connected_oms_status_never_implies_writes_are_enabled(tmp_path):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    @asynccontextmanager
+    async def connected(values,journal,**kwargs):
+        async def run(stop): await stop.wait()
+        assert journal is not None and kwargs['mount_verified'] is True
+        yield SimpleNamespace(status='CONNECTED_READ_ONLY',writes_enabled=False,run=run)
+    with TestClient(create_app(environment={'GATE_OMS_CONNECTION_ENABLED':'true'},
+            probe=lambda *args:{},market_fetch=fake_market,inventory_fn=fake_inventory,
+            position_config_fn=fake_position_config,storage_path=str(tmp_path),mount_check=lambda _:True,
+            oms_connector=connected)) as client:
+        assert client.get('/health').status_code==200
+        state=client.get('/api/gate/status').json()
+        assert state['oms_connection_status']=='CONNECTED' and state['execution_enabled'] is False

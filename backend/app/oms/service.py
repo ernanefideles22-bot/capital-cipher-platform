@@ -81,9 +81,7 @@ class OMSService:
 
     @property
     def adapter(self) -> ExchangeExecutionAdapter:
-        return self._adapters[
-            (self.target_exchange, self.target_environment)
-        ]
+        return self._adapters[(self.target_exchange, self.target_environment)]
 
     async def initialize(self) -> None:
         if self._repository is None:
@@ -128,19 +126,17 @@ class OMSService:
             )
             mirrored = _paper_oms_order(paper_order)
             if self._repository is not None:
-                durable = await self._repository.load_oms_order(
-                    mirrored.oms_order_id
-                )
+                durable = await self._repository.load_oms_order(mirrored.oms_order_id)
                 if durable is None:
-                    raise ValidationError(
-                        "Atomic PAPER OMS mirror is missing"
-                    )
+                    raise ValidationError("Atomic PAPER OMS mirror is missing")
                 mirrored = durable
             self._orders[mirrored.oms_order_id] = mirrored
             return mirrored
 
         if not await self._release_authorized():
-            raise SecurityError("TESTNET release is not authorized for this runtime revision")
+            raise SecurityError(
+                "TESTNET release is not authorized for this runtime revision"
+            )
 
         order = OMSOrder(
             oms_order_id=order_id,
@@ -166,9 +162,7 @@ class OMSService:
         )
         order = await self.adapter.prepare_order(order)
         command = ExecutionCommand(
-            command_id=str(
-                uuid5(NAMESPACE_URL, f"oms-submit:{order.oms_order_id}")
-            ),
+            command_id=str(uuid5(NAMESPACE_URL, f"oms-submit:{order.oms_order_id}")),
             oms_order_id=order.oms_order_id,
             command_type=ExecutionCommandType.SUBMIT,
             max_attempts=1,
@@ -239,9 +233,7 @@ class OMSService:
             }
         )
         command = ExecutionCommand(
-            command_id=str(
-                uuid5(NAMESPACE_URL, f"oms-cancel:{order.oms_order_id}")
-            ),
+            command_id=str(uuid5(NAMESPACE_URL, f"oms-cancel:{order.oms_order_id}")),
             oms_order_id=order.oms_order_id,
             command_type=ExecutionCommandType.CANCEL,
             max_attempts=1,
@@ -334,9 +326,7 @@ class OMSService:
             try:
                 await self._audit.record(
                     correlation_id=updated.correlation_id,
-                    audit_type=(
-                        "OMS_SUBMISSION_BLOCKED_BY_KILL_SWITCH"
-                    ),
+                    audit_type=("OMS_SUBMISSION_BLOCKED_BY_KILL_SWITCH"),
                     entity_type="oms_order",
                     entity_id=updated.oms_order_id,
                     payload={
@@ -438,10 +428,7 @@ class OMSService:
                         actor="oms-worker",
                         correlation_id=updated.correlation_id,
                     )
-        if (
-            security_violation is not None
-            and not self._risk.kill_switch_active
-        ):
+        if security_violation is not None and not self._risk.kill_switch_active:
             await self._risk.trigger_kill_switch(
                 reason=f"OMS venue identity violation: {security_violation}",
                 actor="oms-worker",
@@ -490,10 +477,7 @@ class OMSService:
                 if not self._risk.kill_switch_active:
                     try:
                         await self._risk.trigger_kill_switch(
-                            reason=(
-                                "OMS worker failure: "
-                                f"{type(exc).__name__}"
-                            ),
+                            reason=("OMS worker failure: " f"{type(exc).__name__}"),
                             actor="oms-worker",
                         )
                     except Exception:
@@ -518,6 +502,8 @@ class OMSService:
             return await self._repository.claim_execution_command(
                 worker_id=self._worker_id,
                 lease_seconds=self._lease_seconds,
+                exchange=self.target_exchange,
+                environment=self.target_environment,
             )
         now = datetime.now(timezone.utc)
         for command_id, command in self._commands.items():
@@ -617,9 +603,7 @@ def _apply_venue_snapshot(
     ):
         raise SecurityError("Venue acknowledgement identity does not match OMS")
     now = venue.observed_at
-    terminal_at = (
-        now if venue.status in TERMINAL_OMS_STATUSES else order.terminal_at
-    )
+    terminal_at = now if venue.status in TERMINAL_OMS_STATUSES else order.terminal_at
     submitted_at = order.submitted_at
     if venue.status not in {
         OMSOrderStatus.CREATED,
@@ -630,9 +614,7 @@ def _apply_venue_snapshot(
         update={
             "status": venue.status,
             "venue_order_id": venue.venue_order_id,
-            "cumulative_filled_quantity": (
-                venue.cumulative_filled_quantity
-            ),
+            "cumulative_filled_quantity": (venue.cumulative_filled_quantity),
             "average_fill_price": venue.average_fill_price,
             "state_version": order.state_version + 1,
             "updated_at": now,

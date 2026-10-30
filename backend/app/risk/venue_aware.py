@@ -29,6 +29,7 @@ class VenueAwareRiskManager(RiskManager):
         execution_environment: ExecutionEnvironment,
         testnet_exchange: Exchange = Exchange.BYBIT,
         equity_cache_seconds: float = 2.0,
+        equity_baseline_store=None,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -37,6 +38,7 @@ class VenueAwareRiskManager(RiskManager):
         if (execution_environment == ExecutionEnvironment.TESTNET
                 and testnet_exchange == Exchange.GATE and self._repository is None):
             raise SecurityError("Gate TESTNET risk requires durable repository")
+        self._equity_baseline_store = equity_baseline_store
         self._testnet_exchange = testnet_exchange
         self.execution_environment = execution_environment
         self._equity_cache_seconds = max(0.0, equity_cache_seconds)
@@ -128,7 +130,16 @@ class VenueAwareRiskManager(RiskManager):
             self._cached_equity_at = now
 
         today = datetime.now(timezone.utc).date()
-        if not self._venue_baseline_initialized:
+        if self._equity_baseline_store is not None:
+            baseline=self._equity_baseline_store.observe(today,equity)
+            self.initial_balance=baseline['initial']
+            self._peak_equity=baseline['peak']
+            if self._testnet_day is not None and self._testnet_day!=today:
+                super().reset_daily()
+            self._testnet_day=today
+            self._testnet_day_start_equity=baseline['daily_initial']
+            self._venue_baseline_initialized=True
+        elif not self._venue_baseline_initialized:
             self.initial_balance = equity
             self._peak_equity = equity
             self._testnet_day = today

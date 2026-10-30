@@ -3,11 +3,11 @@ import asyncio
 import logging
 import math
 import os
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, AsyncExitStack
 from datetime import datetime, timezone
 
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from app.demo.gate_readonly import GateProbeError, probe_account
 from app.demo.gate_market import fetch_candles
@@ -16,6 +16,7 @@ from app.demo.gate_reconcile import inventory
 from app.demo.gate_position_config import read_position_config
 from app.demo.gate_research_journal import ResearchJournal
 from app.demo.gate_cycle_journal import GateCycleJournal
+from app.execution.gate_runtime import connect_gate_oms
 
 KEY_VARIABLE = "CAPITAL_CIPHER_GATE_TESTNET_API_KEY"
 SECRET_VARIABLE = "CAPITAL_CIPHER_GATE_TESTNET_API_SECRET"
@@ -23,7 +24,7 @@ SECRET_VARIABLE = "CAPITAL_CIPHER_GATE_TESTNET_API_SECRET"
 
 def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles, research=analyze_snapshot,
                inventory_fn=inventory, position_config_fn=read_position_config,
-               storage_path='/gate-data', mount_check=os.path.ismount):
+               storage_path='/gate-data', mount_check=os.path.ismount, oms_connector=connect_gate_oms):
     values = dict(os.environ if environment is None else environment)
     key, secret = values.get(KEY_VARIABLE, "").strip(), values.get(SECRET_VARIABLE, "").strip()
     state = {"environment": "GATE_TESTNET", "status": "WAITING_FOR_CREDENTIALS",
@@ -35,6 +36,7 @@ def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles
              "recovery_status":"WAITING"}
     private_account = {'equity': None}
     journals = {'research': None, 'cycle': None}
+    runtime = {'flow':None,'status':'DISCONNECTED'}
     revision = values.get('RAILWAY_GIT_COMMIT_SHA', values.get('APP_SOURCE_REVISION', ''))
 
     async def refresh():
@@ -104,6 +106,8 @@ def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles
                         logging.getLogger('uvicorn.error').info(
                             'GATE_RESEARCH_CANDLE %s AGENTS %d DECISION %s',
                             candle, int(result['total_agents']), result['decision']['candidate_action'])
+                        if runtime['flow'] is not None:
+                            await runtime['flow'].process_analysis(result)
                         last_candle = candle
                     state['research_status'] = 'AVAILABLE'
                 except Exception:
@@ -160,15 +164,26 @@ def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles
                 if journal is not None:
                     journal.close()
             journals.update(research=None,cycle=None)
+        stack=AsyncExitStack()
+        stop=asyncio.Event()
+        try:
+            runtime['flow']=await stack.enter_async_context(oms_connector(values,journals['cycle'],mount_verified=state['storage_status']=='AVAILABLE'))
+            runtime['status']='CONNECTED' if runtime['flow'] is not None else 'DISCONNECTED'
+        except Exception:
+            runtime['status']='CONNECTION_FAILED'
         tasks = [asyncio.create_task(monitor()), asyncio.create_task(market_monitor()), asyncio.create_task(inventory_monitor())]
+        if runtime['flow'] is not None:
+            tasks.append(asyncio.create_task(runtime['flow'].run(stop)))
         if values.get('GATE_RESEARCH_ANALYSIS_ENABLED') == 'true':
             tasks.append(asyncio.create_task(research_monitor()))
         try:
             yield
         finally:
+            stop.set()
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            await stack.aclose()
             for journal in journals.values():
                 if journal is not None:
                     journal.close()
@@ -186,11 +201,22 @@ def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles
 
     @app.get("/health")
     async def health():
+        if values.get('GATE_OMS_CONNECTION_ENABLED')=='true' and runtime['flow'] is None:
+            return JSONResponse({'status':'UNAVAILABLE','scope':'GATE_TESTNET_OMS'},status_code=503)
         return {"status": "UP", "scope": "GATE_TESTNET_READ_ONLY"}
 
     @app.get("/api/gate/status")
     async def status():
-        return dict(state)
+        flow=runtime['flow']
+        current=dict(state)
+        current['oms_connection_status']=runtime['status']
+        current['oms_flow_status']=flow.status if flow is not None else 'DISCONNECTED'
+        current['oms_release_authorized']=getattr(flow,'release_authorized',False)
+        current['oms_risk_clear']=getattr(flow,'central_risk_clear',False)
+        current['execution_enabled']=bool(flow and flow.writes_enabled and flow.status in {'OPERATIONAL','PROTECTED','QUEUED','WAITING_FOR_SIGNAL'})
+        if journals['cycle'] is not None:
+            current['recovery_status']='REQUIRED' if journals['cycle'].recovery_status()['recovery_required'] else 'CLEAR'
+        return current
 
     @app.get("/", response_class=HTMLResponse)
     async def home():
@@ -199,7 +225,7 @@ def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles
     return app
 
 
-PAGE = """<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Gate Testnet</title><style>body{background:#0c101a;color:#edf1fa;font:16px system-ui;margin:10vh auto;padding:24px;max-width:600px}section{background:#131b2b;border:1px solid #293349;border-radius:16px;padding:24px}p{line-height:1.6;color:#a5b1c8}strong{color:#f6ce67}</style><h1>Gate · Futuros Testnet</h1><section><p>Conexão: <strong id="status">Verificando...</strong></p><p>Dados de mercado: <strong id="market">Verificando...</strong></p><p>Análise dos agentes: <strong id="research">Verificando...</strong></p><p>Configuração BTC/USDT: <strong id="risk">Verificando...</strong></p><p>Registro persistente: <strong id="storage">Verificando...</strong></p><p>Recuperação de ciclos: <strong id="recovery">Verificando...</strong></p><p>Operações automáticas: <strong>Desativadas</strong></p><p>A consulta verifica a autenticação da conta de testes. Nenhuma ordem é enviada.</p></section><script>async function update(){try{const r=await fetch('/api/gate/status',{cache:'no-store'});if(!r.ok)throw 0;const s=await r.json();const l={WAITING_FOR_CREDENTIALS:'Aguardando chaves Testnet',INCOMPLETE_CREDENTIALS:'Chaves incompletas',CONNECTED_READ_ONLY:'Conectada · somente leitura',CONNECTION_FAILED:'Falha na conexão'};document.querySelector('#status').textContent=l[s.status]||'Verificando...';document.querySelector('#market').textContent=({CHECKING:'Verificando...',AVAILABLE:'Disponíveis',UNAVAILABLE:'Indisponíveis'})[s.market_status]||'Verificando...';document.querySelector('#research').textContent=({DISABLED:'Desativada',WAITING:'Aguardando dados',CHECKING:'Analisando...',AVAILABLE:'Ativa · sem ordens',UNAVAILABLE:'Indisponível'})[s.research_status]||'Verificando...';document.querySelector('#storage').textContent=({WAITING:'Verificando...',AVAILABLE:'Disponível',UNAVAILABLE:'Indisponível'})[s.storage_status]||'Verificando...';document.querySelector('#recovery').textContent=({WAITING:'Verificando...',CLEAR:'Sem ciclos pendentes',REQUIRED:'Revisão necessária',UNAVAILABLE:'Indisponível'})[s.recovery_status]||'Verificando...';document.querySelector('#risk').textContent=({WAITING:'Verificando...',ONE_WAY_ISOLATED_1X:'Isolada · 1x',REVIEW_REQUIRED:'Revisar margem e alavancagem',UNAVAILABLE:'Não foi possível verificar'})[s.position_config_status]||'Verificando...'}catch(e){document.querySelector('#status').textContent='Indisponível'}}update();setInterval(update,10000)</script></html>"""
+PAGE = """<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Gate Testnet</title><style>body{background:#0c101a;color:#edf1fa;font:16px system-ui;margin:10vh auto;padding:24px;max-width:600px}section{background:#131b2b;border:1px solid #293349;border-radius:16px;padding:24px}p{line-height:1.6;color:#a5b1c8}strong{color:#f6ce67}</style><h1>Gate · Futuros Testnet</h1><section><p>Conexão: <strong id="status">Verificando...</strong></p><p>Dados de mercado: <strong id="market">Verificando...</strong></p><p>Análise dos agentes: <strong id="research">Verificando...</strong></p><p>Configuração BTC/USDT: <strong id="risk">Verificando...</strong></p><p>Registro persistente: <strong id="storage">Verificando...</strong></p><p>Recuperação de ciclos: <strong id="recovery">Verificando...</strong></p><p>Operações automáticas: <strong id="execution">Desativadas</strong></p><p>Conta Gate Testnet com fundos virtuais. O fluxo exige aprovação de risco e liberação da versão publicada.</p></section><script>async function update(){try{const r=await fetch('/api/gate/status',{cache:'no-store'});if(!r.ok)throw 0;const s=await r.json();document.querySelector('#execution').textContent=s.execution_enabled?'Ativas · Gate Testnet':({'ENTRY_BLOCKED':'Bloqueadas · liberação ou risco','CONNECTED_READ_ONLY':'Conectadas · envio desativado','HALTED':'Paradas · revisão necessária','RECOVERY_REQUIRED':'Paradas · conciliação necessária'})[s.oms_flow_status]||'Desativadas';const l={WAITING_FOR_CREDENTIALS:'Aguardando chaves Testnet',INCOMPLETE_CREDENTIALS:'Chaves incompletas',CONNECTED_READ_ONLY:'Conectada · somente leitura',CONNECTION_FAILED:'Falha na conexão'};document.querySelector('#status').textContent=l[s.status]||'Verificando...';document.querySelector('#market').textContent=({CHECKING:'Verificando...',AVAILABLE:'Disponíveis',UNAVAILABLE:'Indisponíveis'})[s.market_status]||'Verificando...';document.querySelector('#research').textContent=({DISABLED:'Desativada',WAITING:'Aguardando dados',CHECKING:'Analisando...',AVAILABLE:'Ativa · sem ordens',UNAVAILABLE:'Indisponível'})[s.research_status]||'Verificando...';document.querySelector('#storage').textContent=({WAITING:'Verificando...',AVAILABLE:'Disponível',UNAVAILABLE:'Indisponível'})[s.storage_status]||'Verificando...';document.querySelector('#recovery').textContent=({WAITING:'Verificando...',CLEAR:'Sem ciclos pendentes',REQUIRED:'Revisão necessária',UNAVAILABLE:'Indisponível'})[s.recovery_status]||'Verificando...';document.querySelector('#risk').textContent=({WAITING:'Verificando...',ONE_WAY_ISOLATED_1X:'Isolada · 1x',REVIEW_REQUIRED:'Revisar margem e alavancagem',UNAVAILABLE:'Não foi possível verificar'})[s.position_config_status]||'Verificando...'}catch(e){document.querySelector('#status').textContent='Indisponível'}}update();setInterval(update,10000)</script></html>"""
 
 app = create_app()
 

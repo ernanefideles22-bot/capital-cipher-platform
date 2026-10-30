@@ -38,6 +38,7 @@ class GateCycleJournal:
         self.db.execute('CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, cycle_id TEXT NOT NULL, old_state TEXT, new_state TEXT NOT NULL, reason TEXT NOT NULL)')
         self.db.execute('CREATE TABLE IF NOT EXISTS entry_identity (cycle_id TEXT PRIMARY KEY, client_id TEXT NOT NULL UNIQUE, order_id TEXT UNIQUE)')
         self.db.execute('CREATE TABLE IF NOT EXISTS exit_identity (cycle_id TEXT PRIMARY KEY, client_id TEXT NOT NULL UNIQUE, order_id TEXT UNIQUE)')
+        self.db.execute('CREATE TABLE IF NOT EXISTS stop_exit_identity (cycle_id TEXT PRIMARY KEY, order_id TEXT NOT NULL UNIQUE)')
         self.db.execute('CREATE TABLE IF NOT EXISTS terminal_entry_snapshots (cycle_id TEXT PRIMARY KEY, payload TEXT NOT NULL)')
 
     def close(self):
@@ -381,3 +382,29 @@ class GateCycleJournal:
         return flat
 
 
+
+    def record_verified_stop_exit(self, cycle_id, **evidence):
+        from app.demo.gate_stop_exit_evidence import confirmed_stop_exit
+        row=self.read(cycle_id)
+        if row['state']!='PROTECTED': raise CycleBlocked('cycle not protected')
+        valid=confirmed_stop_exit(stop_id=row['stop_id'],contract=row['contract'],
+            signed_position=row['position'],trigger_price=row['target'],**evidence)
+        if not valid:
+            self.halt_protection(cycle_id)
+            return False
+        generated=str(evidence['stop']['trade_id'])
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            if self.read(cycle_id)['state']!='PROTECTED': raise CycleBlocked('cycle changed')
+            if (self.db.execute('SELECT 1 FROM entry_identity WHERE order_id=?',(generated,)).fetchone()
+                    or self.db.execute('SELECT 1 FROM exit_identity WHERE order_id=?',(generated,)).fetchone()):
+                raise CycleBlocked('generated stop order identity conflict')
+            self.db.execute('INSERT INTO stop_exit_identity(cycle_id,order_id) VALUES (?,?)',(cycle_id,generated))
+            self.db.execute("UPDATE cycles SET state='CLOSED' WHERE id=?",(cycle_id,))
+            self.db.execute('INSERT INTO events(cycle_id,old_state,new_state,reason) VALUES (?,?,?,?)',
+                (cycle_id,'PROTECTED','CLOSED','triggered stop execution and flat account verified'))
+            self.db.execute('COMMIT')
+        except BaseException:
+            self.db.execute('ROLLBACK')
+            raise
+        return True
