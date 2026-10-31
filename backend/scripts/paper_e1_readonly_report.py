@@ -135,14 +135,18 @@ async def export_forensics(
                 decision_valid = bool(
                     d is not None and d.correlation_id == o.correlation_id
                     and d.symbol == o.symbol and d.timeframe == o.timeframe
+                    and d.created_at <= (o.opened_at or o.created_at)
                 )
                 risk_valid = bool(
                     risk is not None and risk.decision_id == o.decision_id
                     and risk.correlation_id == o.correlation_id
+                    and risk.created_at <= (o.opened_at or o.created_at)
                 )
                 audit_valid = bool(
                     closing_audit is not None
                     and closing_audit.correlation_id == o.correlation_id
+                    and o.closed_at is not None
+                    and closing_audit.created_at >= o.closed_at
                 )
                 payload = closing_audit.payload if audit_valid else {}
                 output = []
@@ -164,6 +168,7 @@ async def export_forensics(
                     risk_check_id=o.risk_check_id,
                     correlation_id=o.correlation_id,
                     symbol=o.symbol,
+                    exchange=o.exchange,
                     timeframe=o.timeframe or "UNKNOWN",
                     strategy=o.strategy, side=o.side,
                     status=o.status, entry_price=float(o.entry_price),
