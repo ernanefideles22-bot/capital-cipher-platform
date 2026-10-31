@@ -24,6 +24,7 @@ from app.database.models import (
 from app.strategy.paper_forensics_e1 import (
     AgentObservation, PaperTrace, analyze_paper_trades,
 )
+from app.strategy.paper_evidence_integrity_e11 import inspect_evidence
 
 
 def to_float(value):
@@ -97,6 +98,7 @@ async def export_forensics(
                     "agents_sample_truncated": False,
                     "archive_reconciliation": "NOT_PERFORMED",
                     "agent_history_coverage": "UNVERIFIED_MAY_BE_PRUNED",
+                    "evidence_integrity": {"status": "NOT_EVALUATED_NO_VISIBLE_ORDERS"},
                     "report": asdict(report),
                     "caveat": "Zero visible rows is not evidence of zero trades; verify archive/retention and RLS.",
                 }
@@ -114,6 +116,15 @@ async def export_forensics(
                     select(RiskCheckModel).where(RiskCheckModel.id.in_(risk_ids))
                 )).scalars()
             }
+            # A table can have some visible rows while individual historical
+            # IDs remain hidden by RLS or are missing. Neither means approval
+            # was bypassed; report both signals without asserting causality.
+            any_decision_visible = (
+                await session.scalar(select(DecisionModel.id).limit(1))
+            ) is not None
+            any_risk_visible = (
+                await session.scalar(select(RiskCheckModel.id).limit(1))
+            ) is not None
             audits = list((await session.execute(
                 select(AuditLogModel).where(
                     AuditLogModel.entity_type == "paper_order",
@@ -138,6 +149,11 @@ async def export_forensics(
                 previous = audit_by_order.get(a.entity_id)
                 if previous is None or a.created_at > previous.created_at:
                     audit_by_order[a.entity_id] = a
+            evidence_integrity = inspect_evidence(
+                orders, decisions, risks, audit_by_order,
+                any_decision_visible=any_decision_visible,
+                any_risk_visible=any_risk_visible,
+            )
             agents = list((await session.execute(
                 select(AgentOutputModel).where(
                     AgentOutputModel.correlation_id.in_(corrs),
@@ -223,6 +239,7 @@ async def export_forensics(
                 "agents_sample_truncated": agents_truncated,
                 "archive_reconciliation": "NOT_PERFORMED",
                 "agent_history_coverage": "UNVERIFIED_MAY_BE_PRUNED",
+                "evidence_integrity": evidence_integrity,
                 "tables_read": [
                     "capital_cipher.paper_orders",
                     "capital_cipher.decisions",
