@@ -153,6 +153,7 @@ class ForensicsReport:
     by_strategy: tuple[GroupScore, ...]
     by_symbol: tuple[GroupScore, ...]
     by_timeframe: tuple[GroupScore, ...]
+    by_exit_reason: tuple[GroupScore, ...]
     by_side: tuple[GroupScore, ...]
     trades: tuple[TradeFinding, ...]
     limitations: tuple[str, ...]
@@ -321,6 +322,7 @@ def analyze_paper_trades(
         by_strategy=_group(closed_items, "strategy", minimum_samples),
         by_symbol=_group(closed_items, "symbol", minimum_samples),
         by_timeframe=_group(closed_items, "timeframe", minimum_samples),
+        by_exit_reason=_group(closed_items, "exit_reason", minimum_samples),
         by_side=_group(closed_items, "side", minimum_samples),
         trades=tuple(findings),
         limitations=(
