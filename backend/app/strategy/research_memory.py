@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from contextlib import closing, contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -81,10 +82,12 @@ class ResearchMemory:
                     SELECT RAISE(ABORT,'research history immutable');
                 END""")
 
-    def _connect(self) -> sqlite3.Connection:
-        db = sqlite3.connect(str(self.path), timeout=10)
-        db.execute("PRAGMA busy_timeout=10000")
-        return db
+    @contextmanager
+    def _connect(self):
+        with closing(sqlite3.connect(str(self.path), timeout=10)) as db:
+            db.execute("PRAGMA busy_timeout=10000")
+            with db:
+                yield db
 
     @staticmethod
     def _to_event(row: tuple) -> ResearchEvent:
@@ -123,6 +126,13 @@ class ResearchMemory:
                     _canonical(existing.payload) != serialized):
                     raise ValueError("Idempotency identity conflict")
                 return existing
+            if kind != "HYPOTHESIS_REGISTERED":
+                registered = db.execute(
+                    "SELECT 1 FROM research_events WHERE kind=? AND hypothesis_hash=?",
+                    ("HYPOTHESIS_REGISTERED", hypothesis_hash),
+                ).fetchone()
+                if registered is None:
+                    raise ValueError("Register hypothesis before observations")
             last = db.execute(
                 "SELECT sequence, event_hash FROM research_events "
                 "ORDER BY sequence DESC LIMIT 1"
@@ -204,6 +214,8 @@ class ResearchMemory:
     ) -> ResearchEvent:
         """Store observational PAPER result, NEVER claim causation by default."""
         import math
+        if attribution_verified:
+            raise ValueError("Independent PAPER attribution attestation not implemented")
         if not math.isfinite(net_pnl):
             raise ValueError("Non-finite PAPER PnL")
         if not paper_order_id or not decision_id:
