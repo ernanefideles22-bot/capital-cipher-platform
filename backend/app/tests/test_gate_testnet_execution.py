@@ -494,7 +494,7 @@ async def test_stop_rejection_logs_bounded_diagnostics_before_one_emergency_clos
         assert journal.read('order-0001')['state']=='STOP_SUBMITTING'
         venue.writes.append('stop')
         raise GateWriteUnknown('SENSITIVE PROVIDER MESSAGE',http_status=400,
-            provider_label='NEW_STOP_CODE',provider_fields=('trigger','price'),
+            provider_label='AUTO_INVALID_PARAM_TRIGGER_EXPIRATION',provider_fields=('trigger','expiration'),
             response_kind='json_object')
 
     venue.place_stop=reject_stop
@@ -503,8 +503,8 @@ async def test_stop_rejection_logs_bounded_diagnostics_before_one_emergency_clos
     assert venue.writes==['entry','stop','close'] and venue.size==0
     assert journal.read('order-0001')['state']=='HALTED'
     assert 'stage=STOP_SUBMITTING' in caplog.text and 'http_status=400' in caplog.text
-    assert 'provider_label=NEW_STOP_CODE' in caplog.text
-    assert "provider_fields=('trigger', 'price')" in caplog.text
+    assert 'provider_label=AUTO_INVALID_PARAM_TRIGGER_EXPIRATION' in caplog.text
+    assert "provider_fields=('trigger', 'expiration')" in caplog.text
     assert 'response_kind=json_object' in caplog.text
     assert 'SENSITIVE PROVIDER MESSAGE' not in caplog.text
 
