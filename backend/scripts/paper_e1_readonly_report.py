@@ -223,6 +223,7 @@ async def export_forensics(
                     status=o.status, entry_price=float(o.entry_price),
                     position_notional=float(o.position_size),
                     opened_at=o.opened_at or o.created_at,
+                    order_created_at=o.created_at,
                     closed_at=o.closed_at, pnl_net=to_float(o.pnl),
                     stop_loss=to_float(o.stop_loss),
                     take_profit=to_float(o.take_profit),
