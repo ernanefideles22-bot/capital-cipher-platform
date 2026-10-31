@@ -114,9 +114,23 @@ async def export_forensics(
                     AuditLogModel.entity_id.in_(order_ids),
                 ).order_by(desc(AuditLogModel.created_at))
             )).scalars())
+            # Choose the newest *verified* closure, not simply the latest
+            # event with this entity ID. A newer unrelated/malformed event
+            # must not hide a valid earlier closure (false missing-audit flag).
+            orders_by_id = {o.id: o for o in orders}
             audit_by_order = {}
             for a in audits:
-                audit_by_order.setdefault(a.entity_id, a)
+                order = orders_by_id.get(a.entity_id)
+                if (
+                    order is None or order.status != "CLOSED"
+                    or order.closed_at is None
+                    or a.correlation_id != order.correlation_id
+                    or a.created_at < order.closed_at
+                ):
+                    continue
+                previous = audit_by_order.get(a.entity_id)
+                if previous is None or a.created_at > previous.created_at:
+                    audit_by_order[a.entity_id] = a
             agents = list((await session.execute(
                 select(AgentOutputModel).where(
                     AgentOutputModel.correlation_id.in_(corrs),
