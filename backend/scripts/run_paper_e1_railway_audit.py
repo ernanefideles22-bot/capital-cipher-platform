@@ -150,6 +150,7 @@ def main() -> int:
             "E1_DATABASE_URL_IS_PROBE", "E1_DATABASE_HOST_MISMATCH",
             "E1_DATABASE_ENDPOINT_INVALID",
             "E1_TRANSACTION_NOT_READ_ONLY",
+            "E1_TRANSACTION_NOT_REPEATABLE_READ",
         }
         code = str(exc) if isinstance(exc, RuntimeError) and str(exc) in guard_codes else None
         print("E1_AUDIT_BLOCKED " + (code or type(exc).__name__), flush=True)
