@@ -47,6 +47,7 @@ async def metadata(symbol):
             in_delisting=False,
             order_price_round=".1",
             mark_price="80000",
+            last_price="80000",
         ),
         1000,
     )
@@ -623,6 +624,45 @@ async def test_current_price_above_approval_bound_is_rejected_before_dispatch(se
     with pytest.raises(SecurityError):
         await adapter.submit_order(order())
     assert not venue.writes
+
+
+
+@pytest.mark.asyncio
+async def test_last_trade_price_below_stop_blocks_before_entry(setup):
+    adapter, venue, journal = setup
+
+    async def incompatible(symbol):
+        data, observed = await metadata(symbol)
+        data["last_price"] = "78999"
+        return data, observed
+
+    adapter._metadata_provider = incompatible
+    with pytest.raises(SecurityError, match="last-price rule"):
+        await adapter.submit_order(order())
+    assert venue.writes == []
+    assert journal.recovery_status()["recovery_required"] is False
+
+
+@pytest.mark.asyncio
+async def test_price_cross_after_fill_emergency_exits_without_sending_invalid_stop(setup):
+    adapter, venue, journal = setup
+    counter = 0
+
+    async def changing_last_price(symbol):
+        nonlocal counter
+        counter += 1
+        data, observed = await metadata(symbol)
+        if counter >= 2:
+            data["last_price"] = "78900"
+        return data, observed
+
+    adapter._metadata_provider = changing_last_price
+    with pytest.raises(AmbiguousExecutionError):
+        await adapter.submit_order(order())
+    assert venue.writes == ["entry", "close"]
+    assert venue.size == 0
+    assert journal.read("order-0001")["state"] == "HALTED"
+    assert counter >= 2
 
 
 @pytest.mark.asyncio
