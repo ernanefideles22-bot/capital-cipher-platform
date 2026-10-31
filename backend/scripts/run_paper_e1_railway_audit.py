@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 from urllib.parse import urlsplit
+import re
 
 from scripts.paper_e1_readonly_report import export_forensics, read_only_url
 
@@ -45,6 +46,21 @@ def verify_environment(env: dict[str, str]) -> str:
     parsed = urlsplit(read_only_url(actual))
     host = (parsed.hostname or "").lower()
     if not expected or host != expected or not host.endswith(".railway.internal"):
+        # Railway OAuth redacts variable values. Emit only validated internal
+        # DNS labels (never user, password, full URL, database or query string)
+        # to distinguish a stale expected host from the wrong database.
+        def safe_host(value: str) -> str:
+            if (
+                len(value) <= 128 and value.endswith(".railway.internal")
+                and re.fullmatch(r"[a-z0-9.-]+", value)
+            ):
+                return value
+            return "NOT_PRIVATE_RAILWAY_HOST"
+        print("E1_HOST_CONTRACT " + json.dumps({
+            "database_host": safe_host(host),
+            "expected_host": safe_host(expected),
+            "match": False,
+        }, sort_keys=True), flush=True)
         raise RuntimeError("E1_DATABASE_HOST_MISMATCH")
     if (parsed.port or 5432) != 5432 or not parsed.path.strip("/"):
         raise RuntimeError("E1_DATABASE_ENDPOINT_INVALID")
