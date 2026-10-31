@@ -68,11 +68,14 @@ class PaperTrace:
     risk_reward_declared: float | None = None
     audit_close_present: bool = False
     agents: tuple[AgentObservation, ...] = ()
+    exchange: str = "UNKNOWN"
 
     def __post_init__(self):
         if not all((self.order_id, self.decision_id, self.risk_check_id,
                     self.correlation_id, self.symbol, self.strategy)):
             raise ValueError("Required source trace IDs must be present")
+        if not self.exchange:
+            raise ValueError("Missing exchange identity")
         if self.side not in {"BUY", "SELL"}:
             raise ValueError("Invalid direction")
         if self.status not in {"CLOSED", "FILLED"}:
@@ -197,9 +200,9 @@ def _agents_vote(t: PaperTrace) -> str:
 
 def _find_opposing_overlap(trades: list[PaperTrace]) -> dict[str, bool]:
     flagged = {t.order_id: False for t in trades}
-    by_symbol: dict[str, list[PaperTrace]] = defaultdict(list)
+    by_symbol: dict[tuple[str, str], list[PaperTrace]] = defaultdict(list)
     for t in trades:
-        by_symbol[t.symbol].append(t)
+        by_symbol[(t.exchange, t.symbol)].append(t)
     for group in by_symbol.values():
         group.sort(key=lambda x: x.opened_at)
         for i, first in enumerate(group):
