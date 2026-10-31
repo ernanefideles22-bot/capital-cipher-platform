@@ -88,6 +88,16 @@ def test_opposing_positions_overlap_on_same_symbol_even_different_timeframes():
     assert "INVALID_TARGET_SIDE" not in finding(report, "b").flags
 
 
+def test_different_venues_do_not_create_false_opposing_overlap():
+    first = replace(trace("a", side="BUY"), exchange="GATE")
+    second = replace(
+        trace("b", side="SELL", stop=102, target=96),
+        exchange="BINANCE",
+    )
+    report = analyze_paper_trades([first, second])
+    assert "OPPOSING_POSITION_OVERLAP" not in report.flags_count
+
+
 def test_sequential_opposite_positions_not_false_positives():
     first = trace("a", closed=BASE + timedelta(hours=1))
     next_trade = trace("b", side="SELL", stop=102, target=96,
