@@ -316,8 +316,18 @@ def test_railway_e1_executor_refuses_nonpaper_and_wrong_db(monkeypatch, capsys):
         verify_environment({**good, "DATABASE_URL":
             "postgresql://sensitive-user:sensitive-pass@external.example.com:5432/test"})
     assert "external.example.com" not in capsys.readouterr().out
-    with pytest.raises(RuntimeError, match="E1_DATABASE_URL_IS_PROBE"):
-        verify_environment({**good, "CC_PROBE_DATABASE_URL": good["DATABASE_URL"]})
+    # The historical diagnostic URL may alias the canonical backend DB.
+    # Identity is determined by the expected private host, not variable name.
+    assert verify_environment({
+        **good, "CC_PROBE_DATABASE_URL": good["DATABASE_URL"],
+    }) == good["DATABASE_URL"]
+    assert "E1_PROBE_ALIAS_MATCHES_CANONICAL_HOST" in capsys.readouterr().out
+    with pytest.raises(RuntimeError, match="E1_DATABASE_HOST_MISMATCH"):
+        verify_environment({
+            **good,
+            "DATABASE_URL": "postgresql://reporter:dummy@probe.railway.internal:5432/probe",
+            "CC_PROBE_DATABASE_URL": "postgresql://reporter:dummy@probe.railway.internal:5432/probe",
+        })
     with pytest.raises(RuntimeError, match="E1_WRONG_RAILWAY_ENVIRONMENT"):
         verify_environment({**good, "RAILWAY_ENVIRONMENT_NAME": "production"})
 
