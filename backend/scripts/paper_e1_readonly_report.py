@@ -67,6 +67,9 @@ async def export_forensics(
             # The first statement of this database transaction MUST be
             # READ ONLY; queries and SET LOCAL below cannot write.
             await conn.execute(text("SET TRANSACTION READ ONLY"))
+            transaction_mode = await conn.scalar(text("SHOW transaction_read_only"))
+            if str(transaction_mode).lower() != "on":
+                raise RuntimeError("PAPER forensics requires a read-only PostgreSQL transaction")
             await conn.execute(text("SET LOCAL statement_timeout = '20000ms'"))
             # ORM entity materialization requires an AsyncSession bound to the
             # same PostgreSQL transaction already locked READ ONLY.
