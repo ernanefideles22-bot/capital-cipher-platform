@@ -303,6 +303,14 @@ async def test_real_exporter_materializes_orm_rows_with_read_only_session(monkey
     assert result["cost_diagnostics"]["mode"] == (
         "SHADOW_RESEARCH_ONLY_NO_EXECUTION"
     )
+    assert result["shadow_cohorts"]["mode"] == (
+        "POST_HOC_IN_SAMPLE_DESCRIPTIVE_ONLY"
+    )
+    assert result["shadow_cohorts"]["scenarios"][0]["group_counts"][
+        "hypothetical_eligible"
+    ] + result["shadow_cohorts"]["scenarios"][0]["group_counts"][
+        "hypothetical_below_threshold"
+    ] == 1
     assert result["cost_diagnostics"]["scenarios"][0]["evaluable"] == 1
     assert result["cost_diagnostics"]["scenarios"][0][
         "per_order_results"
@@ -393,6 +401,24 @@ def test_railway_e1_executor_logs_no_database_credentials(monkeypatch, capsys):
                 "risk_link_status": {"NOT_VISIBLE_BY_ID": 1},
                 "stop_execution": {"recorded_stop_closures": 1},
             },
+            "shadow_cohorts": {
+                "mode": "POST_HOC_IN_SAMPLE_DESCRIPTIVE_ONLY",
+                "frozen_protocol_sha256": "safe-hash",
+                "prospective_readiness": "NOT_STARTED_AND_NOT_EVALUATED",
+                "scenarios": [{
+                    "scenario": "BASE_NO_VOLUME_IMPACT",
+                    "group_counts": {"hypothetical_eligible": 1},
+                    "historically_observed_baseline": {
+                        "historically_closed": 1, "historical_net_pnl": -2.0,
+                    },
+                    "observed_eligible_subset": {
+                        "historically_closed": 1, "historical_net_pnl": -2.0,
+                    },
+                    "observed_below_threshold_subset": {
+                        "historically_closed": 0, "historical_net_pnl": 0.0,
+                    },
+                }],
+            },
             "cost_diagnostics": {
                 "mode": "SHADOW_RESEARCH_ONLY_NO_EXECUTION",
                 "minimum_net_rr_for_illustrative_screen": 1.5,
@@ -416,6 +442,12 @@ def test_railway_e1_executor_logs_no_database_credentials(monkeypatch, capsys):
     summary = _json.loads(lines[0].split(" ", 1)[1])
     assert summary["cost_diagnostics"]["mode"] == (
         "SHADOW_RESEARCH_ONLY_NO_EXECUTION"
+    )
+    assert summary["shadow_cohorts"]["mode"] == (
+        "POST_HOC_IN_SAMPLE_DESCRIPTIVE_ONLY"
+    )
+    assert summary["shadow_cohorts"]["prospective_readiness"] == (
+        "NOT_STARTED_AND_NOT_EVALUATED"
     )
     assert summary["cost_diagnostics"]["scenarios"][0][
         "hypothetical_meets_minimum_net_rr"
