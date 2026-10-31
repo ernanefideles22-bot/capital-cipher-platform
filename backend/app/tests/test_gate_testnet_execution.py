@@ -479,6 +479,30 @@ async def test_stop_failure_attempts_one_owned_reduce_only_close_and_keeps_halt(
 
 
 @pytest.mark.asyncio
+async def test_stop_rejection_logs_bounded_diagnostics_before_one_emergency_close(setup,caplog):
+    from app.demo.gate_testnet_transport import GateWriteUnknown
+    adapter, venue, journal = setup
+
+    async def reject_stop(**kwargs):
+        assert journal.read('order-0001')['state']=='STOP_SUBMITTING'
+        venue.writes.append('stop')
+        raise GateWriteUnknown('SENSITIVE PROVIDER MESSAGE',http_status=400,
+            provider_label='NEW_STOP_CODE',provider_fields=('trigger','price'),
+            response_kind='json_object')
+
+    venue.place_stop=reject_stop
+    with pytest.raises(AmbiguousExecutionError):
+        await adapter.submit_order(order())
+    assert venue.writes==['entry','stop','close'] and venue.size==0
+    assert journal.read('order-0001')['state']=='HALTED'
+    assert 'stage=STOP_SUBMITTING' in caplog.text and 'http_status=400' in caplog.text
+    assert 'provider_label=NEW_STOP_CODE' in caplog.text
+    assert "provider_fields=('trigger', 'price')" in caplog.text
+    assert 'response_kind=json_object' in caplog.text
+    assert 'SENSITIVE PROVIDER MESSAGE' not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_emergency_close_uncertainty_is_never_retried(setup):
     adapter, venue, journal = setup
     venue.failure = "stop"
@@ -643,6 +667,7 @@ async def test_real_transport_full_cycle_with_mock_http_and_exact_signed_request
             assert (
                 body["initial"]["size"] == 0 and body["initial"]["reduce_only"] is True
             )
+            assert body['pos_margin_mode']=='isolated' and body['initial']['text']=='api'
             result = await venue.place_stop(
                 contract=body["initial"]["contract"],
                 signed_position=venue.size,

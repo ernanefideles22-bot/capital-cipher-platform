@@ -19,13 +19,22 @@ _ORDER='/api/v4/futures/usdt/orders'
 _STOP='/api/v4/futures/usdt/price_orders'
 _ACK='GATE_TESTNET_VIRTUAL_FUNDS_ONLY'
 _CONTRACTS={'BTC_USDT','ETH_USDT','SOL_USDT'}
-_ERROR_LABELS=frozenset({
-    'INVALID_PARAM_VALUE','INVALID_REQUEST_BODY','INVALID_PARAM','INVALID_ARGUMENT',
-    'POSITION_NOT_FOUND','POSITION_EMPTY','NO_MATCHED_POSITION','ORDER_NOT_FOUND',
-    'INVALID_ORDER_TYPE','INVALID_ORDER_PRICE','INVALID_ORDER_SIZE','CONTRACT_NOT_FOUND',
-    'BALANCE_NOT_ENOUGH','MARGIN_TOO_LESS','UNAUTHORIZED','FORBIDDEN','INVALID_KEY',
-    'INVALID_SIGNATURE','TOO_MANY_REQUESTS','SERVER_ERROR','INTERNAL',
-})
+_ERROR_FIELDS=('initial', 'trigger', 'contract', 'size', 'amount', 'close',
+               'reduce_only', 'tif', 'text', 'price', 'price_type', 'strategy_type',
+               'rule', 'expiration', 'order_type', 'pos_margin_mode', 'last_price')
+_RESPONSE_KINDS={'json_object','json_other','invalid_json','oversized'}
+
+
+def _safe_error_label(value, forbidden=()):
+    # Gate adds error codes independently of this client. Keep bounded enum-like
+    # labels rather than silently dropping every new code. Never keep free text
+    # or a value reflecting this request's credentials/signature.
+    if not isinstance(value,str) or not re.fullmatch(r'[A-Z][A-Z0-9_]{2,63}',value):
+        return None
+    if any(secret and (secret.casefold() in value.casefold() or value.casefold() in secret.casefold())
+           for secret in forbidden):
+        return None
+    return value
 
 
 class GateReadError(Exception):
@@ -35,10 +44,13 @@ class GateReadError(Exception):
 class GateWriteUnknown(Exception):
     """A write may have reached the exchange; reconcile before any action."""
 
-    def __init__(self, message='write outcome unknown; reconcile without retry', *, http_status=None, provider_label=None):
+    def __init__(self, message='write outcome unknown; reconcile without retry', *, http_status=None, provider_label=None,
+                 provider_fields=(), response_kind=None):
         super().__init__('write outcome unknown; reconcile without retry')
         self.http_status = http_status if type(http_status) is int and 100 <= http_status <= 599 else None
-        self.provider_label = provider_label if isinstance(provider_label,str) and provider_label in _ERROR_LABELS else None
+        self.provider_label = _safe_error_label(provider_label)
+        self.provider_fields = tuple(field for field in _ERROR_FIELDS if field in provider_fields)
+        self.response_kind = response_kind if response_kind in _RESPONSE_KINDS else None
 
 
 class GateWriteDisabled(Exception):
@@ -96,18 +108,29 @@ class GateTestnetTransport:
         headers={'KEY':self._credentials.key,'Timestamp':timestamp,'SIGN':signature,'Accept':'application/json','Content-Type':'application/json'}
         result=None
         provider_label=None
+        provider_fields=()
+        response_kind=None
         try:
             result=await self._client.request(method,_HOST+path+('?' + query_text if query_text else ''),content=payload,headers=headers)
             if result.status_code not in ({200,201} if write else {200}):
-                # Preserve only a finite public error enum, never provider messages.
+                # Preserve a bounded code and finite field hints, never messages.
                 if write and len(result.content)<=2_000_000:
                     try:
                         error=result.json()
-                        label=error.get('label') if isinstance(error,dict) else None
-                        if isinstance(label,str) and label in _ERROR_LABELS:
-                            provider_label=label
+                        response_kind='json_object' if isinstance(error,dict) else 'json_other'
+                        if isinstance(error,dict):
+                            provider_label=_safe_error_label(error.get('label'),
+                                (self._credentials.key,self._credentials.secret,signature))
+                            # Only vocabulary from the request schema can leave
+                            # this scope; values and provider prose cannot.
+                            messages=' '.join(value[:4096] for key in ('message','detail')
+                                              if isinstance(value:=error.get(key),str))
+                            provider_fields=tuple(field for field in _ERROR_FIELDS
+                                if re.search(r'(?<![\w])'+re.escape(field)+r'(?![\w])',messages,re.IGNORECASE))
                     except (ValueError,TypeError):
-                        pass
+                        response_kind='invalid_json'
+                elif write:
+                    response_kind='oversized'
                 raise ValueError('unexpected provider status')
             if len(result.content) > 2_000_000:
                 raise ValueError('oversized provider response')
@@ -123,7 +146,8 @@ class GateTestnetTransport:
         except (httpx.HTTPError,ValueError,TypeError):
             if write:
                 raise GateWriteUnknown(http_status=result.status_code if result is not None else None,
-                                       provider_label=provider_label) from None
+                                       provider_label=provider_label,provider_fields=provider_fields,
+                                       response_kind=response_kind) from None
             raise GateReadError('exchange read unavailable') from None
 
     async def place_entry(self, *, contract, signed_contracts, client_id):

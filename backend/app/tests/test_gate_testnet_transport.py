@@ -46,6 +46,7 @@ async def test_exact_testnet_signatures_entry_stop_close_and_lookup():
     stop=json.loads(calls[1].content)
     assert stop['initial']['size']==0 and stop['initial']['close'] is True and stop['initial']['reduce_only'] is True
     assert stop['order_type']=='close-long-position' and stop['trigger']['rule']==2
+    assert stop['pos_margin_mode']=='isolated' and stop['initial']['text']=='api'
     exit_body=json.loads(calls[2].content)
     assert exit_body['size']==0 and exit_body['close'] is True and exit_body['reduce_only'] is True
     assert [r.method for r in calls]==['POST','POST','POST','GET','DELETE']
@@ -125,6 +126,8 @@ async def test_read_failure_is_sanitized():
 @pytest.mark.parametrize('label,expected', [
     ('POSITION_NOT_FOUND','POSITION_NOT_FOUND'),
     ('INVALID_PARAM_VALUE','INVALID_PARAM_VALUE'),
+    ('NEW_PROVIDER_PARAMETER_CODE','NEW_PROVIDER_PARAMETER_CODE'),
+    ('BAD\nCODE',None),('X'*65,None),
     ('dummy-secret',None),(['INVALID_PARAM_VALUE'],None),
 ])
 async def test_stop_failure_keeps_only_public_diagnostics_without_retry(label,expected):
@@ -137,9 +140,48 @@ async def test_stop_failure_keeps_only_public_diagnostics_without_retry(label,ex
         await c.place_stop(contract='BTC_USDT',signed_position=3,
                            reference_price='77340',stop_price='76995.6',tick_size='0.1')
     assert caught.value.http_status==400 and caught.value.provider_label==expected
+    assert caught.value.response_kind=='json_object'
     assert len(calls)==1
     assert 'dummy-secret' not in str(caught.value) and 'dummy-key' not in str(caught.value)
     assert 'dummy-secret' not in repr(vars(caught.value))
+    await c.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('body,kind,fields', [
+    ({'label':'NEW_STOP_CODE','message':'Invalid initial.text value: dummy-secret dummy-key',
+      'detail':'trigger.price must < last_price'},'json_object',('initial','trigger','text','price','last_price')),
+    ({'label':42,'message':['dummy-secret']},'json_object',()),
+    (['dummy-secret'],'json_other',()),
+    ('dummy-secret <html>','invalid_json',()),
+    ('x'*2_000_001,'oversized',()),
+])
+async def test_error_shape_and_schema_hints_never_retain_response_prose(body,kind,fields):
+    calls=[]
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(400,**({'text':body} if isinstance(body,str) else {'json':body}))
+    c=client(handler,enabled=True,ack='GATE_TESTNET_VIRTUAL_FUNDS_ONLY')
+    with pytest.raises(GateWriteUnknown) as caught:
+        await c.place_stop(contract='BTC_USDT',signed_position=3,
+                           reference_price='77340',stop_price='76995.6',tick_size='0.1')
+    assert caught.value.response_kind==kind and caught.value.provider_fields==fields
+    assert len(calls)==1 and caught.value.__cause__ is None
+    assert 'dummy-secret' not in repr(vars(caught.value))
+    assert 'dummy-key' not in repr(vars(caught.value))
+    assert 'must <' not in repr(vars(caught.value))
+    await c.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('label',['UPPERCASE_SECRET','PREFIX_UPPERCASE_SECRET_SUFFIX','UPPERCASE'])
+async def test_enum_shaped_credentials_are_redacted_too(label):
+    c=GateTestnetTransport(Credentials('UPPERCASE_KEY','UPPERCASE_SECRET'),
+        trusted_clock=lambda:1000,writes_enabled=True,acknowledgement='GATE_TESTNET_VIRTUAL_FUNDS_ONLY',
+        transport=httpx.MockTransport(lambda req:httpx.Response(400,json={'label':label})))
+    with pytest.raises(GateWriteUnknown) as caught:
+        await c.place_entry(contract='BTC_USDT',signed_contracts=1,client_id='t-test')
+    assert caught.value.provider_label is None
     await c.close()
 
 
