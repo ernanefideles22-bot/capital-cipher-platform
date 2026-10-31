@@ -18,6 +18,7 @@ jobs:
     env:
       PYTHONDONTWRITEBYTECODE: '1'
       PYTHONUNBUFFERED: '1'
+      PYTHONPATH: ./backend
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
