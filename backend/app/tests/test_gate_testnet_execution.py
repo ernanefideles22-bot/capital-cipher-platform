@@ -162,7 +162,7 @@ class Venue:
                 strategy_type=0,
                 price_type=1,
                 rule=2 if qty > 0 else 1,
-                expiration=3600,
+                expiration=86400,  # Gate documented finite TTL; match actual wire plan
             ),
         )
         return {"id": "22"}
