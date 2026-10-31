@@ -245,7 +245,8 @@ def compare_candidate_to_baseline(
     archive: HistoricalTapeDataset,
     baseline: Sequence[CandidateReplayReport],
     candidate: Sequence[CandidateReplayReport],
-    *, starting_equity: float = 10000,
+    *, evaluation_start_at: datetime, evaluation_end_at: datetime,
+    starting_equity: float = 10000,
     allow_unhedge_on_exit: bool = False,
 ) -> VenueCandidateComparison:
     """Same committed venue tape; one-way accounting for each alternative.
@@ -255,6 +256,22 @@ def compare_candidate_to_baseline(
     """
     if not baseline or not candidate:
         raise ValueError("Both portfolios require candidate strategy reports")
+    start, end = utc(evaluation_start_at), utc(evaluation_end_at)
+    if start >= end:
+        raise ValueError("Invalid shared evaluation window")
+    if (utc(archive.quotes[0].received_at) > start
+            or utc(archive.quotes[-1].received_at) < end):
+        raise ValueError("Venue tape does not span the common evaluation window")
+    for report in (*baseline, *candidate):
+        if (report.evaluation_starts_at is None
+                or report.evaluation_ends_at is None):
+            raise ValueError("Missing signed evaluation window from candidate replay")
+        if (utc(report.evaluation_starts_at) > start
+                or utc(report.evaluation_ends_at) < end):
+            raise ValueError("Candidate does not cover the common evaluation window")
+        if any(utc(trade.entry_at) < start or utc(trade.exit_at) > end
+               for trade in report.trades):
+            raise ValueError("Candidate trades extend beyond common evaluation window")
     bp, br = run_candidate_portfolio(
         archive, baseline, starting_equity=starting_equity,
         allow_unhedge_on_exit=allow_unhedge_on_exit,
