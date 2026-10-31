@@ -60,6 +60,8 @@ class CandidateReplayReport:
     max_drawdown_percent: float
     skipped_stale_entries: int
     all_in_cost_bps_per_side: float
+    evaluation_starts_at: datetime | None = None
+    evaluation_ends_at: datetime | None = None
     venue_policy: str = "SINGLE_OWNER_ONE_WAY"
     status: str = "RESEARCH_ONLY"
     execution_authorized: bool = False
@@ -351,4 +353,6 @@ def replay_candidate(
         max_drawdown_percent=round(max_dd, 8),
         skipped_stale_entries=skipped,
         all_in_cost_bps_per_side=all_in_cost_bps_per_side,
+        evaluation_starts_at=_utc(candles[evaluation_start].closed_at),
+        evaluation_ends_at=_utc(candles[-1].received_at),
     )
