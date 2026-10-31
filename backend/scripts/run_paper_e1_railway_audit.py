@@ -114,6 +114,8 @@ def main() -> int:
             "by_symbol": _grouped(report, "by_symbol"),
             "by_timeframe": _grouped(report, "by_timeframe"),
             "by_exit_reason": _grouped(report, "by_exit_reason"),
+            "by_side": _grouped(report, "by_side"),
+            "evidence_integrity": data["evidence_integrity"],
             "order_sample_truncated": data["order_sample_truncated"],
             "agents_sample_truncated": data["agents_sample_truncated"],
             "archive_reconciliation": data["archive_reconciliation"],
