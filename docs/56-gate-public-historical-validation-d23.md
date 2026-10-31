@@ -121,3 +121,33 @@ execution assumptions are stress heuristics, not empirically calibrated
 Gate execution costs.
 
 There were **zero new trade orders** and no Railway changes in this run.
+
+
+### Follow-up: fuller funding history (GitHub run #4)
+
+The subsequent read-only run `41236978911` completed **SUCCESS** and
+queried the funding endpoint with `limit=1000` along with `from`/`to`.
+Returned historical settlement rows:
+
+| Market | Rows after higher limit | First settlement UTC | Last settlement UTC |
+|---|---:|---|---|
+| BTC 15m | 28 | 2026-10-22 16:00:00 | 2026-10-31 16:00:00 |
+| ETH 1h | 113 | 2026-09-24 08:00:00 | 2026-10-31 16:00:00 |
+| SOL 4h | 451 | 2026-06-03 16:00:01 | 2026-10-31 16:00:00 |
+
+Artifact (short retention, GitHub login may be required):
+https://github.com/ernanefideles22-bot/capital-cipher-platform/actions/runs/41236978911/artifacts/13055881715
+
+Historical futures raw funding hashes:
+- ETH 1h: `c10f9c75b8bc38268b999ee9148c93a6f32059948c8800ab64234be24ddb74af`
+- SOL 4h: `0437b908d055476f58c5144f9b25443007505584d3cc9748abe9a3edd011f011`
+
+The normalized candle identity hashes and all six simulated results stayed
+identical across both runs. SOL's raw Kline payload hash changed between
+downloads, so exact byte-level raw response stability is **not** established;
+its normalized OHLCV series identity was unchanged. Treat the stored raw
+response as a per-fetch artifact, not a guaranteed byte-identical API reply.
+
+The larger funding sample improves settlement history coverage, but still
+does **not establish historical data availability at each trading decision**.
+It was *not* retroactively subtracted from the reported simulated P&L.
