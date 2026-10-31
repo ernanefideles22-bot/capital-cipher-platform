@@ -300,6 +300,13 @@ async def test_real_exporter_materializes_orm_rows_with_read_only_session(monkey
     assert result["evidence_integrity"]["risk_link_status"] == {
         "NOT_VISIBLE_BY_ID": 1,
     }
+    assert result["cost_diagnostics"]["mode"] == (
+        "SHADOW_RESEARCH_ONLY_NO_EXECUTION"
+    )
+    assert result["cost_diagnostics"]["scenarios"][0]["evaluable"] == 1
+    assert result["cost_diagnostics"]["scenarios"][0][
+        "per_order_results"
+    ][0]["status"] == "EVALUATED"
     assert result["report"]["agent_attribution_verified"] is False
     assert str(statements[0]) == (
         "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"
@@ -386,6 +393,19 @@ def test_railway_e1_executor_logs_no_database_credentials(monkeypatch, capsys):
                 "risk_link_status": {"NOT_VISIBLE_BY_ID": 1},
                 "stop_execution": {"recorded_stop_closures": 1},
             },
+            "cost_diagnostics": {
+                "mode": "SHADOW_RESEARCH_ONLY_NO_EXECUTION",
+                "minimum_net_rr_for_illustrative_screen": 1.5,
+                "scenarios": [{
+                    "scenario": "BASE_NO_VOLUME_IMPACT",
+                    "assumptions": {"taker_fee_bps_per_side": 8.0},
+                    "orders_examined": 1, "evaluable": 1,
+                    "insufficient_evidence": 0,
+                    "hypothetical_fails_minimum_net_rr": 0,
+                    "hypothetical_meets_minimum_net_rr": 1,
+                    "hypothetical_net_rr_median": 1.6,
+                }],
+            },
         }
 
     monkeypatch.setattr(runner, "audit_once", fake_audit)
@@ -393,6 +413,13 @@ def test_railway_e1_executor_logs_no_database_credentials(monkeypatch, capsys):
     lines = capsys.readouterr().out.splitlines()
     assert lines[0].startswith("E1_AUDIT_SUMMARY ")
     assert lines[-1] == "E1_AUDIT_COMPLETE"
+    summary = _json.loads(lines[0].split(" ", 1)[1])
+    assert summary["cost_diagnostics"]["mode"] == (
+        "SHADOW_RESEARCH_ONLY_NO_EXECUTION"
+    )
+    assert summary["cost_diagnostics"]["scenarios"][0][
+        "hypothetical_meets_minimum_net_rr"
+    ] == 1
     manifest = _json.loads(next(x for x in lines if x.startswith("E1_AUDIT_MANIFEST ")).split(" ", 1)[1])
     chunks = [x.split(" ", 2)[2] for x in lines if x.startswith("E1_AUDIT_CHUNK ")]
     decoded = _gzip.decompress(_base64.b64decode("".join(chunks)))
