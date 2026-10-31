@@ -70,6 +70,11 @@ async def export_forensics(
             # The first SQL statement in this session's transaction MUST be
             # READ ONLY. Session close rolls back; nothing is committed.
             await session.execute(text("SET TRANSACTION READ ONLY"))
+            # Verify PostgreSQL accepted the transaction mode before any
+            # business-table access. A wrong connection must fail closed.
+            readonly = await session.scalar(text("SHOW transaction_read_only"))
+            if str(readonly).lower() not in {"on", "true"}:
+                raise RuntimeError("E1_TRANSACTION_NOT_READ_ONLY")
             await session.execute(text("SET LOCAL statement_timeout = '20000ms'"))
             query = select(PaperOrderModel).where(
                 or_(
