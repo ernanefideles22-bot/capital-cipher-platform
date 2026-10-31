@@ -22,6 +22,16 @@ def test_long_entry_protective_stop_and_reduce_only_exit():
     assert p['emergency_exit']['size']==0 and p['emergency_exit']['close'] is True and p['emergency_exit']['reduce_only'] is True
 
 
+def test_trigger_price_uses_only_venue_tick_precision():
+    # ATR-derived Decimal values can carry many trailing decimal places.
+    # An excessive precision string must not reach Gate's trigger.price field.
+    result = plan(stop_price='77280.8000000000000000',tick_size='0.1')
+    assert result['stop']['trigger']['price']=='77280.8'
+    assert result['stop']['trigger']['expiration']==86400
+    short = plan(signed_contracts=-2,stop_price='81000.500000000',tick_size='0.1')
+    assert short['stop']['trigger']['price']=='81000.5'
+
+
 def test_short_reverses_direction_and_stop_rule():
     p=plan(signed_contracts=-3,stop_price='81000')
     assert p['entry']['size']==-3 and p['stop']['initial']['size']==0 and p['stop']['initial']['close'] is True
