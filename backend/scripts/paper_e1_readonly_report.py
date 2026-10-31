@@ -68,14 +68,18 @@ async def export_forensics(
             # AsyncSession materializes mapped ORM models from SELECT(Model).
             # AsyncConnection.execute() instead returns Core rows: .scalars()
             # would yield the first column (typically a string ID), not a model.
-            # The first SQL statement in this session's transaction MUST be
-            # READ ONLY. Session close rolls back; nothing is committed.
-            await session.execute(text("SET TRANSACTION READ ONLY"))
-            # Verify PostgreSQL accepted the transaction mode before any
-            # business-table access. A wrong connection must fail closed.
+            # First SQL statement: a stable REPEATABLE READ snapshot is
+            # required while the retention worker mutates historical tables.
+            # READ ONLY prevents writes; session close rolls back.
+            await session.execute(text(
+                "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"
+            ))
             readonly = await session.scalar(text("SHOW transaction_read_only"))
+            isolation = await session.scalar(text("SHOW transaction_isolation"))
             if str(readonly).lower() not in {"on", "true"}:
                 raise RuntimeError("E1_TRANSACTION_NOT_READ_ONLY")
+            if str(isolation).lower() != "repeatable read":
+                raise RuntimeError("E1_TRANSACTION_NOT_REPEATABLE_READ")
             await session.execute(text("SET LOCAL statement_timeout = '20000ms'"))
             query = select(PaperOrderModel).where(
                 or_(
