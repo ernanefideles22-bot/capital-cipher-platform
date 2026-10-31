@@ -26,6 +26,7 @@ from app.strategy.paper_forensics_e1 import (
 )
 from app.strategy.paper_evidence_integrity_e11 import inspect_evidence
 from app.strategy.paper_net_economics_e13 import analyze_cost_diagnostics
+from app.strategy.paper_shadow_cohorts_e14 import describe_shadow_cohorts
 
 
 def to_float(value):
@@ -105,6 +106,9 @@ async def export_forensics(
                     "agent_history_coverage": "UNVERIFIED_MAY_BE_PRUNED",
                     "evidence_integrity": {"status": "NOT_EVALUATED_NO_VISIBLE_ORDERS"},
                     "cost_diagnostics": analyze_cost_diagnostics([]),
+                    "shadow_cohorts": describe_shadow_cohorts(
+                        asdict(report), analyze_cost_diagnostics([])
+                    ),
                     "report": asdict(report),
                     "caveat": "Zero visible rows is not evidence of zero trades; verify archive/retention and RLS.",
                 }
@@ -246,6 +250,9 @@ async def export_forensics(
                     agents=tuple(output),
                 ))
             report = analyze_paper_trades(traces)
+            shadow_cohorts = describe_shadow_cohorts(
+                asdict(report), cost_diagnostics,
+            )
             return {
                 "generated_at": datetime.now(timezone.utc).isoformat(),
                 "source": "POSTGRESQL_READ_ONLY",
@@ -256,6 +263,7 @@ async def export_forensics(
                 "agent_history_coverage": "UNVERIFIED_MAY_BE_PRUNED",
                 "evidence_integrity": evidence_integrity,
                 "cost_diagnostics": cost_diagnostics,
+                "shadow_cohorts": shadow_cohorts,
                 "tables_read": [
                     "capital_cipher.paper_orders",
                     "capital_cipher.decisions",
