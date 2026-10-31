@@ -80,3 +80,44 @@ those test fixtures came from Gate.
   https://www.gate.com/docs/developers/apiv4/en/futures/#futures-market-historical-funding-rate
 - Gate public order book:
   https://www.gate.com/docs/developers/apiv4/en/futures/#query-futures-market-depth-information
+
+
+## Observed Gate public REST research run — 2026-10-31
+
+**Verified execution:** GitHub Actions run #2, run ID `41236713068`,
+job completed **SUCCESS**. Seven source-normalization unit tests passed.
+GitHub downloaded *actual public Gate futures OHLCV* and historical funding
+records, and ran the genuine `app.strategy.candidate_replay.replay_candidate`
+Python module on three markets. The data artifact is available for **7 days**:
+
+- https://github.com/ernanefideles22-bot/capital-cipher-platform/actions/runs/41236713068/artifacts/13055987102
+
+Frozen cutoff: 2026-10-31 18:00:00 UTC. Each symbol: **901 closed candles**
+(2703 in total). This is a new historical source, but NOT a fresh sealed
+out-of-sample period; the team has already inspected this cutoff.
+
+| Market | Bars | Funding records returned | Later sample BUY (USDT) | Later sample SELL (USDT) |
+|---|---:|---:|---:|---:|
+| BTC_USDT 15m | 901 | 28 | -141.56921790 | -132.02636694 |
+| ETH_USDT 1h | 901 | 100 | -92.51408635 | -92.40423889 |
+| SOL_USDT 4h | 901 | 100 | -190.84996165 | +121.33880003 |
+
+All results assume separate 10,000-USDT research accounts per scenario,
+12 basis points all-in per side, simulated ATR stop and target and next
+eligible open. The single later-positive SOL 4h SELL had **-193.43540811**
+in the earlier 60% and **+70.35863434** later when stressed to 25bps/side.
+No candidate shows consistent profitability across both samples.
+
+Actual Gate raw Kline record hashes recorded by the collector:
+- BTC 15m: `76b1fa51bfa349b77d81575a3dc630cae4db76b465ff9a66017f2934fbedb798`
+- ETH 1h: `71f9d18a00bcfeb46c29190a71bca271e25ecb458cdf96a5d51818e3ebc8fd83`
+- SOL 4h: `2c7aaea6e4d042b91d5d0f970b0d0dc536846190e04a100eb80c86842d8a149d`
+
+**Data-quality limitations:** The funding endpoint returned 100 records
+for ETH and SOL, so completeness across their long candle windows has **not**
+been proven. Funding was saved but **NOT used in PnL**. Real historical Gate
+bid/ask, queue depth and order fills remain unavailable; the 12/25bps
+execution assumptions are stress heuristics, not empirically calibrated
+Gate execution costs.
+
+There were **zero new trade orders** and no Railway changes in this run.
