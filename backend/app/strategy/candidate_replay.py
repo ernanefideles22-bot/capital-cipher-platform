@@ -42,6 +42,8 @@ class CandidateTrade:
     gross_pnl: float
     execution_costs: float
     net_pnl: float
+    entry_signal_received_at: datetime | None = None
+    exit_signal_received_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -58,6 +60,8 @@ class CandidateReplayReport:
     max_drawdown_percent: float
     skipped_stale_entries: int
     all_in_cost_bps_per_side: float
+    evaluation_starts_at: datetime | None = None
+    evaluation_ends_at: datetime | None = None
     venue_policy: str = "SINGLE_OWNER_ONE_WAY"
     status: str = "RESEARCH_ONLY"
     execution_authorized: bool = False
@@ -220,17 +224,20 @@ def replay_candidate(
     max_dd = 0.0
     pending_entry: tuple[datetime, float, int] | None = None
     pending_exit: datetime | None = None
-    position: tuple[datetime, float, float, float, float, float] | None = None
-    # position: entry_at, price, qty, stop, target, entry_cost
+    position: tuple[datetime, float, float, float, float, float, datetime] | None = None
+    # position: entry_at, price, qty, stop, target, entry_cost, entry_signal_at
     trades: list[CandidateTrade] = []
     skipped = 0
     last_exit_idx = -10_000
     params = dict(hypothesis.parameters)
 
-    def close_position(index: int, price: float, reason: str, at: datetime) -> None:
+    def close_position(
+        index: int, price: float, reason: str, at: datetime,
+        exit_signal_at: datetime | None = None,
+    ) -> None:
         nonlocal position, equity, peak, max_dd, last_exit_idx
         assert position is not None
-        entered, entry, qty, stop, target, entry_cost = position
+        entered, entry, qty, stop, target, entry_cost, entry_signal_at = position
         signed = 1 if hypothesis.side == "BUY" else -1
         gross = signed * (price - entry) * qty
         costs = entry_cost + price * qty * fee
@@ -241,6 +248,8 @@ def replay_candidate(
         trades.append(CandidateTrade(
             entered, at, hypothesis.side, entry, price, qty, stop, target,
             reason, gross, costs, net,
+            entry_signal_received_at=entry_signal_at,
+            exit_signal_received_at=(exit_signal_at or entry_signal_at),
         ))
         guard.release(hypothesis.symbol, owner)
         position = None
@@ -251,7 +260,7 @@ def replay_candidate(
         closed = _utc(bar.closed_at)
         # Pending exit triggered ONLY by a preceding completed candle.
         if position is not None and pending_exit is not None and opened >= pending_exit:
-            _, _, _, stop_at, _, _ = position
+            _, _, _, stop_at, _, _, _ = position
             gap_through_stop = (
                 bar.open <= stop_at if hypothesis.side == "BUY"
                 else bar.open >= stop_at
@@ -260,6 +269,7 @@ def replay_candidate(
                 i, bar.open,
                 "STOP_LOSS" if gap_through_stop else "RULE_INVALIDATED",
                 opened,
+                exit_signal_at=pending_exit,
             )
             pending_exit = None
 
@@ -281,11 +291,11 @@ def replay_candidate(
                         qty = min(equity * risk_fraction / risk_distance, equity / (price * (1 + fee)))
                         if qty > 0:
                             guard.reserve(hypothesis.symbol, hypothesis.side, owner)
-                            position = (opened, price, qty, stop, target, price * qty * fee)
+                            position = (opened, price, qty, stop, target, price * qty * fee, available)
                 pending_entry = None
 
         if position is not None:
-            _, _, _, stop, target, _ = position
+            _, _, _, stop, target, _, _ = position
             if hypothesis.side == "BUY":
                 stop_hit = bar.low <= stop
                 target_hit = bar.high >= target
@@ -325,7 +335,11 @@ def replay_candidate(
 
     if position is not None:
         final = candles[-1]
-        close_position(len(candles) - 1, final.close, "REPLAY_END", _utc(final.received_at))
+        close_position(
+            len(candles) - 1, final.close, "REPLAY_END",
+            _utc(final.received_at),
+            exit_signal_at=_utc(final.received_at),
+        )
     return CandidateReplayReport(
         fingerprint=hypothesis.fingerprint,
         dataset_hash=dataset_hash,
@@ -339,4 +353,6 @@ def replay_candidate(
         max_drawdown_percent=round(max_dd, 8),
         skipped_stale_entries=skipped,
         all_in_cost_bps_per_side=all_in_cost_bps_per_side,
+        evaluation_starts_at=_utc(candles[evaluation_start].closed_at),
+        evaluation_ends_at=_utc(candles[-1].received_at),
     )
