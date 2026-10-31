@@ -51,6 +51,7 @@ class ResearchMemory:
     KINDS = frozenset({
         "HYPOTHESIS_REGISTERED",
         "BASELINE_WALK_FORWARD_OBSERVED",
+        "CANDIDATE_WALK_FORWARD_OBSERVED",
         "PAPER_CLOSED_TRADE_OBSERVED",
         "RESEARCH_NOTE",
     })
