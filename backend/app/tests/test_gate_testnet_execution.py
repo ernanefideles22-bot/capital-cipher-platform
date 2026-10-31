@@ -646,23 +646,26 @@ async def test_last_trade_price_below_stop_blocks_before_entry(setup):
 @pytest.mark.asyncio
 async def test_price_cross_after_fill_emergency_exits_without_sending_invalid_stop(setup):
     adapter, venue, journal = setup
-    counter = 0
+    current_last = {"value": "80000"}
+    entry = venue.place_entry
 
     async def changing_last_price(symbol):
-        nonlocal counter
-        counter += 1
         data, observed = await metadata(symbol)
-        if counter >= 2:
-            data["last_price"] = "78900"
+        data["last_price"] = current_last["value"]
         return data, observed
 
+    async def move_after_entry(**kwargs):
+        result = await entry(**kwargs)
+        current_last["value"] = "78900"
+        return result
+
     adapter._metadata_provider = changing_last_price
+    venue.place_entry = move_after_entry
     with pytest.raises(AmbiguousExecutionError):
         await adapter.submit_order(order())
     assert venue.writes == ["entry", "close"]
     assert venue.size == 0
     assert journal.read("order-0001")["state"] == "HALTED"
-    assert counter >= 2
 
 
 @pytest.mark.asyncio
