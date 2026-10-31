@@ -219,9 +219,20 @@ async def test_real_exporter_materializes_orm_rows_with_read_only_session(monkey
         opened_at=opened, created_at=opened,
         closed_at=opened + timedelta(hours=1), pnl=-10,
     )
+    valid_audit = SimpleNamespace(
+        entity_id=order.id, correlation_id=order.correlation_id,
+        created_at=order.closed_at + timedelta(seconds=1),
+        payload={"exit_reason": "STOP_LOSS", "exit_price": 98},
+    )
+    newer_unrelated_audit = SimpleNamespace(
+        entity_id=order.id, correlation_id="unrelated-correlation",
+        created_at=order.closed_at + timedelta(seconds=2),
+        payload={"exit_reason": "TAKE_PROFIT", "exit_price": 105},
+    )
     records = {
         PaperOrderModel: [order], DecisionModel: [],
-        RiskCheckModel: [], AuditLogModel: [], AgentOutputModel: [],
+        RiskCheckModel: [], AuditLogModel: [newer_unrelated_audit, valid_audit],
+        AgentOutputModel: [],
     }
     statements = []
     engine = SimpleNamespace(dispose=AsyncMock())
@@ -257,6 +268,8 @@ async def test_real_exporter_materializes_orm_rows_with_read_only_session(monkey
 
     assert result["report"]["closed_trades"] == 1
     assert result["report"]["net_pnl"] == -10
+    assert result["report"]["missing_audit_closures"] == 0
+    assert result["report"]["by_exit_reason"][0]["key"] == "STOP_LOSS"
     assert result["report"]["agent_attribution_verified"] is False
     assert str(statements[0]) == "SET TRANSACTION READ ONLY"
     assert str(statements[1]).startswith("SET LOCAL statement_timeout")
