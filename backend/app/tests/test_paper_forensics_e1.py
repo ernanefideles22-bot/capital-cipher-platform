@@ -255,6 +255,11 @@ async def test_real_exporter_materializes_orm_rows_with_read_only_session(monkey
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
+        async def scalar(self, statement):
+            statements.append(statement)
+            assert str(statement) == "SHOW transaction_read_only"
+            return "on"
+
         async def execute(self, statement):
             statements.append(statement)
             if not isinstance(statement, Select):
@@ -274,6 +279,7 @@ async def test_real_exporter_materializes_orm_rows_with_read_only_session(monkey
     assert result["agent_history_coverage"] == "UNVERIFIED_MAY_BE_PRUNED"
     assert result["report"]["agent_attribution_verified"] is False
     assert str(statements[0]) == "SET TRANSACTION READ ONLY"
-    assert str(statements[1]).startswith("SET LOCAL statement_timeout")
-    assert all(isinstance(stmt, Select) for stmt in statements[2:])
+    assert str(statements[1]) == "SHOW transaction_read_only"
+    assert str(statements[2]).startswith("SET LOCAL statement_timeout")
+    assert all(isinstance(stmt, Select) for stmt in statements[3:])
     engine.dispose.assert_awaited_once()
