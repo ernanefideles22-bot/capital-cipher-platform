@@ -192,3 +192,73 @@ def test_read_only_export_refuses_sqlite_and_normalizes_asyncpg():
         read_only_url("sqlite:////tmp/e1.db")
     with pytest.raises(ValueError, match="required"):
         read_only_url("")
+
+
+@pytest.mark.asyncio
+async def test_real_exporter_materializes_orm_rows_with_read_only_session(monkeypatch):
+    """Guard against Core Connection.scalars() returning the first ID column."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from sqlalchemy.sql import Select
+
+    from app.database.models import (
+        AgentOutputModel, AuditLogModel, DecisionModel, PaperOrderModel,
+        RiskCheckModel,
+    )
+    from scripts import paper_e1_readonly_report as exporter
+
+    opened = datetime.now(timezone.utc) - timedelta(days=1)
+    order = SimpleNamespace(
+        id="paper-orm-1", decision_id="decision-orm-1",
+        risk_check_id="risk-orm-1", correlation_id="corr-orm-1",
+        exchange="BINANCE", symbol="BTCUSDT", timeframe="15m",
+        strategy="SCALP_15M_V1", side="BUY", status="CLOSED",
+        entry_price=100, position_size=1000, stop_loss=98,
+        take_profit=104, fees_estimated=2, slippage_estimated=1,
+        opened_at=opened, created_at=opened,
+        closed_at=opened + timedelta(hours=1), pnl=-10,
+    )
+    records = {
+        PaperOrderModel: [order], DecisionModel: [],
+        RiskCheckModel: [], AuditLogModel: [], AgentOutputModel: [],
+    }
+    statements = []
+    engine = SimpleNamespace(dispose=AsyncMock())
+
+    class ScalarResult:
+        def __init__(self, values):
+            self.values = values
+
+        def scalars(self):
+            return iter(self.values)
+
+    class FakeORMSession:
+        def __init__(self, bind, *, expire_on_commit):
+            assert bind is engine
+            assert expire_on_commit is False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def execute(self, statement):
+            statements.append(statement)
+            if not isinstance(statement, Select):
+                return ScalarResult([])
+            entity = statement.column_descriptions[0]["entity"]
+            return ScalarResult(records[entity])
+
+    monkeypatch.setattr(exporter, "create_async_engine", lambda *a, **kw: engine)
+    monkeypatch.setattr(exporter, "AsyncSession", FakeORMSession)
+    result = await exporter.export_forensics("postgresql://read-only@db/test")
+
+    assert result["report"]["closed_trades"] == 1
+    assert result["report"]["net_pnl"] == -10
+    assert result["report"]["agent_attribution_verified"] is False
+    assert str(statements[0]) == "SET TRANSACTION READ ONLY"
+    assert str(statements[1]).startswith("SET LOCAL statement_timeout")
+    assert all(isinstance(stmt, Select) for stmt in statements[2:])
+    engine.dispose.assert_awaited_once()
