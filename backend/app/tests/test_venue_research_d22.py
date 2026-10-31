@@ -66,6 +66,8 @@ def candidate_report(fingerprint: str, entry=10, exit=30, *,
         net_return_percent=-0.01, total_costs=1,
         max_drawdown_percent=.01, skipped_stale_entries=0,
         all_in_cost_bps_per_side=12,
+        evaluation_starts_at=tm(0),
+        evaluation_ends_at=tm(60),
     )
 
 
@@ -195,7 +197,10 @@ def test_candidate_research_portfolio_and_paired_comparison():
     assert len(plan.intents)==2
     assert venue.final_state.handled_orders==2
     assert venue.final_state.signed_contracts==0
-    result=compare_candidate_to_baseline(data,[baseline],[new])
+    result=compare_candidate_to_baseline(
+        data,[baseline],[new],
+        evaluation_start_at=tm(0),evaluation_end_at=tm(60),
+    )
     assert result.archive_sha256==data.manifest.dataset_sha256
     assert result.baseline_fills==2
     assert result.candidate_fills==2
@@ -235,3 +240,25 @@ def test_quote_gap_blocks_synthetic_optimistic_execution():
     report=candidate_report("a"*64,entry=500,exit=510)
     with pytest.raises(ValueError,match="stale"):
         run_candidate_portfolio(base,[report])
+
+
+def test_paired_comparison_refuses_different_windows_or_missing_coverage():
+    data=archive()
+    baseline=candidate_report("a"*64,entry=10,exit=30)
+    candidate=candidate_report("b"*64,entry=20,exit=40)
+    with pytest.raises(ValueError,match="common evaluation window"):
+        compare_candidate_to_baseline(
+            data,[baseline],[candidate],
+            evaluation_start_at=tm(0),evaluation_end_at=tm(100),
+        )
+    incompatible=replace(candidate,evaluation_starts_at=tm(25))
+    with pytest.raises(ValueError,match="does not cover"):
+        compare_candidate_to_baseline(
+            data,[baseline],[incompatible],
+            evaluation_start_at=tm(0),evaluation_end_at=tm(60),
+        )
+    with pytest.raises(ValueError,match="Missing signed evaluation window"):
+        compare_candidate_to_baseline(
+            data,[replace(baseline,evaluation_starts_at=None)],[candidate],
+            evaluation_start_at=tm(0),evaluation_end_at=tm(60),
+        )
