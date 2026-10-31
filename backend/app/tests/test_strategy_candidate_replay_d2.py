@@ -70,6 +70,32 @@ def test_when_both_brackets_touch_simulator_chooses_stop():
     assert report.trades[0].net_pnl < 0
 
 
+def test_rule_invalidation_latches_first_receipt_and_exits_next_eligible_open():
+    bars = sample_bars()
+    report = replay_candidate(
+        proposal(invalidation="momentum_positive"), bars
+    )
+    assert report.trades[0].exit_reason == "RULE_INVALIDATED"
+    assert report.trades[0].exit_at == (
+        bars[64].closed_at - timedelta(minutes=15)
+    )
+
+
+def test_stop_gap_outranks_pending_invalidation():
+    bars = sample_bars()
+    original = bars[64]
+    price = original.open - 5
+    bars[64] = original.model_copy(update={
+        "open": price, "high": price + 0.25,
+        "low": price - 0.15, "close": price + 0.1,
+    })
+    report = replay_candidate(
+        proposal(invalidation="momentum_positive"), bars
+    )
+    assert report.trades[0].exit_reason == "STOP_LOSS"
+    assert report.trades[0].exit_price == price
+
+
 def test_unavailable_candle_cannot_be_used_as_signal():
     bars = sample_bars()
     bars[60] = bars[60].model_copy(update={
