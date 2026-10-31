@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 import asyncio
 import hashlib
+import logging
 
 from app.core.errors import SecurityError, AmbiguousExecutionError, ExternalServiceError
 from app.demo.gate_order_plan import build_order_plan
@@ -302,6 +303,13 @@ class GateTestnetExecutionAdapter(GateTestnetPreparationAdapter):
                 self._journal.cache_terminal_entry(cycle, snapshot)
                 return snapshot
             except BaseException as exc:
+                # Never log provider text, payloads, credentials or exception messages.
+                # Preserve the failing stage before emergency close changes it.
+                logging.getLogger('uvicorn.error').warning(
+                    'GATE_CYCLE_FAILED order_id=%s stage=%s error_type=%s http_status=%s provider_label=%s',
+                    cycle, self._journal.read(cycle)['state'], type(exc).__name__,
+                    getattr(exc, 'http_status', None), getattr(exc, 'provider_label', None),
+                )
                 if isinstance(exc, Exception) and self._journal.read(cycle)[
                     "state"
                 ] in {"STOP_REQUIRED", "STOP_SUBMITTING", "STOP_PENDING"}:
@@ -493,6 +501,7 @@ class GateTestnetExecutionAdapter(GateTestnetPreparationAdapter):
                     order_observed_at=order_time,
                     position_observed_at=pos_time,
                     now=self._clock(),
+                    expected_signed_position=row['position'],
                 ):
                     raise ValueError("close not confirmed")
                 await self._transport.cancel_stop(row["stop_id"])

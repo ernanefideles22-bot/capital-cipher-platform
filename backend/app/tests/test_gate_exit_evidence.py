@@ -38,3 +38,32 @@ def test_missing_close_evidence_fails_closed():
     data=sample()
     del data["order"]["is_liq"]
     assert not confirmed_exit(**data)
+
+
+@pytest.mark.parametrize('opened', [3, -3])
+def test_normalized_signed_execution_requires_exact_persisted_position(opened):
+    data=sample()
+    data['order']['size']=str(-opened)
+    assert not confirmed_exit(**data)  # No caller-supplied exposure proof.
+    assert confirmed_exit(**data,expected_signed_position=opened)
+
+
+@pytest.mark.parametrize('expected', [0, True, 'NaN', 'Infinity', '2.5', 2, -3])
+def test_normalized_close_rejects_invalid_or_different_exposure(expected):
+    data=sample()
+    data['order']['size']='-3'
+    assert not confirmed_exit(**data,expected_signed_position=expected)
+
+
+@pytest.mark.parametrize('section,key,value', [
+    ('order','text','t-unowned'),('order','id','999'),('order','is_close',False),
+    ('order','is_reduce_only',False),('order','is_liq',True),('order','left',1),
+    ('order','contract','ETH_USDT'),('position','size',1),
+    ('inventory','orders',1),('inventory','conditional_orders',1),
+    ('inventory','positions',1),
+])
+def test_normalized_close_retains_identity_flatness_and_inventory_guards(section,key,value):
+    data=sample()
+    data['order']['size']='-3'
+    data[section][key]=value
+    assert not confirmed_exit(**data,expected_signed_position=3)

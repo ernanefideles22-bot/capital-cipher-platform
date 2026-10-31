@@ -314,6 +314,7 @@ class GateDemoRelease:
             inventory_started_at=payload["inventory_started_at"],
             inventory_finished_at=payload["inventory_finished_at"],
             now=self.clock(),
+            expected_signed_position=protected['position']['size'],
         ):
             raise SecurityError(
                 "Gate canary owned reduce-only exit or flat inventory not proven"

@@ -19,6 +19,13 @@ _ORDER='/api/v4/futures/usdt/orders'
 _STOP='/api/v4/futures/usdt/price_orders'
 _ACK='GATE_TESTNET_VIRTUAL_FUNDS_ONLY'
 _CONTRACTS={'BTC_USDT','ETH_USDT','SOL_USDT'}
+_ERROR_LABELS=frozenset({
+    'INVALID_PARAM_VALUE','INVALID_REQUEST_BODY','INVALID_PARAM','INVALID_ARGUMENT',
+    'POSITION_NOT_FOUND','POSITION_EMPTY','NO_MATCHED_POSITION','ORDER_NOT_FOUND',
+    'INVALID_ORDER_TYPE','INVALID_ORDER_PRICE','INVALID_ORDER_SIZE','CONTRACT_NOT_FOUND',
+    'BALANCE_NOT_ENOUGH','MARGIN_TOO_LESS','UNAUTHORIZED','FORBIDDEN','INVALID_KEY',
+    'INVALID_SIGNATURE','TOO_MANY_REQUESTS','SERVER_ERROR','INTERNAL',
+})
 
 
 class GateReadError(Exception):
@@ -27,6 +34,11 @@ class GateReadError(Exception):
 
 class GateWriteUnknown(Exception):
     """A write may have reached the exchange; reconcile before any action."""
+
+    def __init__(self, message='write outcome unknown; reconcile without retry', *, http_status=None, provider_label=None):
+        super().__init__('write outcome unknown; reconcile without retry')
+        self.http_status = http_status if type(http_status) is int and 100 <= http_status <= 599 else None
+        self.provider_label = provider_label if isinstance(provider_label,str) and provider_label in _ERROR_LABELS else None
 
 
 class GateWriteDisabled(Exception):
@@ -82,9 +94,20 @@ class GateTestnetTransport:
         digest=hashlib.sha512(payload).hexdigest()
         signature=hmac.new(self._credentials.secret.encode(),f'{method}\n{path}\n{query_text}\n{digest}\n{timestamp}'.encode(),hashlib.sha512).hexdigest()
         headers={'KEY':self._credentials.key,'Timestamp':timestamp,'SIGN':signature,'Accept':'application/json','Content-Type':'application/json'}
+        result=None
+        provider_label=None
         try:
             result=await self._client.request(method,_HOST+path+('?' + query_text if query_text else ''),content=payload,headers=headers)
             if result.status_code not in ({200,201} if write else {200}):
+                # Preserve only a finite public error enum, never provider messages.
+                if write and len(result.content)<=2_000_000:
+                    try:
+                        error=result.json()
+                        label=error.get('label') if isinstance(error,dict) else None
+                        if isinstance(label,str) and label in _ERROR_LABELS:
+                            provider_label=label
+                    except (ValueError,TypeError):
+                        pass
                 raise ValueError('unexpected provider status')
             if len(result.content) > 2_000_000:
                 raise ValueError('oversized provider response')
@@ -99,7 +122,8 @@ class GateTestnetTransport:
             return data
         except (httpx.HTTPError,ValueError,TypeError):
             if write:
-                raise GateWriteUnknown('write outcome unknown; reconcile without retry') from None
+                raise GateWriteUnknown(http_status=result.status_code if result is not None else None,
+                                       provider_label=provider_label) from None
             raise GateReadError('exchange read unavailable') from None
 
     async def place_entry(self, *, contract, signed_contracts, client_id):

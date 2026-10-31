@@ -182,12 +182,14 @@ class Venue:
         self.writes.append("close")
         if self.failure == "close":
             raise TimeoutError("SENSITIVE PROVIDER MESSAGE")
+        closed_size = self.size
         self.size = 0
         self.orders["33"] = dict(
             id="33",
             contract=kwargs["contract"],
             text=kwargs["client_id"],
-            size=0,
+            # Observed Gate response normalizes a close-all request to fills.
+            size=-closed_size,
             left=0,
             status="finished",
             finish_as="filled",
