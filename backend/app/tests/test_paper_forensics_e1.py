@@ -285,7 +285,7 @@ async def test_real_exporter_materializes_orm_rows_with_read_only_session(monkey
     engine.dispose.assert_awaited_once()
 
 
-def test_railway_e1_executor_refuses_nonpaper_and_wrong_db(monkeypatch):
+def test_railway_e1_executor_refuses_nonpaper_and_wrong_db(monkeypatch, capsys):
     from scripts.run_paper_e1_railway_audit import verify_environment
 
     good = {
@@ -306,6 +306,16 @@ def test_railway_e1_executor_refuses_nonpaper_and_wrong_db(monkeypatch):
     with pytest.raises(RuntimeError, match="E1_DATABASE_HOST_MISMATCH"):
         verify_environment({**good, "DATABASE_URL":
             "postgresql://reporter:dummy@other.railway.internal:5432/realpaper"})
+    sanitized = capsys.readouterr().out
+    assert "E1_HOST_CONTRACT " in sanitized
+    assert "other.railway.internal" in sanitized
+    assert "pg.railway.internal" in sanitized
+    assert "reporter" not in sanitized
+    assert "dummy" not in sanitized
+    with pytest.raises(RuntimeError, match="E1_DATABASE_HOST_MISMATCH"):
+        verify_environment({**good, "DATABASE_URL":
+            "postgresql://sensitive-user:sensitive-pass@external.example.com:5432/test"})
+    assert "external.example.com" not in capsys.readouterr().out
     with pytest.raises(RuntimeError, match="E1_DATABASE_URL_IS_PROBE"):
         verify_environment({**good, "CC_PROBE_DATABASE_URL": good["DATABASE_URL"]})
     with pytest.raises(RuntimeError, match="E1_WRONG_RAILWAY_ENVIRONMENT"):
