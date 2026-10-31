@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import desc, or_, select, text
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.database.models import (
     AgentOutputModel, AuditLogModel, DecisionModel, PaperOrderModel,
@@ -63,11 +63,14 @@ async def export_forensics(
         pool_pre_ping=True, connect_args={"timeout": 10},
     )
     try:
-        async with engine.connect() as conn:
-            # The first statement of this database transaction MUST be
-            # READ ONLY; queries and SET LOCAL below cannot write.
-            await conn.execute(text("SET TRANSACTION READ ONLY"))
-            await conn.execute(text("SET LOCAL statement_timeout = '20000ms'"))
+        async with AsyncSession(engine, expire_on_commit=False) as session:
+            # AsyncSession materializes mapped ORM models from SELECT(Model).
+            # AsyncConnection.execute() instead returns Core rows: .scalars()
+            # would yield the first column (typically a string ID), not a model.
+            # The first SQL statement in this session's transaction MUST be
+            # READ ONLY. Session close rolls back; nothing is committed.
+            await session.execute(text("SET TRANSACTION READ ONLY"))
+            await session.execute(text("SET LOCAL statement_timeout = '20000ms'"))
             query = select(PaperOrderModel).where(
                 or_(
                     (PaperOrderModel.status == "CLOSED")
@@ -76,7 +79,7 @@ async def export_forensics(
                     & (PaperOrderModel.opened_at >= cutoff),
                 )
             ).order_by(desc(PaperOrderModel.created_at)).limit(order_limit + 1)
-            orders = list((await conn.execute(query)).scalars())
+            orders = list((await session.execute(query)).scalars())
             truncated = len(orders) > order_limit
             orders = orders[:order_limit]
             if not orders:
@@ -95,16 +98,16 @@ async def export_forensics(
             corrs = {x.correlation_id for x in orders}
             order_ids = {x.id for x in orders}
             decisions = {
-                x.id: x for x in (await conn.execute(
+                x.id: x for x in (await session.execute(
                     select(DecisionModel).where(DecisionModel.id.in_(decisions_ids))
                 )).scalars()
             }
             risks = {
-                x.id: x for x in (await conn.execute(
+                x.id: x for x in (await session.execute(
                     select(RiskCheckModel).where(RiskCheckModel.id.in_(risk_ids))
                 )).scalars()
             }
-            audits = list((await conn.execute(
+            audits = list((await session.execute(
                 select(AuditLogModel).where(
                     AuditLogModel.entity_type == "paper_order",
                     AuditLogModel.audit_type == "PAPER_ORDER_CLOSED",
@@ -114,7 +117,7 @@ async def export_forensics(
             audit_by_order = {}
             for a in audits:
                 audit_by_order.setdefault(a.entity_id, a)
-            agents = list((await conn.execute(
+            agents = list((await session.execute(
                 select(AgentOutputModel).where(
                     AgentOutputModel.correlation_id.in_(corrs),
                     AgentOutputModel.created_at >= cutoff - timedelta(days=8),
