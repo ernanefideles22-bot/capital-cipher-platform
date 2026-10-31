@@ -364,7 +364,7 @@ def test_railway_e1_executor_logs_no_database_credentials(monkeypatch, capsys):
                 "missing_audit_closures": 0, "missing_decision_traces": 0,
                 "missing_risk_traces": 0, "flags_count": {},
                 "by_strategy": [], "by_symbol": [], "by_timeframe": [],
-                "by_exit_reason": [],
+                "by_exit_reason": [], "by_side": [],
             },
             "order_sample_truncated": False,
             "agents_sample_truncated": False,
