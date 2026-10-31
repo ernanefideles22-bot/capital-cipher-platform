@@ -216,7 +216,7 @@ async def test_real_exporter_materializes_orm_rows_with_read_only_session(monkey
         strategy="SCALP_15M_V1", side="BUY", status="CLOSED",
         entry_price=100, position_size=1000, stop_loss=98,
         take_profit=104, fees_estimated=2, slippage_estimated=1,
-        opened_at=opened, created_at=opened,
+        opened_at=opened, created_at=opened + timedelta(seconds=10),
         closed_at=opened + timedelta(hours=1), pnl=-10,
     )
     valid_audit = SimpleNamespace(
@@ -229,10 +229,15 @@ async def test_real_exporter_materializes_orm_rows_with_read_only_session(monkey
         created_at=order.closed_at + timedelta(seconds=2),
         payload={"exit_reason": "TAKE_PROFIT", "exit_price": 105},
     )
+    directional_agent = SimpleNamespace(
+        correlation_id=order.correlation_id,
+        created_at=opened + timedelta(seconds=5),
+        agent_name="Agent-A", signal="BUY", confidence=70,
+    )
     records = {
         PaperOrderModel: [order], DecisionModel: [],
         RiskCheckModel: [], AuditLogModel: [newer_unrelated_audit, valid_audit],
-        AgentOutputModel: [],
+        AgentOutputModel: [directional_agent],
     }
     statements = []
     engine = SimpleNamespace(dispose=AsyncMock())
@@ -281,6 +286,12 @@ async def test_real_exporter_materializes_orm_rows_with_read_only_session(monkey
     assert result["report"]["net_pnl"] == -10
     assert result["report"]["missing_audit_closures"] == 0
     assert result["report"]["by_exit_reason"][0]["key"] == "STOP_LOSS"
+    assert result["report"]["trades"][0]["agent_agreement"] == (
+        "AGENTS_ALIGNED_WITH_ENTRY"
+    )
+    assert result["evidence_integrity"]["market_clock_vs_processing_clock"][
+        "orders_with_market_timestamp_before_creation"
+    ] == 1
     assert result["archive_reconciliation"] == "NOT_PERFORMED"
     assert result["agent_history_coverage"] == "UNVERIFIED_MAY_BE_PRUNED"
     assert result["evidence_integrity"]["decision_link_status"] == {
@@ -412,3 +423,19 @@ def test_railway_e1_module_startup_subprocess():
     assert result.returncode == 2, result.stderr
     assert result.stdout.strip() == "E1_AUDIT_BLOCKED E1_NOT_STAGING"
     assert "ModuleNotFoundError" not in result.stderr
+
+
+def test_agent_observation_uses_processing_clock_when_candle_closed_earlier():
+    obs = AgentObservation(
+        "Agent-A", "BUY", BASE + timedelta(seconds=5), confidence=70,
+    )
+    before_actual_order = replace(
+        trace("candle-then-process", pnl=-5),
+        order_created_at=BASE + timedelta(seconds=10),
+        agents=(obs,),
+    )
+    report = analyze_paper_trades([before_actual_order])
+    assert report.trades[0].agent_agreement == "AGENTS_ALIGNED_WITH_ENTRY"
+    assert not report.agent_attribution_verified
+    with pytest.raises(ValueError, match="Post-creation"):
+        replace(before_actual_order, order_created_at=BASE + timedelta(seconds=4))
