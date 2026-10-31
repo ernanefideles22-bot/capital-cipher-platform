@@ -257,8 +257,12 @@ async def test_real_exporter_materializes_orm_rows_with_read_only_session(monkey
 
         async def scalar(self, statement):
             statements.append(statement)
-            assert str(statement) == "SHOW transaction_read_only"
-            return "on"
+            if str(statement) == "SHOW transaction_read_only":
+                return "on"
+            # Mock the global SELECT(id) visibility probes; a hidden row
+            # is indistinguishable here from a missing historical record.
+            assert isinstance(statement, Select)
+            return None
 
         async def execute(self, statement):
             statements.append(statement)
@@ -277,6 +281,12 @@ async def test_real_exporter_materializes_orm_rows_with_read_only_session(monkey
     assert result["report"]["by_exit_reason"][0]["key"] == "STOP_LOSS"
     assert result["archive_reconciliation"] == "NOT_PERFORMED"
     assert result["agent_history_coverage"] == "UNVERIFIED_MAY_BE_PRUNED"
+    assert result["evidence_integrity"]["decision_link_status"] == {
+        "NOT_VISIBLE_BY_ID": 1,
+    }
+    assert result["evidence_integrity"]["risk_link_status"] == {
+        "NOT_VISIBLE_BY_ID": 1,
+    }
     assert result["report"]["agent_attribution_verified"] is False
     assert str(statements[0]) == "SET TRANSACTION READ ONLY"
     assert str(statements[1]) == "SHOW transaction_read_only"
@@ -355,6 +365,11 @@ def test_railway_e1_executor_logs_no_database_credentials(monkeypatch, capsys):
             "agents_sample_truncated": False,
             "archive_reconciliation": "NOT_PERFORMED",
             "agent_history_coverage": "UNVERIFIED_MAY_BE_PRUNED",
+            "evidence_integrity": {
+                "decision_link_status": {"NOT_VISIBLE_BY_ID": 1},
+                "risk_link_status": {"NOT_VISIBLE_BY_ID": 1},
+                "stop_execution": {"recorded_stop_closures": 1},
+            },
         }
 
     monkeypatch.setattr(runner, "audit_once", fake_audit)
