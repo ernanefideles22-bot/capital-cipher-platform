@@ -259,6 +259,8 @@ async def test_real_exporter_materializes_orm_rows_with_read_only_session(monkey
             statements.append(statement)
             if str(statement) == "SHOW transaction_read_only":
                 return "on"
+            if str(statement) == "SHOW transaction_isolation":
+                return "repeatable read"
             # Mock the global SELECT(id) visibility probes; a hidden row
             # is indistinguishable here from a missing historical record.
             assert isinstance(statement, Select)
@@ -288,10 +290,13 @@ async def test_real_exporter_materializes_orm_rows_with_read_only_session(monkey
         "NOT_VISIBLE_BY_ID": 1,
     }
     assert result["report"]["agent_attribution_verified"] is False
-    assert str(statements[0]) == "SET TRANSACTION READ ONLY"
+    assert str(statements[0]) == (
+        "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"
+    )
     assert str(statements[1]) == "SHOW transaction_read_only"
-    assert str(statements[2]).startswith("SET LOCAL statement_timeout")
-    assert all(isinstance(stmt, Select) for stmt in statements[3:])
+    assert str(statements[2]) == "SHOW transaction_isolation"
+    assert str(statements[3]).startswith("SET LOCAL statement_timeout")
+    assert all(isinstance(stmt, Select) for stmt in statements[4:])
     engine.dispose.assert_awaited_once()
 
 
