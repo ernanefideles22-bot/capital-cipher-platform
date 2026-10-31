@@ -46,6 +46,7 @@ async def test_exact_testnet_signatures_entry_stop_close_and_lookup():
     stop=json.loads(calls[1].content)
     assert stop['initial']['size']==0 and stop['initial']['close'] is True and stop['initial']['reduce_only'] is True
     assert stop['order_type']=='close-long-position' and stop['trigger']['rule']==2
+    assert stop['trigger']['expiration']==86400  # exact authenticated HTTP payload
     assert stop['pos_margin_mode']=='isolated' and stop['initial']['text']=='api'
     exit_body=json.loads(calls[2].content)
     assert exit_body['size']==0 and exit_body['close'] is True and exit_body['reduce_only'] is True
@@ -127,6 +128,7 @@ async def test_read_failure_is_sanitized():
     ('POSITION_NOT_FOUND','POSITION_NOT_FOUND'),
     ('INVALID_PARAM_VALUE','INVALID_PARAM_VALUE'),
     ('NEW_PROVIDER_PARAMETER_CODE','NEW_PROVIDER_PARAMETER_CODE'),
+    ('AUTO_INVALID_PARAM_TRIGGER_EXPIRATION','AUTO_INVALID_PARAM_TRIGGER_EXPIRATION'),
     ('BAD\nCODE',None),('X'*65,None),
     ('dummy-secret',None),(['INVALID_PARAM_VALUE'],None),
 ])
@@ -144,6 +146,28 @@ async def test_stop_failure_keeps_only_public_diagnostics_without_retry(label,ex
     assert len(calls)==1
     assert 'dummy-secret' not in str(caught.value) and 'dummy-key' not in str(caught.value)
     assert 'dummy-secret' not in repr(vars(caught.value))
+    await c.close()
+
+
+@pytest.mark.asyncio
+async def test_gate_actual_expiration_rejection_is_bounded_and_never_retried():
+    calls=[]
+    def handler(request):
+        calls.append(request)
+        assert json.loads(request.content)['trigger']['expiration']==86400
+        return httpx.Response(400,json={
+            'label':'AUTO_INVALID_PARAM_TRIGGER_EXPIRATION',
+            'message':'Invalid trigger.expiration parameter'
+        })
+    c=client(handler,enabled=True,ack='GATE_TESTNET_VIRTUAL_FUNDS_ONLY')
+    with pytest.raises(GateWriteUnknown) as caught:
+        await c.place_stop(contract='BTC_USDT',signed_position=3,
+                           reference_price='77340',stop_price='76995.6',tick_size='0.1')
+    assert caught.value.http_status==400
+    assert caught.value.provider_label=='AUTO_INVALID_PARAM_TRIGGER_EXPIRATION'
+    assert caught.value.provider_fields==('trigger','expiration')
+    assert caught.value.response_kind=='json_object'
+    assert len(calls)==1  # do not retry a potentially ambiguous exchange write
     await c.close()
 
 
