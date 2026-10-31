@@ -19,7 +19,7 @@ def _decision_status(order, decision) -> str:
         return "SYMBOL_MISMATCH"
     if decision.timeframe != order.timeframe:
         return "TIMEFRAME_MISMATCH"
-    if decision.created_at > (order.opened_at or order.created_at):
+    if decision.created_at > order.created_at:
         return "CREATED_AFTER_ENTRY"
     return "VERIFIED"
 
@@ -31,7 +31,7 @@ def _risk_status(order, risk) -> str:
         return "DECISION_ID_MISMATCH"
     if risk.correlation_id != order.correlation_id:
         return "CORRELATION_MISMATCH"
-    if risk.created_at > (order.opened_at or order.created_at):
+    if risk.created_at > order.created_at:
         return "CREATED_AFTER_ENTRY"
     if not risk.approved:
         return "REJECTED_OR_UNAPPROVED"
@@ -52,7 +52,12 @@ def inspect_evidence(
     risk_counts: Counter[str] = Counter()
     worst_stops = []
     stop_counts: Counter[str] = Counter()
+    market_clock_lags: list[float] = []
     for order in orders:
+        if order.opened_at is not None:
+            lag = (order.created_at - order.opened_at).total_seconds()
+            if isfinite(lag):
+                market_clock_lags.append(lag)
         decision_counts[_decision_status(order, decisions.get(order.decision_id))] += 1
         risk_counts[_risk_status(order, risks.get(order.risk_check_id))] += 1
         if order.status != "CLOSED" or order.pnl is None:
@@ -111,6 +116,20 @@ def inspect_evidence(
         "closed_and_open_orders_examined": len(orders),
         "decision_link_status": dict(sorted(decision_counts.items())),
         "risk_link_status": dict(sorted(risk_counts.items())),
+        "market_clock_vs_processing_clock": {
+            "orders_with_two_timestamps": len(market_clock_lags),
+            "orders_with_market_timestamp_before_creation":
+                sum(x > 0.001 for x in market_clock_lags),
+            "max_market_to_order_creation_lag_seconds":
+                round(max(market_clock_lags), 6) if market_clock_lags else None,
+            "min_market_to_order_creation_lag_seconds":
+                round(min(market_clock_lags), 6) if market_clock_lags else None,
+            "interpretation": (
+                "opened_at is market candle closed_at, not persisted execution "
+                "creation time. A positive lag does not prove the historical "
+                "candle close was an executable fill when the order was created."
+            ),
+        },
         "decision_table_has_visible_rows": any_decision_visible,
         "risk_table_has_visible_rows": any_risk_visible,
         "table_visibility_meaning": (
