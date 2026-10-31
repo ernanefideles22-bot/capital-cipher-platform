@@ -69,6 +69,9 @@ class PaperTrace:
     audit_close_present: bool = False
     agents: tuple[AgentObservation, ...] = ()
     exchange: str = "UNKNOWN"
+    # Processing clock for evidence sequencing. opened_at is market candle
+    # time and may predate a decision produced after the candle closed.
+    order_created_at: datetime | None = None
 
     def __post_init__(self):
         if not all((self.order_id, self.decision_id, self.risk_check_id,
@@ -81,6 +84,7 @@ class PaperTrace:
         if self.status not in {"CLOSED", "FILLED"}:
             raise ValueError("E1 only supports closed and open filled PAPER")
         opened = _utc(self.opened_at)
+        processing = _utc(self.order_created_at) or opened
         closed = _utc(self.closed_at)
         if closed is not None and closed < opened:
             raise ValueError("Close precedes open")
@@ -103,8 +107,8 @@ class PaperTrace:
         if self.decision_confidence is not None and not 0 <= self.decision_confidence <= 100:
             raise ValueError("Invalid decision confidence")
         for o in self.agents:
-            if _utc(o.observed_at) > opened:
-                raise ValueError("Post-entry agent outputs cannot explain an entry")
+            if _utc(o.observed_at) > processing:
+                raise ValueError("Post-creation agent output cannot explain an entry")
 
 
 @dataclass(frozen=True)
