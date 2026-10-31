@@ -15,7 +15,7 @@ import logging
 from app.core.errors import SecurityError, AmbiguousExecutionError, ExternalServiceError
 from app.demo.gate_order_plan import build_order_plan
 from app.demo.gate_position_config import interpret_position_config
-from app.demo.gate_stop_validation import stop_matches
+from app.demo.gate_stop_validation import stop_matches, stop_configuration_matches
 from app.demo.gate_exit_evidence import confirmed_close_order
 from app.execution.adapters.gate_testnet_preparation import (
     GateTestnetPreparationAdapter,
@@ -134,6 +134,14 @@ class GateTestnetExecutionAdapter(GateTestnetPreparationAdapter):
             )
         ):
             raise SecurityError("current market price exceeds approved entry bounds")
+        # The Gate trigger endpoint rejects rule=2 unless trigger.price is
+        # below the venue's *last traded* price (rule=1 requires above),
+        # regardless of price_type=1 (mark-price trigger evaluation).
+        # Never trade when the upstream quote is unavailable or too close.
+        tick = number(metadata["order_price_round"])
+        last = number(metadata.get("last_price"))
+        if not (stop < last - tick if order.side == OrderSide.BUY else stop > last + tick):
+            raise SecurityError("Gate stop cannot satisfy venue last-price rule before entry")
         plan = build_order_plan(
             contract=qty["contract"],
             signed_contracts=qty["signed_contracts"],
@@ -264,6 +272,21 @@ class GateTestnetExecutionAdapter(GateTestnetPreparationAdapter):
                     order.requested_notional
                 ):
                     raise ValueError("fill crossed approved price or notional bounds")
+                # Refresh the venue's last traded price immediately before
+                # sending any price-triggered stop. A mark/last divergence or
+                # adverse move during entry can invalidate the stop price even
+                # when it was valid against the pre-entry mark price.
+                latest, last_observed = await self._metadata_provider(order.symbol)
+                last_trade = number(latest.get("last_price"))
+                last_tick = number(latest["order_price_round"])
+                if (
+                    latest.get("name") != contract
+                    or last_tick != number(metadata["order_price_round"])
+                    or not 0 <= number(self._clock()) - number(last_observed) <= 10
+                    or not (stop_price < last_trade - last_tick if filled > 0
+                            else stop_price > last_trade + last_tick)
+                ):
+                    raise ValueError("Gate stop no longer valid against latest traded price")
                 self._journal.record_stop_intent(cycle)
                 stop = await self._transport.place_stop(
                     contract=contract,
@@ -505,7 +528,42 @@ class GateTestnetExecutionAdapter(GateTestnetPreparationAdapter):
                     expected_signed_position=row['position'],
                 ):
                     raise ValueError("close not confirmed")
-                await self._transport.cancel_stop(row["stop_id"])
+                # Gate can automatically cancel a position-bound stop when
+                # an owned reduce-only close fills. Do NOT issue a second
+                # cancel against a terminal stop: that 4xx/unknown response
+                # previously stranded a flat canary in EXIT_PENDING/HALTED.
+                # Authenticate the exact originally verified stop before
+                # trusting its terminal status. No cancellation is retried.
+                after_close = await self._transport.get_stop(row["stop_id"])
+                if not stop_configuration_matches(
+                    after_close,
+                    order_id=row["stop_id"],
+                    contract=row["contract"],
+                    position_size=row["position"],
+                    trigger_price=row["target"],
+                ):
+                    raise ValueError("Gate closed stop identity/configuration mismatch")
+                if after_close.get("status") == "open":
+                    await self._transport.cancel_stop(row["stop_id"])
+                    after_close = await self._transport.get_stop(row["stop_id"])
+                    if not stop_configuration_matches(
+                        after_close,
+                        order_id=row["stop_id"],
+                        contract=row["contract"],
+                        position_size=row["position"],
+                        trigger_price=row["target"],
+                    ):
+                        raise ValueError("Gate stop cancellation identity mismatch")
+                    allowed_endings = {"cancelled", "auto_cancelled"}
+                else:
+                    # An automatically cancelled stop after the owned close
+                    # requires no further exchange write.
+                    allowed_endings = {"auto_cancelled"}
+                if (
+                    after_close.get("status") != "finished"
+                    or after_close.get("finish_as") not in allowed_endings
+                ):
+                    raise ValueError("Gate stop not confirmed terminal after close")
                 counts, started, finished, *_ = await self._inventory()
                 # Refresh after cancellation so the complete evidence fits the freshness window.
                 venue = await self._transport.get_order(ack["id"])

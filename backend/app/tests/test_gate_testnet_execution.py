@@ -47,6 +47,7 @@ async def metadata(symbol):
             in_delisting=False,
             order_price_round=".1",
             mark_price="80000",
+            last_price="80000",
         ),
         1000,
     )
@@ -72,6 +73,7 @@ class Venue:
         self.failure = None
         self.foreign = False
         self.leverage = "1"
+        self.auto_cancel_stop_on_close = False
         self.after_close_hook = lambda row: row
         self.read_entry_hook = lambda row: row
 
@@ -93,7 +95,7 @@ class Venue:
         if kind == "orders":
             return []
         if kind == "stops":
-            return [deepcopy(self.stop)] if self.stop else []
+            return [deepcopy(self.stop)] if self.stop and self.stop['status'] == 'open' else []
         if kind == "fills":
             return []
         raise AssertionError(kind)
@@ -162,7 +164,7 @@ class Venue:
                 strategy_type=0,
                 price_type=1,
                 rule=2 if qty > 0 else 1,
-                expiration=3600,
+                expiration=86400,  # Gate documented finite TTL; match actual wire plan
             ),
         )
         return {"id": "22"}
@@ -184,6 +186,9 @@ class Venue:
             raise TimeoutError("SENSITIVE PROVIDER MESSAGE")
         closed_size = self.size
         self.size = 0
+        if self.auto_cancel_stop_on_close and self.stop is not None:
+            self.stop['status'] = 'finished'
+            self.stop['finish_as'] = 'auto_cancelled'
         self.orders["33"] = dict(
             id="33",
             contract=kwargs["contract"],
@@ -205,7 +210,8 @@ class Venue:
         self.writes.append("cancel_stop")
         if self.failure == "cancel_stop":
             raise TimeoutError()
-        self.stop = None
+        self.stop['status'] = 'finished'
+        self.stop['finish_as'] = 'cancelled'
         return {"id": "22"}
 
     async def close(self):
@@ -252,6 +258,59 @@ async def test_complete_owned_cycle_and_independent_reconciliation(setup):
     assert result["state"] == "CLOSED"
     assert journal.recovery_status()["recovery_required"] is False
     assert venue.writes == ["entry", "stop", "close", "cancel_stop"]
+
+
+@pytest.mark.asyncio
+async def test_gate_automatically_cancels_stop_after_owned_reduce_only_close(setup):
+    adapter, venue, journal = setup
+    venue.auto_cancel_stop_on_close = True
+    await adapter.submit_order(order())
+    result = await adapter.close_protected_order(order())
+    assert result["state"] == "CLOSED"
+    assert journal.read("order-0001")["state"] == "CLOSED"
+    assert venue.size == 0
+    assert venue.stop["status"] == "finished"
+    assert venue.stop["finish_as"] == "auto_cancelled"
+    assert venue.writes == ["entry", "stop", "close"]  # no redundant cancel
+
+
+@pytest.mark.asyncio
+async def test_unexpected_terminal_stop_after_close_halts_without_retry(setup):
+    adapter, venue, journal = setup
+    await adapter.submit_order(order())
+
+    async def unusual_close(**kwargs):
+        out = await original_close(**kwargs)
+        venue.stop["status"] = "finished"
+        venue.stop["finish_as"] = "succeeded"  # could indicate stop executed concurrently
+        return out
+
+    original_close = venue.close_position
+    venue.close_position = unusual_close
+    with pytest.raises(AmbiguousExecutionError):
+        await adapter.close_protected_order(order())
+    assert journal.read("order-0001")["state"] == "HALTED"
+    assert venue.writes == ["entry", "stop", "close"]  # no further writes
+
+
+@pytest.mark.asyncio
+async def test_tampered_auto_cancelled_stop_does_not_release_journal_slot(setup):
+    adapter, venue, journal = setup
+    await adapter.submit_order(order())
+    venue.auto_cancel_stop_on_close = True
+    original_get_stop = venue.get_stop
+
+    async def tampered(oid):
+        data = await original_get_stop(oid)
+        if data["status"] == "finished":
+            data["trigger"]["price"] = "1"
+        return data
+
+    venue.get_stop = tampered
+    with pytest.raises(AmbiguousExecutionError):
+        await adapter.close_protected_order(order())
+    assert journal.read("order-0001")["state"] == "HALTED"
+    assert venue.writes == ["entry", "stop", "close"]
 
 
 @pytest.mark.asyncio
@@ -494,7 +553,7 @@ async def test_stop_rejection_logs_bounded_diagnostics_before_one_emergency_clos
         assert journal.read('order-0001')['state']=='STOP_SUBMITTING'
         venue.writes.append('stop')
         raise GateWriteUnknown('SENSITIVE PROVIDER MESSAGE',http_status=400,
-            provider_label='NEW_STOP_CODE',provider_fields=('trigger','price'),
+            provider_label='AUTO_INVALID_PARAM_TRIGGER_EXPIRATION',provider_fields=('trigger','expiration'),
             response_kind='json_object')
 
     venue.place_stop=reject_stop
@@ -503,8 +562,8 @@ async def test_stop_rejection_logs_bounded_diagnostics_before_one_emergency_clos
     assert venue.writes==['entry','stop','close'] and venue.size==0
     assert journal.read('order-0001')['state']=='HALTED'
     assert 'stage=STOP_SUBMITTING' in caplog.text and 'http_status=400' in caplog.text
-    assert 'provider_label=NEW_STOP_CODE' in caplog.text
-    assert "provider_fields=('trigger', 'price')" in caplog.text
+    assert 'provider_label=AUTO_INVALID_PARAM_TRIGGER_EXPIRATION' in caplog.text
+    assert "provider_fields=('trigger', 'expiration')" in caplog.text
     assert 'response_kind=json_object' in caplog.text
     assert 'SENSITIVE PROVIDER MESSAGE' not in caplog.text
 
@@ -623,6 +682,48 @@ async def test_current_price_above_approval_bound_is_rejected_before_dispatch(se
     with pytest.raises(SecurityError):
         await adapter.submit_order(order())
     assert not venue.writes
+
+
+
+@pytest.mark.asyncio
+async def test_last_trade_price_below_stop_blocks_before_entry(setup):
+    adapter, venue, journal = setup
+
+    async def incompatible(symbol):
+        data, observed = await metadata(symbol)
+        data["last_price"] = "78999"
+        return data, observed
+
+    adapter._metadata_provider = incompatible
+    with pytest.raises(SecurityError, match="last-price rule"):
+        await adapter.submit_order(order())
+    assert venue.writes == []
+    assert journal.recovery_status()["recovery_required"] is False
+
+
+@pytest.mark.asyncio
+async def test_price_cross_after_fill_emergency_exits_without_sending_invalid_stop(setup):
+    adapter, venue, journal = setup
+    current_last = {"value": "80000"}
+    entry = venue.place_entry
+
+    async def changing_last_price(symbol):
+        data, observed = await metadata(symbol)
+        data["last_price"] = current_last["value"]
+        return data, observed
+
+    async def move_after_entry(**kwargs):
+        result = await entry(**kwargs)
+        current_last["value"] = "78900"
+        return result
+
+    adapter._metadata_provider = changing_last_price
+    venue.place_entry = move_after_entry
+    with pytest.raises(AmbiguousExecutionError):
+        await adapter.submit_order(order())
+    assert venue.writes == ["entry", "close"]
+    assert venue.size == 0
+    assert journal.read("order-0001")["state"] == "HALTED"
 
 
 @pytest.mark.asyncio

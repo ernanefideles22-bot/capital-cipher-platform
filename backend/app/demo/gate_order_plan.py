@@ -24,7 +24,7 @@ def _number(value):
 
 
 def build_order_plan(*, contract, signed_contracts, mark_price, stop_price,
-                     tick_size, client_id, expiration_seconds=3600):
+                     tick_size, client_id, expiration_seconds=86400):
     """Build market entry, conditional stop and reduce-only exit payloads.
 
     Prices and quantities are not rounded. `signed_contracts` is the number of
@@ -41,14 +41,23 @@ def build_order_plan(*, contract, signed_contracts, mark_price, stop_price,
         raise InvalidGatePlan('invalid price or tick')
     if not (stop < mark if qty > 0 else stop > mark):
         raise InvalidGatePlan('stop is not adverse to position')
-    if type(expiration_seconds) is not int or not 300 <= expiration_seconds <= 86400:
-        raise InvalidGatePlan('invalid stop expiration')
+    # Gate Futures API v4 documents 86400 as its price-trigger expiration
+    # example. The Testnet rejected our prior 3600-second value with
+    # AUTO_INVALID_PARAM_TRIGGER_EXPIRATION. Until a venue-accepted canary
+    # proves another interval, fail closed for every other duration.
+    if type(expiration_seconds) is not int or expiration_seconds != 86400:
+        raise InvalidGatePlan('unsupported Gate Testnet stop expiration')
     amount=int(qty)
+    # Decimals inherited from ATR calculations may carry excessive trailing
+    # precision (e.g. 77280.8000000000000000). Gate validates trigger.price
+    # against the contract tick, so serialize exactly at tick precision.
+    # Quantization changes only the string representation, never the price.
+    stop_wire = format(stop.quantize(tick).normalize(), 'f')
     return {
         'environment':'GATE_TESTNET', 'execution_enabled':False, 'mode':'ONE_WAY_ISOLATED',
         'entry': {'contract':contract, 'size':amount, 'price':'0', 'tif':'ioc', 'text':client_id},
         'stop': {'initial':{'contract':contract, 'size':0, 'close':True, 'price':'0', 'tif':'ioc', 'reduce_only':True, 'text':'api'},
-                 'trigger':{'strategy_type':0, 'price_type':1, 'price':format(stop,'f'),
+                 'trigger':{'strategy_type':0, 'price_type':1, 'price':stop_wire,
                             'rule':2 if amount > 0 else 1, 'expiration':expiration_seconds},
                  'order_type':'close-long-position' if amount > 0 else 'close-short-position',
                  'pos_margin_mode':'isolated'},
