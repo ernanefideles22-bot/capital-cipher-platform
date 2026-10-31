@@ -19,4 +19,4 @@ ENV SYSTEM_MODE=PAPER \
 
 # Runtime command is explicitly configured on the isolated db-audit service.
 # Never start the backend API or change the principal staging service.
-CMD ["python", "scripts/run_paper_e1_railway_audit.py"]
+CMD ["python", "-m", "scripts.run_paper_e1_railway_audit"]
