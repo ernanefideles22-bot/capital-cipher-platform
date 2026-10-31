@@ -65,7 +65,8 @@ async def test_unknown_symbol_never_reaches_network():
 @pytest.mark.asyncio
 async def test_tick_size_is_retained_for_exact_stop_validation():
     data=payload(); data['order_price_round']='0.1'
+    data['last_price']='80010.5'
     provider=GateTestnetMetadata(transport=httpx.MockTransport(lambda req:httpx.Response(200,json=data)),clock=lambda:1000)
     result,_=await provider('BTCUSDT')
-    assert result['order_price_round']=='0.1' and 'extraneous' not in result
+    assert result['order_price_round']=='0.1' and result['last_price']=='80010.5' and 'extraneous' not in result
     await provider.aclose()
