@@ -25,6 +25,7 @@ from app.strategy.paper_forensics_e1 import (
     AgentObservation, PaperTrace, analyze_paper_trades,
 )
 from app.strategy.paper_evidence_integrity_e11 import inspect_evidence
+from app.strategy.paper_net_economics_e13 import analyze_cost_diagnostics
 
 
 def to_float(value):
@@ -103,6 +104,7 @@ async def export_forensics(
                     "archive_reconciliation": "NOT_PERFORMED",
                     "agent_history_coverage": "UNVERIFIED_MAY_BE_PRUNED",
                     "evidence_integrity": {"status": "NOT_EVALUATED_NO_VISIBLE_ORDERS"},
+                    "cost_diagnostics": analyze_cost_diagnostics([]),
                     "report": asdict(report),
                     "caveat": "Zero visible rows is not evidence of zero trades; verify archive/retention and RLS.",
                 }
@@ -158,6 +160,9 @@ async def export_forensics(
                 any_decision_visible=any_decision_visible,
                 any_risk_visible=any_risk_visible,
             )
+            # Research-only scenario screen using PAPER position notional,
+            # actual fill, planned stop and target. No OMS/risk mutations.
+            cost_diagnostics = analyze_cost_diagnostics(orders)
             agents = list((await session.execute(
                 select(AgentOutputModel).where(
                     AgentOutputModel.correlation_id.in_(corrs),
@@ -250,6 +255,7 @@ async def export_forensics(
                 "archive_reconciliation": "NOT_PERFORMED",
                 "agent_history_coverage": "UNVERIFIED_MAY_BE_PRUNED",
                 "evidence_integrity": evidence_integrity,
+                "cost_diagnostics": cost_diagnostics,
                 "tables_read": [
                     "capital_cipher.paper_orders",
                     "capital_cipher.decisions",
