@@ -13,6 +13,7 @@ def utcnow() -> datetime:
 class Exchange(str, Enum):
     BINANCE = "BINANCE"
     BYBIT = "BYBIT"
+    GATE = "GATE"
 
 
 class AgentStatus(str, Enum):
