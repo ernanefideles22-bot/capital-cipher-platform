@@ -109,6 +109,30 @@ def test_paper_observation_rejects_invalid_records(tmp_path):
         )
 
 
+def test_observations_require_registered_hypothesis(tmp_path):
+    memory = ResearchMemory(tmp_path / "log.db")
+    with pytest.raises(ValueError, match="Register hypothesis"):
+        memory.append(
+            kind="RESEARCH_NOTE",
+            hypothesis_hash=hypothesis().fingerprint,
+            event_id="research:unregistered",
+            payload={"note": "candidate unregistered"},
+        )
+
+
+def test_paper_attribution_cannot_be_self_attested(tmp_path):
+    memory = ResearchMemory(tmp_path / "log.db")
+    p = hypothesis()
+    memory.register(p)
+    with pytest.raises(ValueError, match="not implemented"):
+        memory.paper_closed_observation(
+            p, paper_order_id="paper-2", decision_id="decision-2",
+            net_pnl=10.0, exit_reason="TAKE_PROFIT",
+            closed_at=datetime.now(timezone.utc),
+            attribution_verified=True,
+        )
+
+
 class FakeBacktester:
     def __init__(self, fee_bps=12.0):
         self.fee_bps = fee_bps
