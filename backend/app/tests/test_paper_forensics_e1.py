@@ -283,3 +283,67 @@ async def test_real_exporter_materializes_orm_rows_with_read_only_session(monkey
     assert str(statements[2]).startswith("SET LOCAL statement_timeout")
     assert all(isinstance(stmt, Select) for stmt in statements[3:])
     engine.dispose.assert_awaited_once()
+
+
+def test_railway_e1_executor_refuses_nonpaper_and_wrong_db(monkeypatch):
+    from scripts.run_paper_e1_railway_audit import verify_environment
+
+    good = {
+        "APP_ENV": "staging",
+        "RAILWAY_ENVIRONMENT_NAME": "staging",
+        "SYSTEM_MODE": "PAPER",
+        "OMS_EXECUTION_ENVIRONMENT": "PAPER",
+        "OMS_TESTNET_ENABLED": "false",
+        "DATABASE_URL": "postgresql://reporter:dummy@pg.railway.internal:5432/realpaper",
+        "CC_PROBE_DATABASE_URL": "postgresql://reporter:dummy@probe.railway.internal:5432/probe",
+        "STAGING_EXPECTED_DATABASE_HOST": "pg.railway.internal",
+    }
+    assert verify_environment(good) == good["DATABASE_URL"]
+    with pytest.raises(RuntimeError, match="E1_NOT_PAPER"):
+        verify_environment({**good, "SYSTEM_MODE": "LIVE"})
+    with pytest.raises(RuntimeError, match="E1_TESTNET_ENABLED"):
+        verify_environment({**good, "OMS_TESTNET_ENABLED": "true"})
+    with pytest.raises(RuntimeError, match="E1_DATABASE_HOST_MISMATCH"):
+        verify_environment({**good, "DATABASE_URL":
+            "postgresql://reporter:dummy@other.railway.internal:5432/realpaper"})
+    with pytest.raises(RuntimeError, match="E1_DATABASE_URL_IS_PROBE"):
+        verify_environment({**good, "CC_PROBE_DATABASE_URL": good["DATABASE_URL"]})
+    with pytest.raises(RuntimeError, match="E1_WRONG_RAILWAY_ENVIRONMENT"):
+        verify_environment({**good, "RAILWAY_ENVIRONMENT_NAME": "production"})
+
+
+def test_railway_e1_executor_logs_no_database_credentials(monkeypatch, capsys):
+    from scripts import run_paper_e1_railway_audit as runner
+    import asyncio as _asyncio
+    import base64 as _base64
+    import gzip as _gzip
+    import hashlib as _hashlib
+    import json as _json
+
+    async def fake_audit():
+        return {
+            "report": {
+                "mode": "PAPER_READ_ONLY_E1",
+                "closed_trades": 1, "open_trades": 0, "net_pnl": -2.0,
+                "win_rate": 0.0, "profit_factor": 0.0,
+                "missing_audit_closures": 0, "missing_decision_traces": 0,
+                "missing_risk_traces": 0, "flags_count": {},
+                "by_strategy": [], "by_symbol": [], "by_timeframe": [],
+                "by_exit_reason": [],
+            },
+            "order_sample_truncated": False,
+            "agents_sample_truncated": False,
+            "archive_reconciliation": "NOT_PERFORMED",
+            "agent_history_coverage": "UNVERIFIED_MAY_BE_PRUNED",
+        }
+
+    monkeypatch.setattr(runner, "audit_once", fake_audit)
+    assert runner.main() == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].startswith("E1_AUDIT_SUMMARY ")
+    assert lines[-1] == "E1_AUDIT_COMPLETE"
+    manifest = _json.loads(next(x for x in lines if x.startswith("E1_AUDIT_MANIFEST ")).split(" ", 1)[1])
+    chunks = [x.split(" ", 2)[2] for x in lines if x.startswith("E1_AUDIT_CHUNK ")]
+    decoded = _gzip.decompress(_base64.b64decode("".join(chunks)))
+    assert _hashlib.sha256(decoded).hexdigest() == manifest["sha256"]
+    assert _json.loads(decoded)["report"]["net_pnl"] == -2.0
