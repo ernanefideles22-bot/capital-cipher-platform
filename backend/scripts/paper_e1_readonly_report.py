@@ -176,15 +176,18 @@ async def export_forensics(
                 closing_audit = audit_by_order.get(o.id)
                 # Independent equality checks: shared correlation alone is
                 # insufficient evidence for a linked decision or risk.
+                # opened_at is the candle's market timestamp, often earlier
+                # than the risk decision. Use order.created_at, the persisted
+                # order creation clock, to test evidence processing chronology.
                 decision_valid = bool(
                     d is not None and d.correlation_id == o.correlation_id
                     and d.symbol == o.symbol and d.timeframe == o.timeframe
-                    and d.created_at <= (o.opened_at or o.created_at)
+                    and d.created_at <= o.created_at
                 )
                 risk_valid = bool(
                     risk is not None and risk.decision_id == o.decision_id
                     and risk.correlation_id == o.correlation_id
-                    and risk.created_at <= (o.opened_at or o.created_at)
+                    and risk.created_at <= o.created_at
                 )
                 audit_valid = bool(
                     closing_audit is not None
@@ -194,10 +197,12 @@ async def export_forensics(
                 )
                 payload = closing_audit.payload if audit_valid else {}
                 output = []
-                # Agent outputs are *opinions* observed before order opening,
-                # not causal P&L attribution. Reject post-entry information.
+                # Agent outputs are observational opinions generated before
+                # actual order construction. The candle timestamp (opened_at)
+                # is a historical market clock, not the processing clock.
+                # This does not establish causal agent P&L attribution.
                 for agent in by_corr.get(o.correlation_id, []):
-                    if o.opened_at is not None and agent.created_at > o.opened_at:
+                    if agent.created_at > o.created_at:
                         continue
                     if agent.signal not in ("BUY", "SELL", "HOLD", "WAIT", "BLOCK", "NEUTRAL"):
                         continue
