@@ -15,7 +15,7 @@ import logging
 from app.core.errors import SecurityError, AmbiguousExecutionError, ExternalServiceError
 from app.demo.gate_order_plan import build_order_plan
 from app.demo.gate_position_config import interpret_position_config
-from app.demo.gate_stop_validation import stop_matches
+from app.demo.gate_stop_validation import stop_matches, stop_configuration_matches
 from app.demo.gate_exit_evidence import confirmed_close_order
 from app.execution.adapters.gate_testnet_preparation import (
     GateTestnetPreparationAdapter,
@@ -528,7 +528,42 @@ class GateTestnetExecutionAdapter(GateTestnetPreparationAdapter):
                     expected_signed_position=row['position'],
                 ):
                     raise ValueError("close not confirmed")
-                await self._transport.cancel_stop(row["stop_id"])
+                # Gate can automatically cancel a position-bound stop when
+                # an owned reduce-only close fills. Do NOT issue a second
+                # cancel against a terminal stop: that 4xx/unknown response
+                # previously stranded a flat canary in EXIT_PENDING/HALTED.
+                # Authenticate the exact originally verified stop before
+                # trusting its terminal status. No cancellation is retried.
+                after_close = await self._transport.get_stop(row["stop_id"])
+                if not stop_configuration_matches(
+                    after_close,
+                    order_id=row["stop_id"],
+                    contract=row["contract"],
+                    position_size=row["position"],
+                    trigger_price=row["target"],
+                ):
+                    raise ValueError("Gate closed stop identity/configuration mismatch")
+                if after_close.get("status") == "open":
+                    await self._transport.cancel_stop(row["stop_id"])
+                    after_close = await self._transport.get_stop(row["stop_id"])
+                    if not stop_configuration_matches(
+                        after_close,
+                        order_id=row["stop_id"],
+                        contract=row["contract"],
+                        position_size=row["position"],
+                        trigger_price=row["target"],
+                    ):
+                        raise ValueError("Gate stop cancellation identity mismatch")
+                    allowed_endings = {"cancelled", "auto_cancelled"}
+                else:
+                    # An automatically cancelled stop after the owned close
+                    # requires no further exchange write.
+                    allowed_endings = {"auto_cancelled"}
+                if (
+                    after_close.get("status") != "finished"
+                    or after_close.get("finish_as") not in allowed_endings
+                ):
+                    raise ValueError("Gate stop not confirmed terminal after close")
                 counts, started, finished, *_ = await self._inventory()
                 # Refresh after cancellation so the complete evidence fits the freshness window.
                 venue = await self._transport.get_order(ack["id"])
