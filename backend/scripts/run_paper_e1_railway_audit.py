@@ -116,6 +116,27 @@ def main() -> int:
             "by_exit_reason": _grouped(report, "by_exit_reason"),
             "by_side": _grouped(report, "by_side"),
             "evidence_integrity": data["evidence_integrity"],
+            "shadow_cohorts": {
+                "mode": data["shadow_cohorts"]["mode"],
+                "frozen_protocol_sha256":
+                    data["shadow_cohorts"]["frozen_protocol_sha256"],
+                "prospective_readiness":
+                    data["shadow_cohorts"]["prospective_readiness"],
+                "no_profitability_or_causality_claim": True,
+                "scenarios": [
+                    {
+                        "scenario": x["scenario"],
+                        "group_counts": x["group_counts"],
+                        "historically_observed_baseline":
+                            x["historically_observed_baseline"],
+                        "observed_eligible_subset":
+                            x["observed_eligible_subset"],
+                        "observed_below_threshold_subset":
+                            x["observed_below_threshold_subset"],
+                    }
+                    for x in data["shadow_cohorts"]["scenarios"]
+                ],
+            },
             "cost_diagnostics": {
                 "mode": data["cost_diagnostics"]["mode"],
                 "assumptions_verified_against_staging_runtime": False,
