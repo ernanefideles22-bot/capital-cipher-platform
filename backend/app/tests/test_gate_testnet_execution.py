@@ -479,9 +479,16 @@ async def test_stop_failure_attempts_one_owned_reduce_only_close_and_keeps_halt(
 
 
 @pytest.mark.asyncio
-async def test_stop_rejection_logs_bounded_diagnostics_before_one_emergency_close(setup,caplog):
+async def test_stop_rejection_logs_bounded_diagnostics_before_one_emergency_close(setup,caplog,monkeypatch):
+    import logging
     from app.demo.gate_testnet_transport import GateWriteUnknown
     adapter, venue, journal = setup
+    # Other application tests configure logging globally. Isolate capture from
+    # their disabled/propagation state and restore it when this test finishes.
+    logger=logging.getLogger('uvicorn.error')
+    monkeypatch.setattr(logger,'disabled',False)
+    monkeypatch.setattr(logger,'propagate',True)
+    caplog.set_level(logging.WARNING,logger='uvicorn.error')
 
     async def reject_stop(**kwargs):
         assert journal.read('order-0001')['state']=='STOP_SUBMITTING'
