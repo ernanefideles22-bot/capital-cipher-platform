@@ -251,7 +251,16 @@ def replay_candidate(
         closed = _utc(bar.closed_at)
         # Pending exit triggered ONLY by a preceding completed candle.
         if position is not None and pending_exit is not None and opened >= pending_exit:
-            close_position(i, bar.open, "RULE_INVALIDATED", opened)
+            _, _, _, stop_at, _, _ = position
+            gap_through_stop = (
+                bar.open <= stop_at if hypothesis.side == "BUY"
+                else bar.open >= stop_at
+            )
+            close_position(
+                i, bar.open,
+                "STOP_LOSS" if gap_through_stop else "RULE_INVALIDATED",
+                opened,
+            )
             pending_exit = None
 
         # Queue entry only after an as-of close; when its receipt is later
