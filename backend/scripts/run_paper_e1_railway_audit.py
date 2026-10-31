@@ -116,6 +116,22 @@ def main() -> int:
             "by_exit_reason": _grouped(report, "by_exit_reason"),
             "by_side": _grouped(report, "by_side"),
             "evidence_integrity": data["evidence_integrity"],
+            "cost_diagnostics": {
+                "mode": data["cost_diagnostics"]["mode"],
+                "assumptions_verified_against_staging_runtime": False,
+                "minimum_net_rr_for_illustrative_screen":
+                    data["cost_diagnostics"]["minimum_net_rr_for_illustrative_screen"],
+                "scenarios": [
+                    {k: scenario[k] for k in (
+                        "scenario", "assumptions", "orders_examined",
+                        "evaluable", "insufficient_evidence",
+                        "hypothetical_fails_minimum_net_rr",
+                        "hypothetical_meets_minimum_net_rr",
+                        "hypothetical_net_rr_median",
+                    )}
+                    for scenario in data["cost_diagnostics"]["scenarios"]
+                ],
+            },
             "order_sample_truncated": data["order_sample_truncated"],
             "agents_sample_truncated": data["agents_sample_truncated"],
             "archive_reconciliation": data["archive_reconciliation"],
