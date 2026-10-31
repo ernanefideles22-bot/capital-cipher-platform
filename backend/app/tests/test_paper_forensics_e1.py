@@ -270,6 +270,8 @@ async def test_real_exporter_materializes_orm_rows_with_read_only_session(monkey
     assert result["report"]["net_pnl"] == -10
     assert result["report"]["missing_audit_closures"] == 0
     assert result["report"]["by_exit_reason"][0]["key"] == "STOP_LOSS"
+    assert result["archive_reconciliation"] == "NOT_PERFORMED"
+    assert result["agent_history_coverage"] == "UNVERIFIED_MAY_BE_PRUNED"
     assert result["report"]["agent_attribution_verified"] is False
     assert str(statements[0]) == "SET TRANSACTION READ ONLY"
     assert str(statements[1]).startswith("SET LOCAL statement_timeout")
