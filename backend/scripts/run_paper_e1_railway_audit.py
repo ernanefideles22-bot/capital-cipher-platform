@@ -117,8 +117,18 @@ def main() -> int:
         print("E1_AUDIT_COMPLETE", flush=True)
         return 0
     except Exception as exc:
-        # Never log exception text: SQL driver exceptions may echo DB URLs.
-        print("E1_AUDIT_BLOCKED " + type(exc).__name__, flush=True)
+        # Never log arbitrary exception text: SQL drivers may echo DB URLs.
+        # Only explicitly enumerated static guard codes are safe to reveal.
+        guard_codes = {
+            "E1_NOT_STAGING", "E1_WRONG_RAILWAY_ENVIRONMENT",
+            "E1_NOT_PAPER", "E1_OMS_ENVIRONMENT_NOT_PAPER",
+            "E1_TESTNET_ENABLED", "E1_DATABASE_URL_MISSING",
+            "E1_DATABASE_URL_IS_PROBE", "E1_DATABASE_HOST_MISMATCH",
+            "E1_DATABASE_ENDPOINT_INVALID",
+            "E1_TRANSACTION_NOT_READ_ONLY",
+        }
+        code = str(exc) if isinstance(exc, RuntimeError) and str(exc) in guard_codes else None
+        print("E1_AUDIT_BLOCKED " + (code or type(exc).__name__), flush=True)
         return 2
 
 
