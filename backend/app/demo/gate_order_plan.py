@@ -52,7 +52,7 @@ def build_order_plan(*, contract, signed_contracts, mark_price, stop_price,
     # precision (e.g. 77280.8000000000000000). Gate validates trigger.price
     # against the contract tick, so serialize exactly at tick precision.
     # Quantization changes only the string representation, never the price.
-    stop_wire = format(stop.quantize(tick), 'f')
+    stop_wire = format(stop.quantize(tick).normalize(), 'f')
     return {
         'environment':'GATE_TESTNET', 'execution_enabled':False, 'mode':'ONE_WAY_ISOLATED',
         'entry': {'contract':contract, 'size':amount, 'price':'0', 'tif':'ioc', 'text':client_id},
