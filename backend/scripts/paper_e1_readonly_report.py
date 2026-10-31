@@ -90,6 +90,8 @@ async def export_forensics(
                     "lookback_days": lookback_days,
                     "order_sample_truncated": False,
                     "agents_sample_truncated": False,
+                    "archive_reconciliation": "NOT_PERFORMED",
+                    "agent_history_coverage": "UNVERIFIED_MAY_BE_PRUNED",
                     "report": asdict(report),
                     "caveat": "Zero visible rows is not evidence of zero trades; verify archive/retention and RLS.",
                 }
@@ -214,6 +216,8 @@ async def export_forensics(
                 "lookback_days": lookback_days,
                 "order_sample_truncated": truncated,
                 "agents_sample_truncated": agents_truncated,
+                "archive_reconciliation": "NOT_PERFORMED",
+                "agent_history_coverage": "UNVERIFIED_MAY_BE_PRUNED",
                 "tables_read": [
                     "capital_cipher.paper_orders",
                     "capital_cipher.decisions",
