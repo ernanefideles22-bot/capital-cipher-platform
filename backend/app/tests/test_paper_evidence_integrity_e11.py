@@ -96,3 +96,44 @@ def test_unapproved_risk_never_reported_verified():
         any_decision_visible=True, any_risk_visible=True,
     )
     assert result["risk_link_status"] == {"REJECTED_OR_UNAPPROVED": 1}
+
+
+def test_market_candle_before_decision_is_not_a_broken_evidence_link():
+    o = order("market-clock")
+    o.opened_at = NOW - timedelta(minutes=15)
+    d = SimpleNamespace(
+        correlation_id=o.correlation_id, symbol=o.symbol,
+        timeframe=o.timeframe, created_at=NOW - timedelta(seconds=3),
+    )
+    r = SimpleNamespace(
+        decision_id=o.decision_id, correlation_id=o.correlation_id,
+        created_at=NOW - timedelta(seconds=2), approved=True,
+    )
+    result = inspect_evidence(
+        [o], {o.decision_id: d}, {o.risk_check_id: r}, {},
+        any_decision_visible=True, any_risk_visible=True,
+    )
+    assert result["decision_link_status"] == {"VERIFIED": 1}
+    assert result["risk_link_status"] == {"VERIFIED": 1}
+    clock = result["market_clock_vs_processing_clock"]
+    assert clock["orders_with_market_timestamp_before_creation"] == 1
+    assert clock["max_market_to_order_creation_lag_seconds"] == 900.0
+
+
+def test_evidence_later_than_actual_order_creation_remains_invalid():
+    o = order("late")
+    o.opened_at = NOW - timedelta(minutes=15)
+    d = SimpleNamespace(
+        correlation_id=o.correlation_id, symbol=o.symbol,
+        timeframe=o.timeframe, created_at=NOW + timedelta(seconds=1),
+    )
+    r = SimpleNamespace(
+        decision_id=o.decision_id, correlation_id=o.correlation_id,
+        created_at=NOW + timedelta(seconds=1), approved=True,
+    )
+    result = inspect_evidence(
+        [o], {o.decision_id: d}, {o.risk_check_id: r}, {},
+        any_decision_visible=True, any_risk_visible=True,
+    )
+    assert result["decision_link_status"] == {"CREATED_AFTER_ENTRY": 1}
+    assert result["risk_link_status"] == {"CREATED_AFTER_ENTRY": 1}
