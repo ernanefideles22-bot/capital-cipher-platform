@@ -162,7 +162,7 @@ def test_duplicate_order_rejected_and_nonfinite_values_rejected():
         analyze_paper_trades([t, t])
     with pytest.raises(ValueError, match="Nonfinite"):
         replace(t, pnl_net=float("nan"))
-    with pytest.raises(ValueError, match="before"):
+    with pytest.raises(ValueError, match="precedes open"):
         replace(t, closed_at=BASE - timedelta(seconds=1))
 
 
