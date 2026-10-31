@@ -24,7 +24,7 @@ def _number(value):
 
 
 def build_order_plan(*, contract, signed_contracts, mark_price, stop_price,
-                     tick_size, client_id, expiration_seconds=3600):
+                     tick_size, client_id, expiration_seconds=86400):
     """Build market entry, conditional stop and reduce-only exit payloads.
 
     Prices and quantities are not rounded. `signed_contracts` is the number of
@@ -41,8 +41,12 @@ def build_order_plan(*, contract, signed_contracts, mark_price, stop_price,
         raise InvalidGatePlan('invalid price or tick')
     if not (stop < mark if qty > 0 else stop > mark):
         raise InvalidGatePlan('stop is not adverse to position')
-    if type(expiration_seconds) is not int or not 300 <= expiration_seconds <= 86400:
-        raise InvalidGatePlan('invalid stop expiration')
+    # Gate Futures API v4 documents 86400 as its price-trigger expiration
+    # example. The Testnet rejected our prior 3600-second value with
+    # AUTO_INVALID_PARAM_TRIGGER_EXPIRATION. Until a venue-accepted canary
+    # proves another interval, fail closed for every other duration.
+    if type(expiration_seconds) is not int or expiration_seconds != 86400:
+        raise InvalidGatePlan('unsupported Gate Testnet stop expiration')
     amount=int(qty)
     return {
         'environment':'GATE_TESTNET', 'execution_enabled':False, 'mode':'ONE_WAY_ISOLATED',
