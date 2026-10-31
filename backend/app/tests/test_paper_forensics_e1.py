@@ -347,3 +347,28 @@ def test_railway_e1_executor_logs_no_database_credentials(monkeypatch, capsys):
     decoded = _gzip.decompress(_base64.b64decode("".join(chunks)))
     assert _hashlib.sha256(decoded).hexdigest() == manifest["sha256"]
     assert _json.loads(decoded)["report"]["net_pnl"] == -2.0
+
+
+def test_railway_e1_module_startup_subprocess():
+    """Railway working-directory invocation must resolve scripts as a package."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parents[2]
+    # Intentionally omit APP_ENV/DB credentials: a guarded, expected failure
+    # proves Python module imports resolved without connecting to any DB.
+    result = subprocess.run(
+        [sys.executable, "-m", "scripts.run_paper_e1_railway_audit"],
+        cwd=backend,
+        env={"PATH": os.environ.get("PATH", ""), "SYSTEM_MODE": "PAPER"},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 2, result.stderr
+    assert result.stdout.strip() == "E1_AUDIT_BLOCKED E1_NOT_STAGING"
+    assert "ModuleNotFoundError" not in result.stderr
