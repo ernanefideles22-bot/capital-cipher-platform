@@ -222,12 +222,22 @@ def main(argv: list[str] | None = None) -> int:
         candles = normalize_candles(contract, interval, kline_raw, cutoff=cutoff)
         funding_raw = public_get(
             "/futures/usdt/funding_rate",
-            {"contract": contract, "from": start, "to": finish},
+            {"contract": contract, "from": start, "to": finish,
+             "limit": 1000},
         )
         funding = normalize_funding(funding_raw, cutoff)
         key = f"{contract}_{interval}".lower()
         sample = summarize(contract, interval, candles)
         sample["funding_rows"] = len(funding)
+        sample["funding_limit_requested"] = 1000
+        sample["funding_coverage_first_settlement"] = (
+            datetime.fromtimestamp(funding[0]["settlement_unix_s"], timezone.utc).isoformat()
+            if funding else None
+        )
+        sample["funding_coverage_last_settlement"] = (
+            datetime.fromtimestamp(funding[-1]["settlement_unix_s"], timezone.utc).isoformat()
+            if funding else None
+        )
         sample["historical_funding_used_in_pnl"] = False
         sample["raw_kline_sha256"] = sha(kline_raw)
         sample["raw_funding_sha256"] = sha(funding_raw)
