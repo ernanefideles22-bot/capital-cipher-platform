@@ -310,7 +310,12 @@ def replay_candidate(
         history = candles[:i + 1]
         snap = analyze_closed_candles(history[-60:], as_of=_utc(bar.received_at))
         if position is not None:
-            if _matched(hypothesis.invalidation_feature, hypothesis, history, snap):
+            if (
+                pending_exit is None
+                and _matched(hypothesis.invalidation_feature, hypothesis, history, snap)
+            ):
+                # Keep the first causal invalidation event; replacing it
+                # every bar would postpone an exit indefinitely.
                 pending_exit = _utc(bar.received_at)
         elif (pending_entry is None
               and i - last_exit_idx > int(params.get("cooldown_bars", 0))
