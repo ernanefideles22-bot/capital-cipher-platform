@@ -16,6 +16,7 @@ def test_long_entry_protective_stop_and_reduce_only_exit():
     assert p['entry']['size']==2 and p['entry']['price']=='0' and p['entry']['tif']=='ioc'
     assert p['stop']['initial']['size']==0 and p['stop']['initial']['close'] is True and p['stop']['initial']['reduce_only'] is True
     assert p['stop']['trigger']['rule']==2 and p['stop']['trigger']['price_type']==1
+    assert p['stop']['trigger']['expiration']==86400  # finite documented Gate API example
     assert p['stop']['order_type']=='close-long-position'
     assert p['stop']['pos_margin_mode']=='isolated' and p['stop']['initial']['text']=='api'
     assert p['emergency_exit']['size']==0 and p['emergency_exit']['close'] is True and p['emergency_exit']['reduce_only'] is True
@@ -25,6 +26,7 @@ def test_short_reverses_direction_and_stop_rule():
     p=plan(signed_contracts=-3,stop_price='81000')
     assert p['entry']['size']==-3 and p['stop']['initial']['size']==0 and p['stop']['initial']['close'] is True
     assert p['stop']['trigger']['rule']==1 and p['stop']['order_type']=='close-short-position'
+    assert p['stop']['trigger']['expiration']==86400
     assert p['stop']['pos_margin_mode']=='isolated' and p['stop']['initial']['text']=='api'
 
 
@@ -49,6 +51,8 @@ def test_simulated_exchange_confirmation_must_match_executed_position(qty,stop):
     {'signed_contracts':True}, {'mark_price':'NaN'}, {'stop_price':'80100'},
     {'stop_price':'79000.05'}, {'tick_size':0}, {'client_id':'other'},
     {'client_id':'t-unsafe spaces'}, {'expiration_seconds':0},
+    {'expiration_seconds':3600}, {'expiration_seconds':86401},
+    {'expiration_seconds':False},
 ])
 def test_invalid_or_unprotected_plans_fail_closed(override):
     with pytest.raises(InvalidGatePlan):
