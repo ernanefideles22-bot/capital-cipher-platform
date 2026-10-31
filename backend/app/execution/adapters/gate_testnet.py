@@ -306,9 +306,10 @@ class GateTestnetExecutionAdapter(GateTestnetPreparationAdapter):
                 # Never log provider text, payloads, credentials or exception messages.
                 # Preserve the failing stage before emergency close changes it.
                 logging.getLogger('uvicorn.error').warning(
-                    'GATE_CYCLE_FAILED order_id=%s stage=%s error_type=%s http_status=%s provider_label=%s',
+                    'GATE_CYCLE_FAILED order_id=%s stage=%s error_type=%s http_status=%s provider_label=%s provider_fields=%s response_kind=%s',
                     cycle, self._journal.read(cycle)['state'], type(exc).__name__,
                     getattr(exc, 'http_status', None), getattr(exc, 'provider_label', None),
+                    getattr(exc, 'provider_fields', ()), getattr(exc, 'response_kind', None),
                 )
                 if isinstance(exc, Exception) and self._journal.read(cycle)[
                     "state"
