@@ -121,6 +121,28 @@ async def test_read_failure_is_sanitized():
     await c.close()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('label,expected', [
+    ('POSITION_NOT_FOUND','POSITION_NOT_FOUND'),
+    ('INVALID_PARAM_VALUE','INVALID_PARAM_VALUE'),
+    ('dummy-secret',None),(['INVALID_PARAM_VALUE'],None),
+])
+async def test_stop_failure_keeps_only_public_diagnostics_without_retry(label,expected):
+    calls=[]
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(400,json={'label':label,'message':'dummy-key dummy-secret'})
+    c=client(handler,enabled=True,ack='GATE_TESTNET_VIRTUAL_FUNDS_ONLY')
+    with pytest.raises(GateWriteUnknown) as caught:
+        await c.place_stop(contract='BTC_USDT',signed_position=3,
+                           reference_price='77340',stop_price='76995.6',tick_size='0.1')
+    assert caught.value.http_status==400 and caught.value.provider_label==expected
+    assert len(calls)==1
+    assert 'dummy-secret' not in str(caught.value) and 'dummy-key' not in str(caught.value)
+    assert 'dummy-secret' not in repr(vars(caught.value))
+    await c.close()
+
+
 
 @pytest.mark.asyncio
 async def test_inventory_query_is_signed_and_pages_are_not_silently_truncated():

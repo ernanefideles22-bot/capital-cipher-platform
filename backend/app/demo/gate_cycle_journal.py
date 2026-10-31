@@ -349,7 +349,8 @@ class GateCycleJournal:
         identity=self.db.execute('SELECT client_id,order_id FROM exit_identity WHERE cycle_id=?',(cycle_id,)).fetchone()
         valid=bool(identity and identity[1]) and confirmed_close_order(order=order,position=position,
             contract=row['contract'],order_id=identity[1],client_id=identity[0],
-            order_observed_at=order_observed_at,position_observed_at=position_observed_at,now=now)
+            order_observed_at=order_observed_at,position_observed_at=position_observed_at,now=now,
+            expected_signed_position=row['position'])
         self._transition(cycle_id, {'EMERGENCY_EXIT_PENDING'}, 'HALTED',
                          'emergency close verified; account reconciliation required' if valid else 'emergency close unconfirmed')
         return valid
@@ -365,7 +366,7 @@ class GateCycleJournal:
         valid=confirmed_exit(order=order,position=position,inventory=inventory,contract=row['contract'],
             order_id=identity[1],client_id=identity[0],order_observed_at=order_observed_at,
             position_observed_at=position_observed_at,inventory_started_at=inventory_started_at,
-            inventory_finished_at=inventory_finished_at,now=now)
+            inventory_finished_at=inventory_finished_at,now=now,expected_signed_position=row['position'])
         self._transition(cycle_id, {'EXIT_PENDING'}, 'CLOSED' if valid else 'HALTED',
                          'exit verified' if valid else 'exit evidence not reconciled')
         return valid
