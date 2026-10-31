@@ -57,6 +57,7 @@ def test_net_pnl_uses_recorded_net_without_fee_slippage_double_subtraction():
     assert report.net_pnl == 10  # NOT 10 minus recorded fees again
     assert report.win_rate == .5
     assert report.profit_factor == 2.0
+    assert {x.key for x in report.by_exit_reason} == {"STOP_LOSS", "TAKE_PROFIT"}
     assert finding(report, "loss").realized_r == -0.5
     assert finding(report, "loss").planned_reward_risk == 2.0
     assert not report.agent_attribution_verified
