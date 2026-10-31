@@ -139,6 +139,7 @@ async def flow(tmp_path):
                 order_size_max="10000",
                 in_delisting=False,
                 mark_price=mark["value"],
+                last_price=mark["value"],
                 order_price_round=".1",
             ),
             NOW,

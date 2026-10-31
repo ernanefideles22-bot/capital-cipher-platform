@@ -134,6 +134,14 @@ class GateTestnetExecutionAdapter(GateTestnetPreparationAdapter):
             )
         ):
             raise SecurityError("current market price exceeds approved entry bounds")
+        # The Gate trigger endpoint rejects rule=2 unless trigger.price is
+        # below the venue's *last traded* price (rule=1 requires above),
+        # regardless of price_type=1 (mark-price trigger evaluation).
+        # Never trade when the upstream quote is unavailable or too close.
+        tick = number(metadata["order_price_round"])
+        last = number(metadata.get("last_price"))
+        if not (stop < last - tick if order.side == OrderSide.BUY else stop > last + tick):
+            raise SecurityError("Gate stop cannot satisfy venue last-price rule before entry")
         plan = build_order_plan(
             contract=qty["contract"],
             signed_contracts=qty["signed_contracts"],
@@ -264,6 +272,21 @@ class GateTestnetExecutionAdapter(GateTestnetPreparationAdapter):
                     order.requested_notional
                 ):
                     raise ValueError("fill crossed approved price or notional bounds")
+                # Refresh the venue's last traded price immediately before
+                # sending any price-triggered stop. A mark/last divergence or
+                # adverse move during entry can invalidate the stop price even
+                # when it was valid against the pre-entry mark price.
+                latest, last_observed = await self._metadata_provider(order.symbol)
+                last_trade = number(latest.get("last_price"))
+                last_tick = number(latest["order_price_round"])
+                if (
+                    latest.get("name") != contract
+                    or last_tick != number(metadata["order_price_round"])
+                    or not 0 <= number(self._clock()) - number(last_observed) <= 10
+                    or not (stop_price < last_trade - last_tick if filled > 0
+                            else stop_price > last_trade + last_tick)
+                ):
+                    raise ValueError("Gate stop no longer valid against latest traded price")
                 self._journal.record_stop_intent(cycle)
                 stop = await self._transport.place_stop(
                     contract=contract,

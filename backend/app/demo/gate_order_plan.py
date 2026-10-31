@@ -48,11 +48,16 @@ def build_order_plan(*, contract, signed_contracts, mark_price, stop_price,
     if type(expiration_seconds) is not int or expiration_seconds != 86400:
         raise InvalidGatePlan('unsupported Gate Testnet stop expiration')
     amount=int(qty)
+    # Decimals inherited from ATR calculations may carry excessive trailing
+    # precision (e.g. 77280.8000000000000000). Gate validates trigger.price
+    # against the contract tick, so serialize exactly at tick precision.
+    # Quantization changes only the string representation, never the price.
+    stop_wire = format(stop.quantize(tick).normalize(), 'f')
     return {
         'environment':'GATE_TESTNET', 'execution_enabled':False, 'mode':'ONE_WAY_ISOLATED',
         'entry': {'contract':contract, 'size':amount, 'price':'0', 'tif':'ioc', 'text':client_id},
         'stop': {'initial':{'contract':contract, 'size':0, 'close':True, 'price':'0', 'tif':'ioc', 'reduce_only':True, 'text':'api'},
-                 'trigger':{'strategy_type':0, 'price_type':1, 'price':format(stop,'f'),
+                 'trigger':{'strategy_type':0, 'price_type':1, 'price':stop_wire,
                             'rule':2 if amount > 0 else 1, 'expiration':expiration_seconds},
                  'order_type':'close-long-position' if amount > 0 else 'close-short-position',
                  'pos_margin_mode':'isolated'},
