@@ -58,8 +58,12 @@ currently documented Gate API v4 TestNet
 `https://api-testnet.gateapi.io/api/v4`. Contract identifiers are
 `BTC_USDT`, `ETH_USDT`, `SOL_USDT`. Candle `t` is treated as
 opening epoch seconds; a returned current unclosed interval is excluded.
-The reported `v` is kept in the venue's futures contract-volume units,
-**not USDT notional**. These semantics require real endpoint confirmation
+The returned `v` is converted from contracts into base-asset quantity
+using the public Gate `quanto_multiplier` obtained from
+`GET /futures/usdt/contracts/{contract}`. This is **not USDT notional**.
+API contract `BTC_USDT` is normalized to internal symbol `BTCUSDT`,
+matching the existing Gate TestNet service's `gate_market.py` convention.
+The same mapping applies to ETH and SOL. These semantics require real endpoint confirmation
 during the S1 operational verification gate, not just mocked CI.
 
 CLI entrypoint (not executed by PR/CI, intentionally unscheduled):
@@ -107,3 +111,9 @@ reviewed backend rollout and real Gate-input verification. Its existence
 does not alter candidate promotion, execute a trade or authorize testnet
 orders. The operational S1 gate still requires observing the actual
 registration and the emitted evidence in staging SHADOW runs.
+
+**Existing Gate service compatibility:** before wiring S1 into staging,
+verify the deployment branch `fix/gate-stop-expiration-86400-20261030`
+(and its `app.demo.gate_market` adapter) against the S1 normalizer on
+identical real testnet responses. The two branches are not yet merged;
+no second production feed or conflicting runtime symbol namespace is enabled.
