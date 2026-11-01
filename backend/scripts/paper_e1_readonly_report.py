@@ -18,8 +18,8 @@ from sqlalchemy import desc, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.database.models import (
-    AgentOutputModel, AuditLogModel, DecisionModel, PaperOrderModel,
-    RiskCheckModel,
+    AgentOutputModel, AgentExecutionJobModel, AuditLogModel, DecisionModel,
+    PaperOrderModel, RiskCheckModel,
 )
 from app.strategy.paper_forensics_e1 import (
     AgentObservation, PaperTrace, analyze_paper_trades,
@@ -127,6 +127,14 @@ async def export_forensics(
                     AgentOutputModel.correlation_id.in_(candidate_corrs)
                 ).limit(10001)
             )).scalars()) if candidate_corrs else []
+            # Modern runtime persists agent outputs inside execution jobs;
+            # legacy agent_outputs is not an exhaustive runtime evidence table.
+            # Only the newest bounded rows are read from the same snapshot.
+            candidate_jobs = list((await session.execute(
+                select(AgentExecutionJobModel).where(
+                    AgentExecutionJobModel.correlation_id.in_(candidate_corrs)
+                ).order_by(desc(AgentExecutionJobModel.created_at)).limit(10001)
+            )).scalars()) if candidate_corrs else []
             candidate_coverage = describe_candidate_visibility(
                 candidate_decisions,
                 candidate_risks[:2000],
@@ -134,11 +142,13 @@ async def export_forensics(
                 candidate_agents[:10000],
                 sampled_limit=decision_sample_limit,
                 has_more_decisions=candidate_sample_truncated,
+                execution_jobs=candidate_jobs[:10000],
             )
             candidate_coverage["related_evidence_sample_truncated"] = {
                 "risk_checks": len(candidate_risks) > 2000,
                 "paper_orders": len(candidate_orders) > 2000,
                 "agent_outputs": len(candidate_agents) > 10000,
+                "agent_execution_jobs": len(candidate_jobs) > 10000,
             }
             if not orders:
                 report = analyze_paper_trades(())
@@ -317,6 +327,7 @@ async def export_forensics(
                     "capital_cipher.decisions",
                     "capital_cipher.risk_checks",
                     "capital_cipher.agent_outputs",
+                    "capital_cipher.agent_execution_jobs",
                     "capital_cipher.audit_logs",
                 ],
                 "report": asdict(report),
