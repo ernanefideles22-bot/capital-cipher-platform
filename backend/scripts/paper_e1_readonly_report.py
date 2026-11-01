@@ -332,7 +332,6 @@ async def export_forensics(
                     "agent_quality": e22_quality,
                     "agent_cohort": e23_quality,
                     "market_provenance": e24_market,
-                "future_agent_cohort": e26_forward,
                     "future_agent_cohort": e26_forward,
                     "report": asdict(report),
                     "caveat": "Zero visible rows is not evidence of zero trades; verify archive/retention and RLS.",
@@ -493,6 +492,7 @@ async def export_forensics(
                 "agent_quality": e22_quality,
                 "agent_cohort": e23_quality,
                 "market_provenance": e24_market,
+                "future_agent_cohort": e26_forward,
                 "tables_read": [
                     "capital_cipher.paper_orders",
                     "capital_cipher.decisions",
