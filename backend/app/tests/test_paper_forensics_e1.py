@@ -303,6 +303,8 @@ async def test_real_exporter_materializes_orm_rows_with_read_only_session(monkey
     # In the ORM mock the optional table catalog probes return NULL.
     # No row visibility is never presented as confirmed zero outcomes.
     assert result["agent_quality"]["forecasts"]["settled_count"] is None
+    assert result["agent_cohort"]["status"] == "SOURCE_NOT_VISIBLE"
+    assert result["agent_cohort"]["descriptive_groups"] is None
     assert result["candidate_coverage"]["decision_context"]["mode"] == (
         "HISTORICAL_DIAGNOSTIC_ONLY"
     )
@@ -460,6 +462,14 @@ def test_railway_e1_executor_logs_no_database_credentials(monkeypatch, capsys):
                     "agent_execution_jobs": False,
                 },
             },
+            "agent_cohort": {
+                "mode": "HISTORICAL_SEVEN_DAY_SQL_AGGREGATE_NO_EXECUTION",
+                "status": "SOURCE_NOT_VISIBLE",
+                "groups_scanned": None,
+                "descriptive_groups": None,
+                "cards": [],
+                "trading_authorized": False,
+            },
             "agent_quality": {
                 "mode": "READ_ONLY_HISTORICAL_AGENT_FORECAST_PREFLIGHT",
                 "prospective_forward_collection_confirmed": False,
@@ -508,6 +518,10 @@ def test_railway_e1_executor_logs_no_database_credentials(monkeypatch, capsys):
         "READ_ONLY_HISTORICAL_AGENT_FORECAST_PREFLIGHT"
     )
     assert summary["agent_quality"]["forecasts"]["settled_count"] is None
+    assert summary["agent_cohort"]["mode"] == (
+        "HISTORICAL_SEVEN_DAY_SQL_AGGREGATE_NO_EXECUTION"
+    )
+    assert not summary["agent_cohort"]["trading_authorized"]
     assert summary["shadow_cohorts"]["mode"] == (
         "POST_HOC_IN_SAMPLE_DESCRIPTIVE_ONLY"
     )
