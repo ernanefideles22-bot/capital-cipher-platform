@@ -8,7 +8,8 @@ A historical HTTP fetch never establishes prospective collection provenance.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Sequence
+from decimal import Decimal, InvalidOperation
+from math import isfinite
 
 import httpx
 
@@ -21,7 +22,10 @@ from app.strategy.professional_gate_chart_stage1 import (
 
 # Deliberately no URL parameter. Never send exchange keys to the chart reader.
 GATE_FUTURES_TESTNET_BASE="https://api-testnet.gateapi.io/api/v4"
-ALLOWED_CONTRACTS=frozenset({"BTC_USDT","ETH_USDT","SOL_USDT"})
+CONTRACT_BY_SYMBOL={"BTCUSDT":"BTC_USDT","ETHUSDT":"ETH_USDT","SOLUSDT":"SOL_USDT"}
+ALLOWED_SYMBOLS=frozenset(CONTRACT_BY_SYMBOL)
+ALLOWED_CONTRACTS=frozenset(CONTRACT_BY_SYMBOL.values())
+SYMBOL_BY_CONTRACT={contract:symbol for symbol,contract in CONTRACT_BY_SYMBOL.items()}
 MAX_LIMIT=300
 
 
@@ -35,7 +39,7 @@ def _require_public_client(client: httpx.AsyncClient) -> None:
 
 def normalize_gate_futures_candles(
     rows: object, *, contract: str, timeframe: str,
-    received_at: datetime,
+    received_at: datetime, volume_multiplier: float | str,
 ) -> tuple[Candle,...]:
     if contract not in ALLOWED_CONTRACTS or timeframe not in BAR_SECONDS:
         raise ValueError("Unapproved Gate Futures TestNet market/timeframe")
@@ -44,6 +48,12 @@ def normalize_gate_futures_candles(
     if not isinstance(rows,list) or len(rows)>MAX_LIMIT:
         raise ValueError("Invalid or unbounded Gate futures kline response")
     now=received_at.astimezone(timezone.utc)
+    try:
+        multiplier=Decimal(str(volume_multiplier))
+    except (InvalidOperation,ValueError) as ex:
+        raise ValueError("Invalid Gate contract volume multiplier") from ex
+    if not multiplier.is_finite() or multiplier<=0:
+        raise ValueError("Invalid Gate contract volume multiplier")
     step=BAR_SECONDS[timeframe]
     bars=[]
     seen=set()
@@ -62,13 +72,13 @@ def normalize_gate_futures_candles(
                 # Current open, unfinished bar MUST NOT be analyzed.
                 continue
             bar=Candle(
-                exchange=Exchange.GATE,symbol=contract,timeframe=timeframe,
+                exchange=Exchange.GATE,symbol=SYMBOL_BY_CONTRACT[contract],timeframe=timeframe,
                 open=float(row["o"]),high=float(row["h"]),
                 low=float(row["l"]),close=float(row["c"]),
-                volume=float(row["v"]),closed_at=closes_at,
+                volume=float(Decimal(str(row["v"]))*multiplier),closed_at=closes_at,
                 received_at=now,
             )
-        except (KeyError,TypeError,OverflowError,ValueError) as ex:
+        except (KeyError,TypeError,OverflowError,ValueError,InvalidOperation) as ex:
             raise ValueError("Unusable Gate futures kline") from ex
         if opened in seen:
             raise ValueError("Duplicate Gate futures kline")
@@ -76,6 +86,24 @@ def normalize_gate_futures_candles(
         bars.append(bar)
     bars.sort(key=lambda c:c.closed_at)
     return tuple(bars)
+
+
+async def _get_contract_multiplier(client: httpx.AsyncClient,contract: str) -> float:
+    response=await client.get(
+        GATE_FUTURES_TESTNET_BASE+"/futures/usdt/contracts/"+contract,
+        headers={"Accept":"application/json"},
+    )
+    response.raise_for_status()
+    payload=response.json()
+    if not isinstance(payload,dict) or payload.get("name")!=contract:
+        raise ValueError("Gate TestNet contract metadata mismatch")
+    try:
+        multiplier=float(payload["quanto_multiplier"])
+    except (TypeError,KeyError,ValueError,OverflowError) as ex:
+        raise ValueError("Gate TestNet contract multiplier unavailable") from ex
+    if not isfinite(multiplier) or multiplier<=0:
+        raise ValueError("Gate TestNet contract multiplier invalid")
+    return multiplier
 
 
 async def fetch_gate_testnet_chart(
@@ -88,6 +116,7 @@ async def fetch_gate_testnet_chart(
     if not 80<=requested_limit<=MAX_LIMIT:
         raise ValueError("Gate chart history limit must be 80-300")
     _require_public_client(client)
+    multiplier=await _get_contract_multiplier(client,contract)
     response=await client.get(
         GATE_FUTURES_TESTNET_BASE+"/futures/usdt/candlesticks",
         params={"contract":contract,"interval":timeframe,"limit":requested_limit},
@@ -97,7 +126,7 @@ async def fetch_gate_testnet_chart(
     observed_at=datetime.now(timezone.utc)
     bars=normalize_gate_futures_candles(
         response.json(),contract=contract,timeframe=timeframe,
-        received_at=observed_at,
+        received_at=observed_at, volume_multiplier=multiplier,
     )
     # The chart routine checks contiguous/complete as-of bars and blocks on
     # stale, missing, unreceived or inconsistent candles.
@@ -114,6 +143,7 @@ async def fetch_gate_testnet_multi_timeframe(
     if not 80<=requested_limit<=MAX_LIMIT:
         raise ValueError("Invalid Gate history limit")
     _require_public_client(client)
+    multiplier=await _get_contract_multiplier(client,contract)
     by_tf={}
     for tf in ("4h","1h","15m"):
         response=await client.get(
@@ -125,6 +155,7 @@ async def fetch_gate_testnet_multi_timeframe(
         now=datetime.now(timezone.utc)
         by_tf[tf]=normalize_gate_futures_candles(
             response.json(),contract=contract,timeframe=tf,received_at=now,
+            volume_multiplier=multiplier,
         )
     return analyze_gate_multi_timeframe(
         by_tf,as_of=datetime.now(timezone.utc),
