@@ -85,6 +85,21 @@ def test_restart_replays_exact_research_pnl_and_open_positions(tmp_path):
         result=send(restored,3,high=105,low=99)
         assert research_account(result,"STANDALONE")["completed_trades"]==1
         assert research_account(result,"STANDALONE")["net_pnl"]>0
+        trade=research_account(result,"STANDALONE")["last_closed_trade"]
+        assert trade["hypothetical"] is True
+        assert trade["real_exchange_fill"] is False
+        assert trade["exit_reason"]=="TARGET"
+        assert trade["entry_price"]==100
+        assert trade["exit_price"]==104
+        assert trade["stop_price"]==98
+        assert trade["target_price"]==104
+        assert trade["net_pnl"]>0
+        assert trade["fees"]==0 and trade["funding"]==0
+        persisted=restored.db.execute(
+            "SELECT outcome_json FROM s3_observations ORDER BY seq DESC LIMIT 1"
+        ).fetchone()[0]
+        assert "\\"last_closed_trade\\"" in persisted
+        assert "\\"exit_reason\\":\\"TARGET\\"" in persisted
         assert research_account(result,"S1_CONFLUENCE")["net_pnl"]==0
         assert restored.status()["observations"]==4
     with DurableS3ForwardResearch(path,friction=Friction(0,0,0)) as final:
@@ -237,3 +252,19 @@ def test_recovery_refuses_incompatible_schema(tmp_path):
         db.commit()
     with pytest.raises(S3JournalBlocked,match="Incompatible"):
         DurableS3ForwardResearch(path)
+
+
+
+def test_modified_scoring_outcome_fails_hash_integrity_check(tmp_path):
+    path=tmp_path/"ledger.sqlite"
+    with DurableS3ForwardResearch(path,friction=Friction(0,0,0)) as d:
+        send(d,0,action="LONG")
+        send(d,1)
+        send(d,2)
+        send(d,3,high=105)
+    with sqlite3.connect(path) as db:
+        db.execute("DROP TRIGGER s3_no_event_update")
+        db.execute("UPDATE s3_observations SET outcome_json='{}' WHERE seq=4")
+        db.commit()
+    with pytest.raises(S3JournalBlocked,match="hash chain"):
+        DurableS3ForwardResearch(path,friction=Friction(0,0,0))
