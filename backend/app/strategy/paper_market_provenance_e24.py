@@ -176,19 +176,63 @@ def summarize_market_evidence(
             counters["cohort_disagrees_on_reference_price"] += 1
         if not _same_price(evt.outcome_min, evt.outcome_max):
             counters["cohort_disagrees_on_realized_price"] += 1
-        before_ref = [
-            x for x in ref if x.received_at <= evt.first_forecast_created
-            and x.recorded_at <= evt.first_forecast_created
-            and x.received_at >= x.closed_at
-            and _same_price(x.close, evt.reference_min)
+        # Root-cause matrix is deliberately aggregate-only. A price match
+        # alone does not establish either timely receipt or timely persistence.
+        ref_price_matches = [
+            x for x in ref
+            if _same_price(x.close, evt.reference_min)
             and _same_price(x.close, evt.reference_max)
         ]
+        target_price_matches = [
+            x for x in target
+            if _same_price(x.close, evt.outcome_min)
+            and _same_price(x.close, evt.outcome_max)
+        ]
+        for phase, rows, prices, created in (
+            ("reference", ref, ref_price_matches, evt.first_forecast_created),
+            ("target", target, target_price_matches, evt.first_outcome_created),
+        ):
+            if not rows:
+                counters[phase + "_observation_absent"] += 1
+            elif not prices:
+                counters[phase + "_price_mismatch"] += 1
+            else:
+                counters[phase + "_price_match_ignore_timing"] += 1
+                received = [
+                    x for x in prices if x.received_at <= created
+                    and x.received_at >= x.closed_at
+                ]
+                recorded = [
+                    x for x in prices if x.recorded_at <= created
+                ]
+                if received:
+                    counters[phase + "_receipt_before_creation"] += 1
+                else:
+                    counters[phase + "_receipt_too_late_or_clock_invalid"] += 1
+                if recorded:
+                    counters[phase + "_stored_before_creation"] += 1
+                else:
+                    counters[phase + "_stored_after_creation"] += 1
+                if any(
+                    x.received_at <= created
+                    and x.recorded_at <= created
+                    and x.received_at >= x.closed_at
+                    for x in prices
+                ):
+                    counters[phase + "_asof_price_and_time_match"] += 1
+                elif received and recorded:
+                    counters[phase + "_receipt_store_on_different_rows"] += 1
+        before_ref = [
+            x for x in ref_price_matches
+            if x.received_at <= evt.first_forecast_created
+            and x.recorded_at <= evt.first_forecast_created
+            and x.received_at >= x.closed_at
+        ]
         before_target = [
-            x for x in target if x.received_at <= evt.first_outcome_created
+            x for x in target_price_matches
+            if x.received_at <= evt.first_outcome_created
             and x.recorded_at <= evt.first_outcome_created
             and x.received_at >= x.closed_at
-            and _same_price(x.close, evt.outcome_min)
-            and _same_price(x.close, evt.outcome_max)
         ]
         if ref:
             counters["reference_observation_time_exists"] += 1
@@ -231,6 +275,7 @@ def summarize_market_evidence(
         "Forecast rows lack explicit exchange and immutable source candle ID; a same-exchange match can be ambiguous.",
         "A missing observation may be RLS, retention, different table, or a real provenance problem.",
         "Probe checks only a bounded recent sample and cannot certify every event or audit raw payload signatures.",
+        "A candle observed after forecast creation can be a legitimate late persistence path, a clock discrepancy or a synthetic/backfilled source; the audit does not infer which.",
         "No future holdout, execution costs, strategy optimization or agent authority enabled.",
     ]
     return report
