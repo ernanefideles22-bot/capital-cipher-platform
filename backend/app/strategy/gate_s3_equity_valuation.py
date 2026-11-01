@@ -14,6 +14,7 @@ from pathlib import Path
 
 from app.strategy.gate_s2_replay import Friction, ResearchRisk, _adverse_execution
 from app.strategy.gate_s2e_live_shadow import S2E_POLICY_COMMIT
+from app.strategy.gate_s2d_forward import FROZEN_AT
 from app.strategy.gate_s3_durable_research import (
     GENESIS_HASH, MAX_OBSERVATIONS_PER_REPLAY, SCHEMA_VERSION,
     SCORER_MODEL_VERSION, S3JournalBlocked, _canonical, _deserialize, _event_hash,
@@ -51,7 +52,10 @@ def read_only_equity_report(path: str | Path) -> dict:
     path = Path(path).absolute()
     if path.is_symlink() or not path.is_file():
         raise S3JournalBlocked("Existing regular S3 research journal required")
-    db = sqlite3.connect(path.as_uri()+"?mode=ro", uri=True, isolation_level=None)
+    try:
+        db = sqlite3.connect(path.as_uri()+"?mode=ro", uri=True, isolation_level=None)
+    except sqlite3.Error:
+        raise S3JournalBlocked("Cannot open S3 research journal read-only") from None
     try:
         db.execute("PRAGMA query_only=ON")
         db.execute("BEGIN")
@@ -71,7 +75,7 @@ def read_only_equity_report(path: str | Path) -> dict:
         if _canonical(expected) != schema["model_parameters"]:
             raise S3JournalBlocked("Unsupported frozen research model")
         scorer = ShadowForwardScorecard(friction=friction, risk=risk)
-        heads, counts, clocks, values = {}, {}, {}, {}
+        heads, counts, clocks, values, windows = {}, {}, {}, {}, {}
         observations = 0
         rows = db.execute("""SELECT seq,symbol,candle_closed_at,observed_at,
             payload_json,outcome_json,previous_hash,event_hash
@@ -91,6 +95,14 @@ def read_only_equity_report(path: str | Path) -> dict:
             result = scorer.observe(candle, shadow, observed_at=clock)
             if _canonical(result) != outcome:
                 raise S3JournalBlocked("Historical scoring result changed")
+            if candle.closed_at > FROZEN_AT:
+                window = windows.setdefault(symbol, {
+                    "post_freeze_candles": 0,
+                    "first_eligible_candle_utc": closed_at,
+                    "last_eligible_candle_utc": closed_at,
+                })
+                window["post_freeze_candles"] += 1
+                window["last_eligible_candle_utc"] = closed_at
             for key, book in scorer._books.items():
                 if key[0] != symbol:
                     continue
@@ -143,6 +155,9 @@ def read_only_equity_report(path: str | Path) -> dict:
             "accounts": accounts,
             "verified_hash_heads": {s: h for s, (seq, h) in sorted(heads.items())},
             "friction_assumptions": asdict(friction),
+            "risk_assumptions": asdict(risk),
+            "policy_frozen_at_utc": FROZEN_AT.isoformat(),
+            "eligible_windows": dict(sorted(windows.items())),
             "cash_benchmark_pnl": 0., "source_database_modified": False,
             "independent_accounts_not_portfolio": True,
             "valuation_basis": "LAST_RECORDED_CANDLE_CLOSE_HYPOTHETICAL_EXIT",
