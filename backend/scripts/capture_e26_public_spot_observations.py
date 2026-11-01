@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import argparse
 import csv
-import io
 import json
+import math
 import os
 import urllib.parse
 import urllib.request
@@ -24,7 +24,7 @@ from pathlib import Path
 from app.strategy.candidate_replay import BAR_SECONDS
 from app.strategy.prospective_core_gate_e26 import (
     CAMPAIGN, MARKETS, HEADER, ALLOWED_SOURCE,
-    _datetime, expected_evaluation_count,
+    _datetime,
 )
 
 URL = "https://api.binance.com/api/v3/klines"
@@ -70,7 +70,7 @@ def _validated_rows(raw: list, symbol: str, timeframe: str, *,
             exchange_close!=op+int(step.total_seconds()*1000)-1):
             raise ValueError("Wrong public candle time/continuity")
         o,h,l,c,v=prices
-        if (not all(__import__("math").isfinite(x) for x in prices) or
+        if (not all(math.isfinite(x) for x in prices) or
             not min(o,h,l,c)>0 or v<0 or
             h<max(o,l,c) or l>min(o,h,c)):
             raise ValueError("Invalid public OHLCV values")
