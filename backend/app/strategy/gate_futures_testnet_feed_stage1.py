@@ -53,9 +53,6 @@ def normalize_gate_futures_candles(
             if closes_at>now:
                 # Current open, unfinished bar MUST NOT be analyzed.
                 continue
-            if opened in seen:
-                raise ValueError("Duplicate Gate futures kline")
-            seen.add(opened)
             bar=Candle(
                 exchange=Exchange.GATE,symbol=contract,timeframe=timeframe,
                 open=float(row["o"]),high=float(row["h"]),
@@ -65,6 +62,9 @@ def normalize_gate_futures_candles(
             )
         except (KeyError,TypeError,OverflowError,ValueError) as ex:
             raise ValueError("Unusable Gate futures kline") from ex
+        if opened in seen:
+            raise ValueError("Duplicate Gate futures kline")
+        seen.add(opened)
         bars.append(bar)
     bars.sort(key=lambda c:c.closed_at)
     return tuple(bars)
