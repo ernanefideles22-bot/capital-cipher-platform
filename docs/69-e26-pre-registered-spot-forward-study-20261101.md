@@ -128,3 +128,33 @@ backend. The audit is one-shot: deploying its code does **not** start
 a recurring 300-agent scoring schedule. The primary backend remains untouched,
 and the current PR stays DRAFT. This independent per-agent cohort also
 cannot prove marginal P&L contribution of any particular agent to an OMS order.
+
+## Low-cost alternative: existing PAPER candle database
+
+The current staging infrastructure already has a time-series `candle_observations`
+table and a continuously deployed `capital-cipher-backend`. That backend's
+actual recent ingestion completeness must be checked before paying to run
+another collector. A new E2.6 *read-only* preflight retrieves at most
+300 latest `BINANCE`-labelled candles for each preregistered
+(symbol,timeframe) series and reports gaps, timestamp sanity, accepted
+quality, real recording freshness, and exact warmup coverage.
+
+This preflight does **not** activate any feed. It does **not** certify the
+exchange label as authentic, nor prove the backend has been ingesting
+every subsequent future candle. Existing database timestamps are not
+cryptographically independent and cannot be relabelled as externally sealed.
+If the feed passes, a future read-only database exporter could reconstruct
+the E2.6 fixed rule comparison using actual saved as-of observations without
+another paid service, with appropriate provenance caveats. If the feed
+does NOT pass, deliberately preserve the missing evidence and consider a
+separate durable collector only after operator approval of costs, runtime,
+storage and scheduling.
+
+Railway service `capital-cipher-paper-retention` already runs scheduled
+hourly retention and owns the archive volume. Do **not** repurpose its cron,
+mounted volume or code for E2.6: doing so would risk data retention integrity.
+Similarly, keep the main backend, OMS, risk engine and live trading controls
+untouched.
+
+File: `backend/app/strategy/paper_future_market_readiness_e26.py`;
+result key: `future_market_readiness` in the isolated auditor's summary.
