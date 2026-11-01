@@ -27,6 +27,7 @@ from app.strategy.paper_forensics_e1 import (
 from app.strategy.paper_evidence_integrity_e11 import inspect_evidence
 from app.strategy.paper_net_economics_e13 import analyze_cost_diagnostics
 from app.strategy.paper_shadow_cohorts_e14 import describe_shadow_cohorts
+from app.strategy.paper_candidate_coverage_e15 import describe_candidate_visibility
 
 
 def to_float(value):
@@ -94,6 +95,51 @@ async def export_forensics(
             orders = list((await session.execute(query)).scalars())
             truncated = len(orders) > order_limit
             orders = orders[:order_limit]
+            # E1.5: bounded historical candidate coverage, including HOLD/WAIT
+            # outcomes that do not produce PAPER orders. This stays in the
+            # same REPEATABLE READ / READ ONLY snapshot as the trade audit.
+            decision_sample_limit = 1000
+            candidate_decisions = list((await session.execute(
+                select(DecisionModel).where(
+                    DecisionModel.created_at >= cutoff
+                ).order_by(desc(DecisionModel.created_at)).limit(
+                    decision_sample_limit + 1
+                )
+            )).scalars())
+            candidate_sample_truncated = len(candidate_decisions) > decision_sample_limit
+            candidate_decisions = candidate_decisions[:decision_sample_limit]
+            candidate_ids = {d.id for d in candidate_decisions}
+            candidate_corrs = {d.correlation_id for d in candidate_decisions}
+            # The limits here are independent from the order/agent sample.
+            # Missing related evidence is visibility, not proof of no event.
+            candidate_risks = list((await session.execute(
+                select(RiskCheckModel).where(
+                    RiskCheckModel.decision_id.in_(candidate_ids)
+                ).limit(2001)
+            )).scalars()) if candidate_ids else []
+            candidate_orders = list((await session.execute(
+                select(PaperOrderModel).where(
+                    PaperOrderModel.decision_id.in_(candidate_ids)
+                ).limit(2001)
+            )).scalars()) if candidate_ids else []
+            candidate_agents = list((await session.execute(
+                select(AgentOutputModel).where(
+                    AgentOutputModel.correlation_id.in_(candidate_corrs)
+                ).limit(10001)
+            )).scalars()) if candidate_corrs else []
+            candidate_coverage = describe_candidate_visibility(
+                candidate_decisions,
+                candidate_risks[:2000],
+                candidate_orders[:2000],
+                candidate_agents[:10000],
+                sampled_limit=decision_sample_limit,
+                has_more_decisions=candidate_sample_truncated,
+            )
+            candidate_coverage["related_evidence_sample_truncated"] = {
+                "risk_checks": len(candidate_risks) > 2000,
+                "paper_orders": len(candidate_orders) > 2000,
+                "agent_outputs": len(candidate_agents) > 10000,
+            }
             if not orders:
                 report = analyze_paper_trades(())
                 return {
@@ -109,6 +155,7 @@ async def export_forensics(
                     "shadow_cohorts": describe_shadow_cohorts(
                         asdict(report), analyze_cost_diagnostics([])
                     ),
+                    "candidate_coverage": candidate_coverage,
                     "report": asdict(report),
                     "caveat": "Zero visible rows is not evidence of zero trades; verify archive/retention and RLS.",
                 }
@@ -264,6 +311,7 @@ async def export_forensics(
                 "evidence_integrity": evidence_integrity,
                 "cost_diagnostics": cost_diagnostics,
                 "shadow_cohorts": shadow_cohorts,
+                "candidate_coverage": candidate_coverage,
                 "tables_read": [
                     "capital_cipher.paper_orders",
                     "capital_cipher.decisions",
