@@ -18,8 +18,9 @@ from sqlalchemy import desc, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.database.models import (
-    AgentOutputModel, AgentExecutionJobModel, AuditLogModel, DecisionModel,
-    PaperOrderModel, RiskCheckModel,
+    AgentOutputModel, AgentExecutionJobModel, AgentForecastModel,
+    AgentForecastOutcomeModel, AuditLogModel, DecisionModel, PaperOrderModel,
+    RiskCheckModel,
 )
 from app.strategy.paper_forensics_e1 import (
     AgentObservation, PaperTrace, analyze_paper_trades,
@@ -29,6 +30,7 @@ from app.strategy.paper_net_economics_e13 import analyze_cost_diagnostics
 from app.strategy.paper_shadow_cohorts_e14 import describe_shadow_cohorts
 from app.strategy.paper_candidate_coverage_e15 import describe_candidate_visibility
 from app.strategy.paper_decision_context_e17 import inspect_decision_context
+from app.strategy.paper_agent_quality_e22 import evaluate_runtime_quality
 
 
 def to_float(value):
@@ -155,6 +157,57 @@ async def export_forensics(
                 "agent_outputs": len(candidate_agents) > 10000,
                 "agent_execution_jobs": len(candidate_jobs) > 10000,
             }
+            # E2.2 historical agent-quality preflight: no writes, no external
+            # market calls and no OMS/agent execution. Check optional schema
+            # tables before selecting so absence does not abort the snapshot.
+            forecast_source_visible = (
+                await session.scalar(select(text(
+                    "to_regclass('capital_cipher.agent_forecasts')"
+                )))
+            ) is not None
+            outcome_source_visible = (
+                await session.scalar(select(text(
+                    "to_regclass('capital_cipher.agent_forecast_outcomes')"
+                )))
+            ) is not None
+            job_source_visible = (
+                await session.scalar(select(text(
+                    "to_regclass('capital_cipher.agent_execution_jobs')"
+                )))
+            ) is not None
+            forecast_limit = 3000
+            e22_forecasts = list((await session.execute(
+                select(AgentForecastModel)
+                .where(AgentForecastModel.created_at >= cutoff)
+                .order_by(desc(AgentForecastModel.created_at))
+                .limit(forecast_limit + 1)
+            )).scalars()) if forecast_source_visible and outcome_source_visible else []
+            e22_forecasts_truncated = len(e22_forecasts) > forecast_limit
+            e22_forecasts = e22_forecasts[:forecast_limit]
+            e22_ids = {x.forecast_id for x in e22_forecasts}
+            e22_outcomes = list((await session.execute(
+                select(AgentForecastOutcomeModel)
+                .where(AgentForecastOutcomeModel.forecast_id.in_(e22_ids))
+                .limit(forecast_limit + 1)
+            )).scalars()) if e22_ids else []
+            # Independent of decision correlations; observe runtime jobs that
+            # are never promoted into the legacy agent_outputs table.
+            job_limit = 5000
+            e22_jobs = list((await session.execute(
+                select(AgentExecutionJobModel)
+                .where(AgentExecutionJobModel.created_at >= cutoff)
+                .order_by(desc(AgentExecutionJobModel.created_at))
+                .limit(job_limit + 1)
+            )).scalars()) if job_source_visible else []
+            e22_jobs_truncated = len(e22_jobs) > job_limit
+            e22_quality = evaluate_runtime_quality(
+                e22_forecasts, e22_outcomes, e22_jobs[:job_limit],
+                forecasts_truncated=e22_forecasts_truncated,
+                jobs_truncated=e22_jobs_truncated,
+                forecast_table_visible=forecast_source_visible,
+                outcome_table_visible=outcome_source_visible,
+                jobs_table_visible=job_source_visible,
+            )
             if not orders:
                 report = analyze_paper_trades(())
                 return {
@@ -171,6 +224,7 @@ async def export_forensics(
                         asdict(report), analyze_cost_diagnostics([])
                     ),
                     "candidate_coverage": candidate_coverage,
+                    "agent_quality": e22_quality,
                     "report": asdict(report),
                     "caveat": "Zero visible rows is not evidence of zero trades; verify archive/retention and RLS.",
                 }
@@ -327,6 +381,7 @@ async def export_forensics(
                 "cost_diagnostics": cost_diagnostics,
                 "shadow_cohorts": shadow_cohorts,
                 "candidate_coverage": candidate_coverage,
+                "agent_quality": e22_quality,
                 "tables_read": [
                     "capital_cipher.paper_orders",
                     "capital_cipher.decisions",
