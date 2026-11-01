@@ -131,11 +131,14 @@ def test_stale_empty_http_errors_and_bad_json_do_not_trigger_fallback():
             return await fetch_gate_testnet_chart(
                 client,contract="BTC_USDT",timeframe="15m",requested_limit=100,
             )
+    async def invalid_limit():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+                lambda req: httpx.Response(200,json=rows()))) as client:
+            await fetch_gate_testnet_chart(
+                client,contract="BTC_USDT",timeframe="15m",requested_limit=30,
+            )
     with pytest.raises(ValueError,match="80-300"):
-        asyncio.run(request(rows(),status=200)) if False else asyncio.run(
-            fetch_gate_testnet_chart(httpx.AsyncClient(),contract="BTC_USDT",
-                                     timeframe="15m",requested_limit=30)
-        )
+        asyncio.run(invalid_limit())
     with pytest.raises(httpx.HTTPStatusError):
         asyncio.run(request({},status=500))
     with pytest.raises(ValueError,match="Invalid"):
