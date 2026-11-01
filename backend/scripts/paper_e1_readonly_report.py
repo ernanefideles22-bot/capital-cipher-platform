@@ -46,6 +46,7 @@ from app.strategy.paper_future_agent_cohort_e26 import (
 from app.strategy.paper_future_market_readiness_e26 import (
     recent_warmup_query, summarize_warmup,
 )
+from app.strategy.paper_future_market_diagnostics_e261 import diagnose_candle_rows
 from app.strategy.prospective_core_gate_e26 import MARKETS as E26_MARKETS
 
 
@@ -329,6 +330,14 @@ async def export_forensics(
                 e26_market_series[e26_symbol+"_"+e26_tf] = summarize_warmup(
                     e26_last_bars,symbol=e26_symbol,timeframe=e26_tf,
                     now=cohort_now,table_visible=e24_candle_visible,
+                )
+                # E2.6.1 only interprets this SAME bounded SELECT snapshot.
+                # It cannot backfill, alter quality gates, or attest source.
+                e26_market_series[e26_symbol+"_"+e26_tf]["diagnostics_e261"] = (
+                    diagnose_candle_rows(
+                        e26_last_bars, symbol=e26_symbol, timeframe=e26_tf,
+                        now=cohort_now,
+                    )
                 )
             e26_market_readiness = {
                 "mode":"E26_EXISTING_STAGING_MARKET_STORAGE_READ_ONLY_PRECHECK",

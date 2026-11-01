@@ -158,3 +158,36 @@ untouched.
 
 File: `backend/app/strategy/paper_future_market_readiness_e26.py`;
 result key: `future_market_readiness` in the isolated auditor's summary.
+
+## E2.6.1 — Stored candle quality and lag diagnostics (diagnostics only)
+
+The previous warmup gate intentionally remains unchanged. Its `poor_quality_count`
+combines non-VALID / non-ACCEPTED labels, including `WARNING`, `SUSPECT`
+and `INVALID`. These **do not mean the same thing**; 19 previously flagged
+observations cannot be called 19 malformed candles without reading their
+individual quality codes.
+
+The existing E1 auditor now emits `future_market_readiness.three_series.<key>.diagnostics_e261`
+using the **same <=300 rows in the existing READ ONLY repeatable-read snapshot**.
+No extra SQL, external exchange calls, writes, schema migrations or cron jobs
+are introduced. For each market, the diagnostic contains:
+
+- Per-status quality counts; per-candle counts of normalized warning/error codes
+  (bounded/sanitized rather than raw messages).
+- At most five newest anomalous quality samples and five delayed timestamp
+  samples; no OHLCV, credentials, raw payload, or arbitrary strings in logs.
+- Whole-sample late receipt, late persistence and delayed persistence despite
+  timely receipt; 24-hour recent subset reported independently.
+- Warmup count shortfall, without misrepresenting missing rows as a broken
+  continuous feed. Zero sampled gaps is not a source-authentication guarantee.
+
+A late `received_at` or `recorded_at` is **not proof** of backfill versus
+a delayed live stream. A stored `exchange=BINANCE` label is not authenticated
+exchange provenance. Early E2.6 readiness still rejects poor-quality history;
+E2.6.1 does not upgrade a WARNING to VALID or certify forward collection.
+Completing warmup using historical data must be separately identified and must
+never be relabelled as prospectively observed campaign candles.
+
+The three-market 2026-11-05 through 2026-12-05 UTC research protocol remains
+unchanged. No live/testnet operation, agent weight change, OMS/risk change,
+automatic candidate promotion, or real-money authorization.
