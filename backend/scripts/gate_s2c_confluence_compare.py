@@ -62,6 +62,8 @@ async def main():
                 "candles_15m":len(primary),"oos_start":split,
                 "oos_bars":len(primary)-split,
                 "training_selection_performed":False,
+                "pristine_holdout":False,
+                "cash_no_trade_net_pnl":0.0,
                 "baseline_trades":len(standalone.trades),
                 "confluence_trades":len(gated.trades),
                 "baseline_net_pnl":round(standalone.net_pnl,6),
@@ -89,6 +91,8 @@ async def main():
         "series":3,
         "baseline_trades":sum(x["baseline_trades"] for x in results),
         "confluence_trades":sum(x["confluence_trades"] for x in results),
+        "cash_no_trade_net_pnl_per_research_account":0.0,
+        "pristine_holdout":False,
         "execution_authorized":False,
         "improvement_proven":False,
     },sort_keys=True),flush=True)
