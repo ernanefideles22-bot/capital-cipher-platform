@@ -305,6 +305,10 @@ async def test_real_exporter_materializes_orm_rows_with_read_only_session(monkey
     assert result["agent_quality"]["forecasts"]["settled_count"] is None
     assert result["agent_cohort"]["status"] == "SOURCE_NOT_VISIBLE"
     assert result["agent_cohort"]["descriptive_groups"] is None
+    assert result["market_provenance"]["mode"] == (
+        "E24_HISTORICAL_MARKET_INDEPENDENCE_AND_CANDLE_PROBE"
+    )
+    assert not result["market_provenance"]["external_exchange_source_authenticated"]
     assert result["candidate_coverage"]["decision_context"]["mode"] == (
         "HISTORICAL_DIAGNOSTIC_ONLY"
     )
@@ -462,6 +466,19 @@ def test_railway_e1_executor_logs_no_database_credentials(monkeypatch, capsys):
                     "agent_execution_jobs": False,
                 },
             },
+            "market_provenance": {
+                "mode": "E24_HISTORICAL_MARKET_INDEPENDENCE_AND_CANDLE_PROBE",
+                "prospective_evidence_confirmed": False,
+                "external_exchange_source_authenticated": False,
+                "profitability_or_agent_promotion_authorized": False,
+                "independence": {
+                    "series": [], "total_settled_forecasts": 0,
+                    "distinct_series_target_events": 0,
+                },
+                "observation_probe": {
+                    "status": "TABLE_NOT_VISIBLE_OR_NOT_AUTHORIZED",
+                },
+            },
             "agent_cohort": {
                 "mode": "HISTORICAL_SEVEN_DAY_SQL_AGGREGATE_NO_EXECUTION",
                 "status": "SOURCE_NOT_VISIBLE",
@@ -522,6 +539,10 @@ def test_railway_e1_executor_logs_no_database_credentials(monkeypatch, capsys):
         "HISTORICAL_SEVEN_DAY_SQL_AGGREGATE_NO_EXECUTION"
     )
     assert not summary["agent_cohort"]["trading_authorized"]
+    assert summary["market_provenance"]["mode"] == (
+        "E24_HISTORICAL_MARKET_INDEPENDENCE_AND_CANDLE_PROBE"
+    )
+    assert not summary["market_provenance"]["profitability_or_agent_promotion_authorized"]
     assert summary["shadow_cohorts"]["mode"] == (
         "POST_HOC_IN_SAMPLE_DESCRIPTIVE_ONLY"
     )
