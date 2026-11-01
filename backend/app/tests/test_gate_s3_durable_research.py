@@ -271,3 +271,32 @@ def test_modified_scoring_outcome_fails_hash_integrity_check(tmp_path):
         db.commit()
     with pytest.raises(S3JournalBlocked,match="hash chain"):
         DurableS3ForwardResearch(path,friction=Friction(0,0,0))
+
+
+
+def test_restart_with_different_cost_model_is_rejected(tmp_path):
+    path=tmp_path/"research.db"
+    with DurableS3ForwardResearch(path,friction=Friction(6,6,1)) as first:
+        send(first,0,action="LONG")
+    with pytest.raises(S3JournalBlocked,match="model parameters changed"):
+        DurableS3ForwardResearch(path,friction=Friction(0,0,0))
+    with DurableS3ForwardResearch(path,friction=Friction(6,6,1)) as correct:
+        assert correct.status()["observations"]==1
+
+
+def test_append_outcome_matches_recovery_trade_fees(tmp_path):
+    path=tmp_path/"outcomes.sqlite3"
+    with DurableS3ForwardResearch(path,friction=Friction(6,6,1)) as first:
+        send(first,0,action="LONG",filtered="WAIT")
+        send(first,1)
+        send(first,2)
+        result=send(first,3,high=105)
+        trade=research_account(result,"STANDALONE")["last_closed_trade"]
+        assert trade["fees"]>0
+        assert trade["funding"]>0
+        assert trade["net_pnl"]==pytest.approx(
+            trade["gross_after_slippage_before_fees"]-
+            trade["fees"]-trade["funding"],abs=3e-7)
+        original=result
+    with DurableS3ForwardResearch(path,friction=Friction(6,6,1)) as restarted:
+        assert restarted.scorer.snapshot("BTCUSDT")==original
