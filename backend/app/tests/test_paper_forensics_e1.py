@@ -203,8 +203,8 @@ async def test_real_exporter_materializes_orm_rows_with_read_only_session(monkey
     from sqlalchemy.sql import Select
 
     from app.database.models import (
-        AgentOutputModel, AuditLogModel, DecisionModel, PaperOrderModel,
-        RiskCheckModel,
+        AgentOutputModel, AgentExecutionJobModel, AuditLogModel,
+        DecisionModel, PaperOrderModel, RiskCheckModel,
     )
     from scripts import paper_e1_readonly_report as exporter
 
@@ -238,6 +238,7 @@ async def test_real_exporter_materializes_orm_rows_with_read_only_session(monkey
         PaperOrderModel: [order], DecisionModel: [],
         RiskCheckModel: [], AuditLogModel: [newer_unrelated_audit, valid_audit],
         AgentOutputModel: [directional_agent],
+        AgentExecutionJobModel: [],
     }
     statements = []
     engine = SimpleNamespace(dispose=AsyncMock())
@@ -433,8 +434,12 @@ def test_railway_e1_executor_logs_no_database_credentials(monkeypatch, capsys):
                 "risk_check_visibility": {"no_visible_risk_check": 1},
                 "paper_order_visibility": {"no_visible_paper_order": 1},
                 "predecision_agent_visibility": {"no_visible_predecision_agent_output": 1},
+                "execution_job_visibility": {"no_visible_execution_job": 1},
+                "completed_job_role_visibility": {},
+                "action_funnel": {"HOLD": {"decisions": 1, "no_visible_risk_check": 1}},
                 "related_evidence_sample_truncated": {
                     "risk_checks": False, "paper_orders": False, "agent_outputs": False,
+                    "agent_execution_jobs": False,
                 },
             },
             "cost_diagnostics": {
@@ -471,6 +476,9 @@ def test_railway_e1_executor_logs_no_database_credentials(monkeypatch, capsys):
         "HISTORICAL_BOUNDED_READ_ONLY_PREFLIGHT"
     )
     assert summary["candidate_coverage"]["candidate_actions"] == {"HOLD": 1}
+    assert summary["candidate_coverage"]["execution_job_visibility"] == {
+        "no_visible_execution_job": 1
+    }
     assert summary["cost_diagnostics"]["scenarios"][0][
         "hypothetical_meets_minimum_net_rr"
     ] == 1
