@@ -70,6 +70,7 @@ class ShadowForwardScorecard:
         self._books:dict[tuple[str,str,str],_Book]={}
         self._last:dict[str,datetime]={}
         self._digest:dict[str,str]={}
+        self._last_observed:dict[str,datetime]={}
         self._halted:set[str]=set()
         self._events:list[dict]=[]
 
@@ -172,6 +173,7 @@ class ShadowForwardScorecard:
         if (candle.exchange!=Exchange.GATE
                 or candle.symbol not in ("BTCUSDT","ETHUSDT","SOLUSDT")
                 or candle.timeframe!="15m"
+                or candle.received_at<candle.closed_at
                 or candle.received_at>observed_at
                 or candle.closed_at>=observed_at):
             raise ValueError("Invalid prospective candle receipt")
@@ -235,6 +237,8 @@ class ShadowForwardScorecard:
                 if self._digest[symbol]!=digest:
                     raise ValueError("Conflicting duplicate observation")
                 return self.snapshot(symbol,duplicate=True)
+            if observed_at<=self._last_observed[symbol]:
+                raise ValueError("Out-of-order observation receipt")
             if (candle.closed_at-prior).total_seconds()!=PERIOD_SECONDS:
                 self._halted.add(symbol)
                 raise ValueError("Missing or out-of-order candle; paper scorer halted")
@@ -242,6 +246,7 @@ class ShadowForwardScorecard:
         if candle.closed_at<=FROZEN_AT:
             self._last[symbol]=candle.closed_at
             self._digest[symbol]=digest
+            self._last_observed[symbol]=observed_at
             return self.snapshot(symbol)
         decisions={x["strategy_id"]:x for x in shadow["hypotheses"]}
         updates=[]
@@ -264,6 +269,7 @@ class ShadowForwardScorecard:
                 updates.append({"strategy":strategy,"arm":arm,"event":event})
         self._last[symbol]=candle.closed_at
         self._digest[symbol]=digest
+        self._last_observed[symbol]=observed_at
         self._events.append({
             "symbol":symbol,"candle":candle.closed_at.isoformat(),
             "observed_at":observed_at.isoformat(),"updates":updates,
@@ -281,7 +287,7 @@ class ShadowForwardScorecard:
                 "net_pnl":round(b.net,8),
                 "gross_after_slippage_before_fees":round(b.gross_before_fees,8),
                 "fees":round(b.fees,8),"funding":round(b.funding,8),
-                "max_drawdown_pct":round(b.max_drawdown_pct,6),
+                "realized_only_drawdown_pct":round(b.max_drawdown_pct,6),
                 "pending":b.pending is not None,
                 "open_position":b.position is not None,
                 "expired_signals":b.expired_signals,
@@ -297,6 +303,7 @@ class ShadowForwardScorecard:
             "duplicate":duplicate,"accounts":results,
             "cash_benchmark_pnl":0.,
             "persistent_results":False,
+            "unrealized_pnl_included":False,
             "simulated_entry_after_actual_receipt":True,
             "real_execution_proven":False,
             "profitability_proven":False,
