@@ -297,6 +297,12 @@ async def test_real_exporter_materializes_orm_rows_with_read_only_session(monkey
     assert result["agent_history_coverage"] == "UNVERIFIED_MAY_BE_PRUNED"
     assert result["candidate_coverage"]["sampled_decisions"] == 0
     assert result["candidate_coverage"]["prospective_collection_running"] is False
+    assert result["agent_quality"]["mode"] == (
+        "READ_ONLY_HISTORICAL_AGENT_FORECAST_PREFLIGHT"
+    )
+    # In the ORM mock the optional table catalog probes return NULL.
+    # No row visibility is never presented as confirmed zero outcomes.
+    assert result["agent_quality"]["forecasts"]["settled_count"] is None
     assert result["candidate_coverage"]["decision_context"]["mode"] == (
         "HISTORICAL_DIAGNOSTIC_ONLY"
     )
@@ -454,6 +460,26 @@ def test_railway_e1_executor_logs_no_database_credentials(monkeypatch, capsys):
                     "agent_execution_jobs": False,
                 },
             },
+            "agent_quality": {
+                "mode": "READ_ONLY_HISTORICAL_AGENT_FORECAST_PREFLIGHT",
+                "prospective_forward_collection_confirmed": False,
+                "complete_300_agent_coverage_confirmed": False,
+                "agent_profitability_proven": False,
+                "tables_visible": {
+                    "agent_forecasts": False,
+                    "agent_forecast_outcomes": False,
+                    "agent_execution_jobs": False,
+                },
+                "forecasts": {
+                    "status": "FORECAST_OR_OUTCOME_TABLE_NOT_VISIBLE",
+                    "settled_count": None,
+                    "unsettled_count": None,
+                    "agent_version_quality_cards": [],
+                },
+                "job_coverage": {
+                    "status": "TABLE_NOT_VISIBLE_OR_ABSENT"
+                },
+            },
             "cost_diagnostics": {
                 "mode": "SHADOW_RESEARCH_ONLY_NO_EXECUTION",
                 "minimum_net_rr_for_illustrative_screen": 1.5,
@@ -478,6 +504,10 @@ def test_railway_e1_executor_logs_no_database_credentials(monkeypatch, capsys):
     assert summary["cost_diagnostics"]["mode"] == (
         "SHADOW_RESEARCH_ONLY_NO_EXECUTION"
     )
+    assert summary["agent_quality"]["mode"] == (
+        "READ_ONLY_HISTORICAL_AGENT_FORECAST_PREFLIGHT"
+    )
+    assert summary["agent_quality"]["forecasts"]["settled_count"] is None
     assert summary["shadow_cohorts"]["mode"] == (
         "POST_HOC_IN_SAMPLE_DESCRIPTIVE_ONLY"
     )
