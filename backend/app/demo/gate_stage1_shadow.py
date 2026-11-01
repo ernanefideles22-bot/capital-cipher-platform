@@ -9,6 +9,7 @@ are not misrepresented as prospectively received at their original close.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from time import perf_counter
 from typing import Callable, Awaitable
 from pydantic import ValidationError as PydanticValidationError
 
@@ -28,14 +29,21 @@ async def professional_shadow_snapshot(
     symbol: str, *,
     fetch: Callable[...,Awaitable[list[dict]]]=fetch_candles,
     observation_clock: Callable[[],datetime]=lambda: datetime.now(timezone.utc),
+    elapsed_clock: Callable[[],float]=perf_counter,
 ) -> dict:
     """Read all 3 Gate timeframes, evaluate an actual opt-in SHADOW agent."""
     if symbol not in GATE_S1_SYMBOLS:
         raise ValueError("Unapproved Gate contract")
+    started=elapsed_clock()
     store=CandleStore()
     receipts={}
+    fetch_latency_ms={}
+    newest_closes={}
+    candle_age_seconds={}
     for tf in GATE_S1_TIMEFRAMES:
+        fetch_started=elapsed_clock()
         rows=await fetch(symbol,tf,limit=GATE_S1_HISTORY)
+        fetch_latency_ms[tf]=round(max(0.,(elapsed_clock()-fetch_started)*1000),3)
         observed=observation_clock()
         if observed.tzinfo is None or observed.utcoffset() is None:
             raise ValueError("Clock must be timezone aware")
@@ -43,6 +51,7 @@ async def professional_shadow_snapshot(
         receipts[tf]=observed
         if not isinstance(rows,list) or len(rows)!=GATE_S1_HISTORY:
             raise ValueError("Gate Stage 1 requires 200 complete OHLCV candles")
+        last_close=None
         for row in rows:
             if not isinstance(row,dict):
                 raise ValueError("Malformed Gate OHLCV snapshot")
@@ -57,16 +66,22 @@ async def professional_shadow_snapshot(
             except (PydanticValidationError, ValueError, KeyError, TypeError,
                     OverflowError, OSError):
                 raise ValueError("Invalid Gate Stage1 candle") from None
+            if last_close is None or candle.closed_at > last_close:
+                last_close=candle.closed_at
             # Candidate charts are intentionally not persisted to the
             # existing OMS, volume, audit or 300-agent in-memory stores.
             if not store.add(candle):
                 raise ValueError("Duplicate Gate OHLCV")
+        assert last_close is not None
+        newest_closes[tf]=last_close.isoformat()
+        candle_age_seconds[tf]=round((observed-last_close).total_seconds(),3)
     as_of=observation_clock()
     if as_of.tzinfo is None or as_of.utcoffset() is None:
         raise ValueError("Clock must be timezone aware")
     as_of=as_of.astimezone(timezone.utc)
     if as_of<max(receipts.values()):
         raise ValueError("Non-monotonic observation clock")
+    analysis_started=elapsed_clock()
     agent=GateProfessionalChartShadowAgent(store)
     await agent.initialize()
     output=await agent.run(AgentInput(
@@ -74,6 +89,7 @@ async def professional_shadow_snapshot(
         timestamp=as_of,symbol=symbol,timeframe="15m",
         market_context={"exchange":"GATE","source":"GATE_FUTURES_TESTNET_PUBLIC_READ_ONLY"},
     ))
+    analysis_elapsed_ms=round(max(0.,(elapsed_clock()-analysis_started)*1000),3)
     if output.signal not in {Signal.NEUTRAL,Signal.WAIT}:
         raise ValueError("Stage 1 SHADOW produced executable signal")
     if output.status not in {AgentStatus.COMPLETED,AgentStatus.BLOCKED}:
@@ -95,6 +111,11 @@ async def professional_shadow_snapshot(
         "agent_version":agent.version,
         "agent_signal":output.signal.value,
         "candles_each":GATE_S1_HISTORY,
+        "latest_closed_candles_utc":newest_closes,
+        "candle_age_seconds":candle_age_seconds,
+        "fetch_latency_ms_by_timeframe":fetch_latency_ms,
+        "analysis_duration_ms":analysis_elapsed_ms,
+        "total_duration_ms":round(max(0.,(elapsed_clock()-started)*1000),3),
         "chart_evidence":output.evidence,
         "historical_snapshots_are_prospective_proof":False,
         "source_exchange_authenticated":False,
