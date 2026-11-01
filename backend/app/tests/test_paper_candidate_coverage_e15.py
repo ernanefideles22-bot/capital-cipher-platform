@@ -71,3 +71,64 @@ def test_empty_and_bad_samples_fail_closed():
         bad.created_at=datetime(2026,10,31,12)
         describe_candidate_visibility([bad],[],[],[],sampled_limit=1,
                                      has_more_decisions=False)
+
+
+def test_modern_agent_jobs_reconcile_missing_legacy_outputs():
+    decision = d("modern", "BUY", risk="APPROVED")
+    completed = SimpleNamespace(
+        correlation_id=decision.correlation_id,
+        status="COMPLETED",
+        completed_at=NOW-timedelta(milliseconds=250),
+        output_payload={"signal": "BUY"},
+        decision_role="PRIMARY",
+    )
+    shadow = SimpleNamespace(
+        correlation_id=decision.correlation_id,
+        status="COMPLETED",
+        completed_at=NOW-timedelta(milliseconds=100),
+        output_payload={"signal": "HOLD"},
+        decision_role="SHADOW",
+    )
+    result = describe_candidate_visibility(
+        [decision], [], [], [], execution_jobs=[completed, shadow],
+        sampled_limit=1000, has_more_decisions=False,
+    )
+    assert result["predecision_agent_visibility"] == {
+        "no_visible_predecision_agent_output": 1,
+    }
+    assert result["execution_job_visibility"] == {
+        "has_completed_predecision_job": 1,
+    }
+    assert result["completed_job_role_visibility"] == {"PRIMARY": 1, "SHADOW": 1}
+    funnel = result["action_funnel"]["BUY"]
+    assert funnel["decisions"] == 1
+    assert funnel["predecision_evidence_in_either_source"] == 1
+    assert funnel["no_visible_risk_check"] == 1
+    assert funnel["no_visible_paper_order"] == 1
+
+
+def test_late_or_failed_job_is_not_predecision_evidence():
+    decision = d("late", "SELL", risk="BLOCKED")
+    late = SimpleNamespace(
+        correlation_id=decision.correlation_id,
+        status="COMPLETED",
+        completed_at=NOW+timedelta(seconds=1),
+        output_payload={"signal": "SELL"},
+        decision_role="PRIMARY",
+    )
+    failed = SimpleNamespace(
+        correlation_id=decision.correlation_id,
+        status="DEAD_LETTER",
+        completed_at=NOW-timedelta(seconds=1),
+        output_payload={"signal": "BLOCK"},
+        decision_role="PRIMARY",
+    )
+    result = describe_candidate_visibility(
+        [decision], [], [], [], execution_jobs=[late, failed],
+        sampled_limit=1000, has_more_decisions=False,
+    )
+    assert result["execution_job_visibility"] == {
+        "job_visible_but_not_completed_before_decision": 1,
+    }
+    assert result["action_funnel"]["SELL"]["no_predecision_evidence_in_either_source"] == 1
+    assert result["action_funnel"]["SELL"]["risk_status_BLOCKED"] == 1
