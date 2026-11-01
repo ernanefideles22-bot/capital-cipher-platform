@@ -120,17 +120,9 @@ def evaluate_confluence(
         elif direction==-1 and any(p in primary.candle_patterns
             for p in ("BULLISH_ENGULFING","HAMMER_SHAPE")):
             reasons.append("ADVERSE_BULLISH_CANDLE")
-        # No target should be located behind a confirmed technical obstacle,
-        # if one is available. This optional gate can LOWER opportunity count.
-        # Existing S2 ATR bracket is never expanded or silently rewritten.
-        if direction==1 and primary.resistance is not None:
-            if primary.resistance<=primary.ema20:
-                # S/R and current close live in the same priced market,
-                # but EMA is not an admissible substitute for entry price:
-                # do not reject based on this proxy.
-                pass
-        # Confirmed pivot levels are descriptive, not predictive; the
-        # historical comparison will test whether these filters help.
+        # Confirmed pivot and Fibonacci observations remain advisory in S2C.
+        # Do not infer an executable trade or invent stop/target changes from
+        # descriptive lines. Later policy versions require separate OOS tests.
     action=plan.action if not reasons else "WAIT"
     return ConfluenceVerdict(
         strategy_id=plan.strategy_id,symbol=plan.symbol,
