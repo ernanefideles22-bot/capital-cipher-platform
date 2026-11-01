@@ -24,7 +24,7 @@ https://www.gate.com/docs/developers/apiv4/en/futures/
 
 `gate_s2d_history.py` uses only `GET /api/v4/futures/usdt/contracts/{symbol}` and `GET /api/v4/futures/usdt/candlesticks` on the **existing** `https://api-testnet.gateapi.io` domain. It fetches <=500 bars per chunk, <=6000 bars per bounded invocation, with exact aligned close-time windows and strict discontinuity, gap, duplicate, OHLCV validity, metadata and future-candle rejection. Public GET only; no keys/private endpoints. Historical chunks use their *requested close boundary* for completeness validation, never fake that this was the original network receipt time.
 
-One-shot test probes 1250 historical 15m bars (3 pages) and 180 1h + 180 4h bars per market, BTC/ETH/SOL. It reports status, not profitability. It runs in the GitHub Actions PR CI only and does not schedule future execution or consume new Railway services.
+One-shot test initially probes 1250 historical 15m bars (3 pages) and 180 1h + 180 4h bars per market, BTC/ETH/SOL. **After the freeze, the same script anchors the range to at least 180 pre-freeze candles for each timeframe** so the earlier decision context cannot disappear from a rolling lookback. If this would exceed 6000 candles in any requested frame, it fails clearly instead of silently truncating the history; a separate bounded archive extension would be needed. It reports status, not profitability. It runs in the GitHub Actions PR CI only and does not schedule future execution or consume new Railway services.
 
 ### Frozen forward evaluator
 
