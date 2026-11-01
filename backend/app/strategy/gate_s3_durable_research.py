@@ -17,6 +17,7 @@ import json
 import os
 import sqlite3
 import stat
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping
@@ -25,8 +26,10 @@ from app.schemas.market import Candle
 from app.strategy.gate_classical_s2 import STRATEGIES
 from app.strategy.gate_s2_replay import Friction, ResearchRisk
 from app.strategy.gate_s3_forward_scorecard import ShadowForwardScorecard
+from app.strategy.gate_s2e_live_shadow import S2E_POLICY_COMMIT
 
 SCHEMA_VERSION = "S3_FORWARD_RESEARCH_V1"
+SCORER_MODEL_VERSION = "S3_CAUSAL_RECEIPT_PNL_V1"
 GENESIS_HASH = "0" * 64
 MAX_OBSERVATIONS_PER_REPLAY = 100_000
 # S2E's publicly derived evidence, with a strict field allowlist.
@@ -141,7 +144,7 @@ class DurableS3ForwardResearch:
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.execute("PRAGMA synchronous=FULL")
             self.db.execute("PRAGMA busy_timeout=5000")
-            self._initialize()
+            self._initialize(friction=friction,risk=risk)
             self.scorer = ShadowForwardScorecard(friction=friction, risk=risk)
             self._head_seq: dict[str,int] = {}
             self._head_hash: dict[str,str] = {}
@@ -150,7 +153,7 @@ class DurableS3ForwardResearch:
             self.db.close()
             raise
 
-    def _initialize(self) -> None:
+    def _initialize(self, *, friction:Friction, risk:ResearchRisk) -> None:
         self.db.execute("""CREATE TABLE IF NOT EXISTS s3_schema (
             name TEXT PRIMARY KEY, version TEXT NOT NULL)""")
         row = self.db.execute(
@@ -161,6 +164,20 @@ class DurableS3ForwardResearch:
         self.db.execute(
             "INSERT OR IGNORE INTO s3_schema(name,version) VALUES (?,?)",
             ("forward_research",SCHEMA_VERSION))
+        model_config=_canonical({
+            "scorer_model_version":SCORER_MODEL_VERSION,
+            "strategy_source_commit":S2E_POLICY_COMMIT,
+            "friction":asdict(friction),
+            "risk":asdict(risk),
+        })
+        stored=self.db.execute(
+            "SELECT version FROM s3_schema WHERE name='model_parameters'"
+        ).fetchone()
+        if stored is not None and stored[0]!=model_config:
+            raise S3JournalBlocked("Research model parameters changed; separate journal required")
+        self.db.execute(
+            "INSERT OR IGNORE INTO s3_schema(name,version) VALUES (?,?)",
+            ("model_parameters",model_config))
         self.db.execute("""CREATE TABLE IF NOT EXISTS s3_observations (
             seq INTEGER PRIMARY KEY AUTOINCREMENT,
             symbol TEXT NOT NULL,
