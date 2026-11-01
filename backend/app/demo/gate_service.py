@@ -3,6 +3,8 @@ import asyncio
 import logging
 import math
 import os
+import time
+from collections import deque
 from contextlib import asynccontextmanager, AsyncExitStack
 from datetime import datetime, timezone
 
@@ -40,7 +42,11 @@ def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles
     state['professional_shadow'] = {
         'status': 'WAITING' if values.get('GATE_S1_SHADOW_ENABLED') == 'true' else 'DISABLED',
         'checked_at': None, 'markets': {}, 'execution_authorized': False,
+        'cycle_count': 0, 'consecutive_ready_cycles': 0, 'recent_cycles': [],
     }
+    shadow_cycles = deque(maxlen=16)
+    shadow_cycle_count = 0
+    shadow_ready_streak = 0
     private_account = {'equity': None}
     journals = {'research': None, 'cycle': None}
     runtime = {'flow':None,'status':'DISCONNECTED'}
@@ -127,8 +133,11 @@ def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles
             await asyncio.sleep(300)
 
     async def professional_shadow_monitor():
-        # Opt-in only; separate from account, main 300-agent analyst, OMS and risk.
+        # Opt-in only. Runs separate from the OMS and 300-agent decision path.
+        nonlocal shadow_cycle_count, shadow_ready_streak
         while True:
+            cycle_started = time.perf_counter()
+            shadow_cycle_count += 1
             try:
                 summaries = {}
                 for symbol in GATE_S1_SYMBOLS:
@@ -145,21 +154,49 @@ def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles
                             'error_type': type(exc).__name__,
                             'execution_authorized': False,
                         }
+                ready = sum(x.get('status') == 'READ_ONLY_CHART_READY'
+                            for x in summaries.values())
+                status = 'AVAILABLE' if ready == len(GATE_S1_SYMBOLS) else 'PARTIAL_OR_BLOCKED'
+                shadow_ready_streak = shadow_ready_streak + 1 if status == 'AVAILABLE' else 0
+                duration_ms = round(max(0., (time.perf_counter()-cycle_started)*1000), 3)
+                checked = datetime.now(timezone.utc).isoformat()
+                shadow_cycles.append({
+                    'cycle': shadow_cycle_count,
+                    'checked_at': checked,
+                    'status': status,
+                    'ready_markets': ready,
+                    'total_markets': len(GATE_S1_SYMBOLS),
+                    'duration_ms': duration_ms,
+                })
+                durations = sorted(c['duration_ms'] for c in shadow_cycles)
+                def percentile(q):
+                    from math import ceil
+                    return durations[max(0, ceil(q * len(durations)) - 1)]
                 state['professional_shadow'] = {
-                    'status': ('AVAILABLE' if all(x.get('status') == 'READ_ONLY_CHART_READY'
-                                                  for x in summaries.values()) else 'PARTIAL_OR_BLOCKED'),
-                    'checked_at': datetime.now(timezone.utc).isoformat(),
+                    'status': status, 'checked_at': checked,
                     'markets': summaries, 'execution_authorized': False,
+                    'cycle_count': shadow_cycle_count,
+                    'consecutive_ready_cycles': shadow_ready_streak,
+                    'recent_cycles': list(shadow_cycles),
+                    'cycle_duration_ms': duration_ms,
+                    'cycle_duration_p50_ms': percentile(.50),
+                    'cycle_duration_p95_ms': percentile(.95),
+                    'cycle_duration_p99_ms': percentile(.99),
+                    'latency_samples': len(durations),
+                    'prolonged_reliability_proven': False,
+                    'predictive_edge_proven': False,
                 }
                 logging.getLogger('uvicorn.error').info(
-                    'GATE_S1_SHADOW_STATUS %s ready_markets=%d total_markets=%d execution=false',
-                    state['professional_shadow']['status'],
-                    sum(x.get('status') == 'READ_ONLY_CHART_READY' for x in summaries.values()),
-                    len(GATE_S1_SYMBOLS))
+                    'GATE_S1_SHADOW_STATUS %s ready_markets=%d total_markets=%d '
+                    'execution=false cycle=%d streak=%d duration_ms=%.3f',
+                    status, ready, len(GATE_S1_SYMBOLS),
+                    shadow_cycle_count, shadow_ready_streak, duration_ms)
             except Exception:
-                # Even errors in the monitor cannot affect the original research or OMS.
+                # Errors are isolated; preserve original Gate research and OMS.
+                shadow_ready_streak = 0
                 state['professional_shadow']['status'] = 'BLOCKED'
                 state['professional_shadow']['checked_at'] = datetime.now(timezone.utc).isoformat()
+                state['professional_shadow']['consecutive_ready_cycles'] = 0
                 logging.getLogger('uvicorn.error').warning('GATE_S1_SHADOW_MONITOR_BLOCKED')
             await asyncio.sleep(900)
 
