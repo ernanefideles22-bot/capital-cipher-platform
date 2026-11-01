@@ -30,6 +30,7 @@ async def professional_shadow_snapshot(
     fetch: Callable[...,Awaitable[list[dict]]]=fetch_candles,
     observation_clock: Callable[[],datetime]=lambda: datetime.now(timezone.utc),
     elapsed_clock: Callable[[],float]=perf_counter,
+    strategy_shadow_hook: Callable[...,dict] | None=None,
 ) -> dict:
     """Read all 3 Gate timeframes, evaluate an actual opt-in SHADOW agent."""
     if symbol not in GATE_S1_SYMBOLS:
@@ -100,7 +101,7 @@ async def professional_shadow_snapshot(
         stage_status="READ_ONLY_CHART_READY"
     else:
         stage_status="BLOCKED_INSUFFICIENT_OR_UNAVAILABLE_DATA"
-    return {
+    result = {
         "stage":"PRO_TRADER_S1",
         "mode":"GATE_TESTNET_PUBLIC_MARKET_SHADOW_ONLY",
         "symbol":symbol,
@@ -122,3 +123,28 @@ async def professional_shadow_snapshot(
         "execution_authorized":False,
         "source_decision_cohort_modified":False,
     }
+    if strategy_shadow_hook is not None:
+        # S2E receives COPIES of the same observed OHLCV; zero additional
+        # Gate requests and no OMS/credentials or 300-agent access. Keep
+        # Stage 1 independent if the optional secondary reader fails.
+        try:
+            candles_by_tf={tf:tuple(store.get("GATE",symbol,tf,limit=GATE_S1_HISTORY))
+                           for tf in GATE_S1_TIMEFRAMES}
+            extension=strategy_shadow_hook(symbol,candles_by_tf,as_of=as_of)
+            if (not isinstance(extension,dict)
+                    or extension.get("status")!="READ_ONLY_CONFLUENCE_READY"
+                    or extension.get("execution_authorized") is not False
+                    or extension.get("source_decision_cohort_modified") is not False
+                    or extension.get("oms_touched") is not False
+                    or extension.get("symbol")!=symbol):
+                raise ValueError("Unsafe S2E research extension")
+            result["strategy_shadow"]=extension
+        except Exception as exc:
+            result["strategy_shadow"]={
+                "status":"BLOCKED","symbol":symbol,
+                "error_type":type(exc).__name__,
+                "execution_authorized":False,
+                "oms_touched":False,
+                "source_decision_cohort_modified":False,
+            }
+    return result
