@@ -94,3 +94,37 @@ preregister another future campaign instead.
   service, original PostgreSQL or volumes are changed.
 - Until real, durable, independently timestamped data exist, the correct
   campaign status is **FROZEN_WAITING_FOR_INDEPENDENT_FUTURE_CANDLE_COLLECTION**.
+
+
+## Existing 300-agent PAPER forecast stream (separate from three-core replay)
+
+The E2.6 read-only audit now also includes
+`backend/app/strategy/paper_future_agent_cohort_e26.py`. It uses ONLY
+previously persisted `agent_forecasts`, `agent_forecast_outcomes`,
+and `agent_execution_jobs` records, and never executes an agent.
+
+This independent report selects target bars **no earlier than the frozen
+2026-11-05 start**, verifying matching correlation, agent name, version,
+decision role, PAPER execution mode, actual job creation and COMPLETION
+timestamps strictly before the forecast target. A correlated SQL EXISTS
+condition prevents retried jobs from multiplying a single prediction.
+Both the original forecast and outcome timestamps must respect their known
+candle-receipt semantics. Grouping covers agent identity, version, decision
+role, symbol and timeframe. It reports directional accuracy, Brier loss
+against a fixed 0.5 benchmark and distinct market target events. It does
+not estimate profit or select winning agents. At least 30 DISTINCT events
+are required even for descriptive reporting.
+
+The study status is explicitly NOT_STARTED before the future cutoff, INTERIM
+during the window and CLOSED_UNATTESTED after completion. Matching runtime
+jobs and database observations do not constitute external sealing or
+authenticated Binance data provenance; the 300-agent report is an
+**observational** counterpart to the independent, three-core-signal
+counterfactual comparison.
+
+The future-cohort query is integrated into the existing isolated
+`capital-cipher-db-audit` reporting task, not into the production
+backend. The audit is one-shot: deploying its code does **not** start
+a recurring 300-agent scoring schedule. The primary backend remains untouched,
+and the current PR stays DRAFT. This independent per-agent cohort also
+cannot prove marginal P&L contribution of any particular agent to an OMS order.
