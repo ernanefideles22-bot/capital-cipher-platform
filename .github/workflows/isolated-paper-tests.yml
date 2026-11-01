@@ -58,7 +58,7 @@ jobs:
       - name: Stage 1 professional Gate Futures TestNet chart causality (HTTP mocks, no orders)
         working-directory: backend
         run: |
-          python -m pytest -q app/tests/test_professional_gate_chart_stage1.py app/tests/test_gate_futures_testnet_feed_stage1.py app/tests/test_strategy_research_lab.py
+          python -m pytest -q app/tests/test_professional_gate_chart_stage1.py app/tests/test_gate_futures_testnet_feed_stage1.py app/tests/test_gate_professional_chart_shadow_stage1.py app/tests/test_strategy_research_lab.py
       - name: E2.5 long-only core-agent skill filter on disjoint public SPOT candles
         working-directory: backend
         run: |
