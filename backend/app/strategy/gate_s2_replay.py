@@ -176,8 +176,14 @@ def replay_segment(
         raise ValueError("Insufficient historical research data")
     if not MIN_HISTORY <= start_index < end_index <= len(bars):
         raise ValueError("Invalid replay window")
-    # Batch timestamp check (real receipts must not predate close).
-    as_of=max(b.received_at for b in bars)
+    # Historical snapshots can share a *current* batch receipt timestamp.
+    # For a truncated walk-forward prefix, do NOT compare that present-day
+    # timestamp to the prefix's old final bar; it would mark every training
+    # window stale. Historical replay assumes hypothetical availability just
+    # AFTER the most recent closed bar, without asserting historical receipts.
+    # The strict received_at <= as_of condition remains mandatory for all
+    # NON-replay and live strategy decisions.
+    as_of=bars[-1].closed_at + timedelta(microseconds=1)
     _check_bars(bars, as_of, replay=True)
     spec=STRATEGIES[strategy_id]
     equity=risk.initial_equity
