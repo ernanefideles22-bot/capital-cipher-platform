@@ -14,7 +14,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import desc, or_, select, text, tuple_
+from sqlalchemy import desc, or_, select, text, tuple_, func
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.database.models import (
@@ -256,9 +256,34 @@ async def export_forensics(
                 ).in_(e24_keys))
                 .limit(OBSERVATION_LIMIT)
             )).scalars()) if e24_candle_visible and e24_keys else []
+            # Unlike forecast.created_at, job.created_at is the actual
+            # runtime submission timestamp (see AgentRuntime.submit()).
+            # It is the first downstream event after save_candle() in the
+            # orchestrator. Never interpret candle.received_at as an INSERT.
+            e24_corrs = {
+                row.sample_correlation for row in e24_sample
+                if row.correlation_count == 1 and row.sample_correlation
+            }
+            e24_jobs = list((await session.execute(
+                select(
+                    AgentExecutionJobModel.correlation_id,
+                    func.min(AgentExecutionJobModel.created_at).label(
+                        "first_created"
+                    ),
+                )
+                .where(
+                    AgentExecutionJobModel.correlation_id.in_(e24_corrs)
+                )
+                .group_by(AgentExecutionJobModel.correlation_id)
+                .limit(EVENT_PROBE_LIMIT + 1)
+            )).all()) if job_source_visible and e24_corrs else []
             e24_market = summarize_market_evidence(
                 e24_series, e24_events, e24_observations,
                 observation_table_visible=e24_candle_visible,
+                first_job_created_by_correlation={
+                    x.correlation_id: x.first_created for x in e24_jobs
+                },
+                job_table_visible=job_source_visible,
                 now=cohort_now,
             )
             e24_market["forecast_and_outcome_tables_visible"] = (
