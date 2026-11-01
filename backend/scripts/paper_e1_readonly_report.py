@@ -28,6 +28,7 @@ from app.strategy.paper_evidence_integrity_e11 import inspect_evidence
 from app.strategy.paper_net_economics_e13 import analyze_cost_diagnostics
 from app.strategy.paper_shadow_cohorts_e14 import describe_shadow_cohorts
 from app.strategy.paper_candidate_coverage_e15 import describe_candidate_visibility
+from app.strategy.paper_decision_context_e17 import inspect_decision_context
 
 
 def to_float(value):
@@ -143,6 +144,10 @@ async def export_forensics(
                 sampled_limit=decision_sample_limit,
                 has_more_decisions=candidate_sample_truncated,
                 execution_jobs=candidate_jobs[:10000],
+            )
+            candidate_coverage["decision_context"] = inspect_decision_context(
+                candidate_decisions, candidate_risks[:2000],
+                candidate_orders[:2000],
             )
             candidate_coverage["related_evidence_sample_truncated"] = {
                 "risk_checks": len(candidate_risks) > 2000,
