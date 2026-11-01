@@ -103,5 +103,5 @@ async def test_invalid_market_rows_are_not_silently_repaired():
         if tf=="15m":
             data[0]["high"] = 0
         return data
-    with pytest.raises(ValueError,match="Invalid candle"):
+    with pytest.raises(ValueError,match="Invalid Gate Stage1 candle"):
         await professional_shadow_snapshot("BTCUSDT",fetch=market_fetch)
