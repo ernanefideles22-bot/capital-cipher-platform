@@ -72,6 +72,8 @@ def event_probe_query(now: datetime):
         select(
             F.symbol, F.timeframe, F.forecast_at, F.target_at,
             func.count(F.forecast_id).label("forecast_count"),
+            func.count(func.distinct(F.correlation_id)).label("correlation_count"),
+            func.min(F.correlation_id).label("sample_correlation"),
             func.min(F.reference_price).label("reference_min"),
             func.max(F.reference_price).label("reference_max"),
             func.min(O.realized_price).label("outcome_min"),
@@ -101,6 +103,7 @@ def _same_price(a, b):
 def summarize_market_evidence(
     series_rows, sampled_events, candle_observations, *,
     observation_table_visible: bool, now: datetime,
+    first_job_created_by_correlation=None, job_table_visible=False,
 ) -> dict:
     _cutoff(now)
     if len(series_rows) > SERIES_LIMIT + 1 or len(sampled_events) > EVENT_PROBE_LIMIT + 1:
@@ -115,6 +118,9 @@ def summarize_market_evidence(
         "profitability_or_agent_promotion_authorized": False,
         "source_independence": "DISTINCT_TARGET_PER_SYMBOL_TIMEFRAME_NOT_INDEPENDENT_PNL",
         "observation_table_visible": bool(observation_table_visible),
+        "job_table_visible": bool(job_table_visible),
+        "forecast_created_at_semantics": "CANDLE_RECEIVED_AT_NOT_FORECAST_DB_INSERT_TIME",
+        "legacy_recorded_at_vs_forecast_created_at_is_causal_proof": False,
     }
     series = []
     for r in series_rows[:SERIES_LIMIT]:
@@ -161,12 +167,15 @@ def summarize_market_evidence(
     if len(candle_observations) > OBSERVATION_LIMIT:
         raise ValueError("Unbounded observations")
 
+    if first_job_created_by_correlation is None:
+        first_job_created_by_correlation = {}
     obs_by_key = defaultdict(list)
     for c in candle_observations:
         obs_by_key[(str(c.symbol), str(c.timeframe), c.closed_at)].append(c)
     counters = Counter()
     exchange_counts = Counter()
     quality_counts = Counter()
+    job_preflight = Counter()
     for evt in sampled_events[:EVENT_PROBE_LIMIT]:
         counters["probed_distinct_forecast_target_events"] += 1
         sym, tf = str(evt.symbol), str(evt.timeframe)
@@ -222,6 +231,31 @@ def summarize_market_evidence(
                     counters[phase + "_asof_price_and_time_match"] += 1
                 elif received and recorded:
                     counters[phase + "_receipt_store_on_different_rows"] += 1
+        # E2.4.2: unlike forecast.created_at, runtime job.created_at
+        # is constructed when the agent job is SUBMITTED, after save_candle()
+        # returned. Compare the stored reference candle to that moment.
+        corr = getattr(evt, "sample_correlation", None)
+        corr_count = int(getattr(evt, "correlation_count", 0))
+        if not job_table_visible:
+            job_preflight["job_source_not_visible"] += 1
+        elif corr_count != 1 or not corr:
+            job_preflight["ambiguous_or_missing_event_correlation"] += 1
+        elif corr not in first_job_created_by_correlation:
+            job_preflight["no_matching_runtime_job"] += 1
+        else:
+            first_job = first_job_created_by_correlation[corr]
+            job_preflight["runtime_job_found"] += 1
+            if ref_price_matches and any(
+                x.recorded_at <= first_job
+                and x.received_at <= first_job
+                and x.received_at >= x.closed_at
+                for x in ref_price_matches
+            ):
+                job_preflight["reference_persisted_before_first_agent_job"] += 1
+            elif ref_price_matches:
+                job_preflight["reference_not_proven_before_job"] += 1
+            else:
+                job_preflight["reference_price_not_matched_for_job"] += 1
         before_ref = [
             x for x in ref_price_matches
             if x.received_at <= evt.first_forecast_created
@@ -268,6 +302,13 @@ def summarize_market_evidence(
         "matching_reference_quality_labels": dict(sorted(quality_counts.items())),
         "not_a_source_proof": True,
     }
+    report["job_submission_clock_crosscheck"] = {
+        "mode": "REFERENCE_CANDLE_PERSISTENCE_BEFORE_RUNTIME_JOB_SUBMISSION",
+        "counts": dict(sorted(job_preflight.items())),
+        "job_created_at_is_different_from_forecast_created_at": True,
+        "target_candle_not_checked_against_next_cycle_job": True,
+        "not_an_external_exchange_authentication": True,
+    }
     report["limitations"] = [
         "Same candle evaluated by 300 agents is ONE target event, not 300 independent market observations.",
         "Different assets/timeframes are market-correlated; sums overstate effective independence.",
@@ -276,6 +317,8 @@ def summarize_market_evidence(
         "A missing observation may be RLS, retention, different table, or a real provenance problem.",
         "Probe checks only a bounded recent sample and cannot certify every event or audit raw payload signatures.",
         "A candle observed after forecast creation can be a legitimate late persistence path, a clock discrepancy or a synthetic/backfilled source; the audit does not infer which.",
+        "Forecast and outcome created_at contain candle.received_at, so recorded_at comparisons with them are not valid persistence-order tests.",
+        "The job_created_at crosscheck uses only reference candles and earliest agent job submission for the same unambiguous correlation ID.",
         "No future holdout, execution costs, strategy optimization or agent authority enabled.",
     ]
     return report
