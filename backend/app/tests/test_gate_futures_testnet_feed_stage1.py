@@ -145,3 +145,21 @@ def test_stale_empty_http_errors_and_bad_json_do_not_trigger_fallback():
         asyncio.run(request({"unexpected":"body"}))
     with pytest.raises(ValueError,match="80-3000"):
         asyncio.run(request([]))
+
+
+def test_inherited_gate_credentials_are_rejected_before_any_network_call():
+    observed=[]
+    def handler(req):
+        observed.append(req)
+        return httpx.Response(200,json=rows())
+    async def run():
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            headers={"KEY":"must-never-leak"},
+        ) as client:
+            await fetch_gate_testnet_chart(
+                client,contract="BTC_USDT",timeframe="15m",
+            )
+    with pytest.raises(ValueError,match="Authenticated HTTP client forbidden"):
+        asyncio.run(run())
+    assert observed==[]
