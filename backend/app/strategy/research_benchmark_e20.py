@@ -185,6 +185,12 @@ def benchmark_series(path: Path, *, symbol: str, timeframe: str) -> dict:
         "protocol_sha256": protocol_hash(),
         "source": source,
         "symbol": symbol, "timeframe": timeframe,
+        "side": reference.side,
+        "spot_execution_feasibility": (
+            "SYNTHETIC_SHORT_RESEARCH_NOT_SPOT_EXECUTABLE"
+            if reference.side == "SELL" else
+            "LONG_ONLY_RESEARCH_NOT_EXECUTION_AUTHORIZED"
+        ),
         "holdout_start_index": boundary,
         "reference_fingerprint": reference.fingerprint,
         "candidate_fingerprint": candidate.fingerprint,
@@ -198,6 +204,8 @@ def benchmark_series(path: Path, *, symbol: str, timeframe: str) -> dict:
             "OHLCV cannot reconstruct intrabar order-book conditions or true slippage.",
             "The two 12/25-bps-per-side assumptions are scenario tests, not measured exchange costs.",
             "Independent one-symbol trials cannot be summed as a realistic correlated portfolio.",
+            "ETH 1h SELL simulates a short on SPOT-derived prices: it is NOT directly executable as a Binance SPOT short, and Gate futures conditions were not tested.",
+            "Changing a hypothesis after seeing these results would contaminate this historical holdout.",
             "No operational changes, automated learning or strategy promotion.",
         ],
     }
