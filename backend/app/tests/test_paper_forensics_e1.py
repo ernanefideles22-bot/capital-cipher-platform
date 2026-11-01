@@ -313,6 +313,8 @@ async def test_real_exporter_materializes_orm_rows_with_read_only_session(monkey
         "E26_FUTURE_VERSIONED_AGENT_SHADOW_ONLY"
     )
     assert not result["future_agent_cohort"]["execution_authorized"]
+    assert result["future_market_readiness"]["complete_internal_warmup_count"] == 0
+    assert not result["future_market_readiness"]["future_data_prospective_proof"]
     assert result["candidate_coverage"]["decision_context"]["mode"] == (
         "HISTORICAL_DIAGNOSTIC_ONLY"
     )
@@ -470,6 +472,12 @@ def test_railway_e1_executor_logs_no_database_credentials(monkeypatch, capsys):
                     "agent_execution_jobs": False,
                 },
             },
+            "future_market_readiness": {
+                "mode": "E26_EXISTING_STAGING_MARKET_STORAGE_READ_ONLY_PRECHECK",
+                "complete_internal_warmup_count": 0,
+                "future_data_prospective_proof": False,
+                "execution_authorized": False,
+            },
             "future_agent_cohort": {
                 "mode": "E26_FUTURE_VERSIONED_AGENT_SHADOW_ONLY",
                 "status": "SOURCE_TABLES_NOT_VISIBLE",
@@ -558,6 +566,10 @@ def test_railway_e1_executor_logs_no_database_credentials(monkeypatch, capsys):
         "E26_FUTURE_VERSIONED_AGENT_SHADOW_ONLY"
     )
     assert not summary["future_agent_cohort"]["execution_authorized"]
+    assert summary["future_market_readiness"]["mode"] == (
+        "E26_EXISTING_STAGING_MARKET_STORAGE_READ_ONLY_PRECHECK"
+    )
+    assert not summary["future_market_readiness"]["execution_authorized"]
     assert summary["shadow_cohorts"]["mode"] == (
         "POST_HOC_IN_SAMPLE_DESCRIPTIVE_ONLY"
     )
