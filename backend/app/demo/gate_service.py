@@ -14,6 +14,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from app.demo.gate_readonly import GateProbeError, probe_account
 from app.demo.gate_market import fetch_candles
 from app.demo.gate_stage1_shadow import professional_shadow_snapshot, GATE_S1_SYMBOLS
+from app.strategy.gate_s2e_live_shadow import evaluate_shared_shadow
 from app.demo.gate_analysis import analyze_snapshot
 from app.demo.gate_reconcile import inventory
 from app.demo.gate_position_config import read_position_config
@@ -29,7 +30,8 @@ def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles
                inventory_fn=inventory, position_config_fn=read_position_config,
                storage_path='/gate-data', mount_check=os.path.ismount, oms_connector=connect_gate_oms,
                stage1_shadow_runner=professional_shadow_snapshot,
-               stage1_sleep=asyncio.sleep):
+               stage1_sleep=asyncio.sleep,
+               strategy_shadow_runner=evaluate_shared_shadow):
     values = dict(os.environ if environment is None else environment)
     key, secret = values.get(KEY_VARIABLE, "").strip(), values.get(SECRET_VARIABLE, "").strip()
     state = {"environment": "GATE_TESTNET", "status": "WAITING_FOR_CREDENTIALS",
@@ -44,6 +46,17 @@ def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles
         'status': 'WAITING' if values.get('GATE_S1_SHADOW_ENABLED') == 'true' else 'DISABLED',
         'checked_at': None, 'markets': {}, 'execution_authorized': False,
         'cycle_count': 0, 'consecutive_ready_cycles': 0, 'recent_cycles': [],
+    }
+    # S2E is strictly opt-in AND requires the original read-only S1 monitor.
+    # A standalone S2E=true flag without S1=true never starts anything.
+    strategy_shadow_enabled = (
+        values.get('GATE_S1_SHADOW_ENABLED')=='true' and
+        values.get('GATE_S2E_SHADOW_ENABLED')=='true'
+    )
+    state['strategy_shadow'] = {
+        'status':'WAITING' if strategy_shadow_enabled else 'DISABLED',
+        'checked_at':None, 'markets':{}, 'execution_authorized':False,
+        'source_decision_cohort_modified':False,
     }
     shadow_cycles = deque(maxlen=16)
     shadow_cycle_count = 0
@@ -141,20 +154,46 @@ def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles
             shadow_cycle_count += 1
             try:
                 summaries = {}
+                strategy_summaries = {}
                 for symbol in GATE_S1_SYMBOLS:
                     try:
-                        report = await stage1_shadow_runner(symbol)
+                        if strategy_shadow_enabled:
+                            report = await stage1_shadow_runner(
+                                symbol,strategy_shadow_hook=strategy_shadow_runner)
+                        else:
+                            report = await stage1_shadow_runner(symbol)
                         if (report.get('execution_authorized') is not False or
                                 report.get('source_decision_cohort_modified') is not False or
                                 report.get('agent_signal') not in {'NEUTRAL','WAIT'}):
                             raise ValueError('Unsafe Stage 1 SHADOW result')
                         summaries[symbol] = report
+                        if strategy_shadow_enabled:
+                            ext=report.get('strategy_shadow')
+                            if (not isinstance(ext,dict)
+                                    or ext.get('status')!='READ_ONLY_CONFLUENCE_READY'
+                                    or ext.get('execution_authorized') is not False
+                                    or ext.get('oms_touched') is not False
+                                    or ext.get('source_decision_cohort_modified') is not False):
+                                strategy_summaries[symbol] = {
+                                    'status':'BLOCKED', 'execution_authorized':False,
+                                }
+                            else:
+                                strategy_summaries[symbol] = {
+                                    'status':'READ_ONLY_CONFLUENCE_READY',
+                                    'candidate_count':int(ext.get('candidate_count',0)),
+                                    'filtered_count':int(ext.get('filtered_count',0)),
+                                    'execution_authorized':False,
+                                }
                     except Exception as exc:
                         summaries[symbol] = {
                             'symbol': symbol, 'status': 'BLOCKED',
                             'error_type': type(exc).__name__,
                             'execution_authorized': False,
                         }
+                        if strategy_shadow_enabled:
+                            strategy_summaries[symbol]={
+                                'status':'BLOCKED','execution_authorized':False,
+                            }
                 ready = sum(x.get('status') == 'READ_ONLY_CHART_READY'
                             for x in summaries.values())
                 status = 'AVAILABLE' if ready == len(GATE_S1_SYMBOLS) else 'PARTIAL_OR_BLOCKED'
@@ -187,6 +226,20 @@ def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles
                     'prolonged_reliability_proven': False,
                     'predictive_edge_proven': False,
                 }
+                if strategy_shadow_enabled:
+                    strategy_ready=sum(x['status']=='READ_ONLY_CONFLUENCE_READY'
+                                       for x in strategy_summaries.values())
+                    strategy_status=('AVAILABLE' if strategy_ready==len(GATE_S1_SYMBOLS)
+                                     else 'PARTIAL_OR_BLOCKED')
+                    state['strategy_shadow']={
+                        'status':strategy_status,'checked_at':checked,
+                        'markets':strategy_summaries,'execution_authorized':False,
+                        'source_decision_cohort_modified':False,
+                    }
+                    logging.getLogger('uvicorn.error').info(
+                        'GATE_S2E_SHADOW_STATUS %s ready_markets=%d total_markets=%d execution=false',
+                        strategy_status,strategy_ready,len(GATE_S1_SYMBOLS),
+                    )
                 logging.getLogger('uvicorn.error').info(
                     'GATE_S1_SHADOW_STATUS %s ready_markets=%d total_markets=%d '
                     'execution=false cycle=%d streak=%d duration_ms=%.3f',
@@ -198,6 +251,9 @@ def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles
                 state['professional_shadow']['status'] = 'BLOCKED'
                 state['professional_shadow']['checked_at'] = datetime.now(timezone.utc).isoformat()
                 state['professional_shadow']['consecutive_ready_cycles'] = 0
+                if strategy_shadow_enabled:
+                    state['strategy_shadow']['status']='BLOCKED'
+                    state['strategy_shadow']['checked_at']=datetime.now(timezone.utc).isoformat()
                 logging.getLogger('uvicorn.error').warning('GATE_S1_SHADOW_MONITOR_BLOCKED')
             await stage1_sleep(900)
 
