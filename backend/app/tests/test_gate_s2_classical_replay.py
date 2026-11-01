@@ -176,7 +176,7 @@ def test_oos_is_frozen_and_future_changes_do_not_change_train(monkeypatch):
     for j in range(81,len(data)):
         price=100
         if j < split:
-            hi,lo,close=104.,99.5,102.
+            hi,lo,close=(100.5,97.,99.) if j%8==0 else (104.,99.5,102.)
         else:
             hi,lo,close=100.5,97.,99.
         data[j]=data[j].model_copy(update={
