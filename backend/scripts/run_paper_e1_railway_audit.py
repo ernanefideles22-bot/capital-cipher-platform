@@ -128,6 +128,7 @@ def main() -> int:
                     "execution_job_visibility",
                     "completed_job_role_visibility",
                     "action_funnel",
+                    "decision_context",
                     "related_evidence_sample_truncated",
                 )
             },
