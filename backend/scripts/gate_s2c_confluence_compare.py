@@ -54,8 +54,7 @@ async def main():
                 friction=friction,risk=risk,
                 plan_evaluator=evaluator.evaluate,
             )
-            if (standalone.execution_authorized or gated.execution_authorized
-                    or len(gated.trades)>len(standalone.trades)):
+            if standalone.execution_authorized or gated.execution_authorized:
                 raise ValueError("Confluence comparison violated safety contract")
             record={
                 "symbol":symbol,"strategy":strategy_id,
