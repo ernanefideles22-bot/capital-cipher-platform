@@ -38,6 +38,11 @@ from app.strategy.paper_market_provenance_e24 import (
     independence_query, event_probe_query, summarize_market_evidence,
     EVENT_PROBE_LIMIT, OBSERVATION_LIMIT,
 )
+from app.strategy.paper_future_agent_cohort_e26 import (
+    readiness as e26_readiness,
+    per_agent_query as e26_per_agent_query,
+    summarize as e26_agent_summary,
+)
 
 
 def to_float(value):
@@ -289,6 +294,25 @@ async def export_forensics(
             e24_market["forecast_and_outcome_tables_visible"] = (
                 forecast_source_visible and outcome_source_visible
             )
+            # E2.6: after the PRE-FROZEN UTC campaign start only, observe
+            # existing 300-agent PAPER/SHADOW forecasts and immutable job
+            # identities. No workers, scheduling, writes or OMS permission.
+            # Until the future target window, do not even query candidates.
+            e26_sources = (
+                forecast_source_visible and outcome_source_visible
+                and job_source_visible
+            )
+            e26_status = e26_readiness(
+                cohort_now, sources_visible=e26_sources
+            )
+            e26_rows = list((await session.execute(
+                e26_per_agent_query(cohort_now)
+            )).all()) if e26_sources and e26_status != (
+                "FUTURE_WINDOW_NOT_STARTED"
+            ) else []
+            e26_forward = e26_agent_summary(
+                e26_rows, now=cohort_now, sources_visible=e26_sources
+            )
             if not orders:
                 report = analyze_paper_trades(())
                 return {
@@ -308,6 +332,8 @@ async def export_forensics(
                     "agent_quality": e22_quality,
                     "agent_cohort": e23_quality,
                     "market_provenance": e24_market,
+                "future_agent_cohort": e26_forward,
+                    "future_agent_cohort": e26_forward,
                     "report": asdict(report),
                     "caveat": "Zero visible rows is not evidence of zero trades; verify archive/retention and RLS.",
                 }
