@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Callable, Awaitable
+from pydantic import ValidationError as PydanticValidationError
 
 from app.agents.gate_professional_chart_shadow import GateProfessionalChartShadowAgent
 from app.demo.gate_market import fetch_candles
@@ -45,13 +46,17 @@ async def professional_shadow_snapshot(
         for row in rows:
             if not isinstance(row,dict):
                 raise ValueError("Malformed Gate OHLCV snapshot")
-            candle=Candle(
-                exchange=Exchange.GATE,symbol=symbol,timeframe=tf,
-                open=row["open"],high=row["high"],low=row["low"],
-                close=row["close"],volume=row["volume"],
-                closed_at=datetime.fromtimestamp(row["close_time_ms"]/1000,timezone.utc),
-                received_at=observed,
-            )
+            try:
+                candle=Candle(
+                    exchange=Exchange.GATE,symbol=symbol,timeframe=tf,
+                    open=row["open"],high=row["high"],low=row["low"],
+                    close=row["close"],volume=row["volume"],
+                    closed_at=datetime.fromtimestamp(row["close_time_ms"]/1000,timezone.utc),
+                    received_at=observed,
+                )
+            except (PydanticValidationError, ValueError, KeyError, TypeError,
+                    OverflowError, OSError):
+                raise ValueError("Invalid Gate Stage1 candle") from None
             # Candidate charts are intentionally not persisted to the
             # existing OMS, volume, audit or 300-agent in-memory stores.
             if not store.add(candle):
