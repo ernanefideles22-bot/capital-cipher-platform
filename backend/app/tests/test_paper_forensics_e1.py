@@ -297,6 +297,9 @@ async def test_real_exporter_materializes_orm_rows_with_read_only_session(monkey
     assert result["agent_history_coverage"] == "UNVERIFIED_MAY_BE_PRUNED"
     assert result["candidate_coverage"]["sampled_decisions"] == 0
     assert result["candidate_coverage"]["prospective_collection_running"] is False
+    assert result["candidate_coverage"]["decision_context"]["mode"] == (
+        "HISTORICAL_DIAGNOSTIC_ONLY"
+    )
     assert result["evidence_integrity"]["decision_link_status"] == {
         "NOT_VISIBLE_BY_ID": 1,
     }
@@ -437,6 +440,15 @@ def test_railway_e1_executor_logs_no_database_credentials(monkeypatch, capsys):
                 "execution_job_visibility": {"no_visible_execution_job": 1},
                 "completed_job_role_visibility": {},
                 "action_funnel": {"HOLD": {"decisions": 1, "no_visible_risk_check": 1}},
+                "decision_context": {
+                    "mode": "HISTORICAL_DIAGNOSTIC_ONLY",
+                    "embedded_summary_coverage": {"decisions_with_embedded_agent_summary": 1},
+                    "embedded_summary_agent_statuses": {"COMPLETED": 2},
+                    "embedded_summary_agent_signals": {"BUY": 1, "SELL": 1},
+                    "directional_status_and_order_funnel": {},
+                    "blocked_risk_reason_categories": {},
+                    "blocked_risk_categories_by_action": {},
+                },
                 "related_evidence_sample_truncated": {
                     "risk_checks": False, "paper_orders": False, "agent_outputs": False,
                     "agent_execution_jobs": False,
