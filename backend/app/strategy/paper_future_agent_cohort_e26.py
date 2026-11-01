@@ -76,6 +76,8 @@ def per_agent_query(now: datetime):
             J.agent_version == F.agent_version,
             J.decision_role == F.decision_role,
             J.execution_mode == "PAPER",
+            J.status == "COMPLETED",
+            J.completed_at < F.target_at,
             J.created_at >= START-timedelta(hours=4),
             J.created_at < F.target_at,
             J.created_at <= current,
@@ -120,7 +122,13 @@ def summarize(rows, *, now: datetime, sources_visible: bool) -> dict:
     if status in ("FUTURE_WINDOW_NOT_STARTED","SOURCE_TABLES_NOT_VISIBLE") and rows:
         raise ValueError("Evidence cannot exist for unavailable forward window")
     cards=[]
+    seen=set()
     for row in rows[:GROUP_LIMIT]:
+        key=(str(row.agent_name),str(row.agent_version),
+             str(row.decision_role),str(row.symbol),str(row.timeframe))
+        if key in seen:
+            raise ValueError("Duplicate forward agent cohort group")
+        seen.add(key)
         settled=int(row.settled)
         distinct=int(row.distinct_target_events)
         direct=int(row.directional)
