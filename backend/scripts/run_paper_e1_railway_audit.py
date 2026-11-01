@@ -117,6 +117,7 @@ def main() -> int:
             "by_side": _grouped(report, "by_side"),
             "evidence_integrity": data["evidence_integrity"],
             "agent_quality": data["agent_quality"],
+            "agent_cohort": data["agent_cohort"],
             "candidate_coverage": {
                 k: data["candidate_coverage"][k] for k in (
                     "mode", "prospective_collection_running",
