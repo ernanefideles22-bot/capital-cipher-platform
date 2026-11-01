@@ -24,3 +24,16 @@ Status **DRAFT, offline, never authorized for orders or deployment**.
 2. One-shot research-only diagnostic compares three fixed strategies independently for BTC/ETH/SOL 15m entries, filtered by synchronized 1h/4h. Outputs baseline vs gated *net* PnL, trade count, drawdown, and reasons for refusals. Nine comparisons on public Gate Futures Testnet data, no authenticated/write endpoint, no trading, no staging deployment.
 3. A difference in hypothetical OOS performance is not proof of predictive alpha. These series are short and overlap across policies/strategies; no trade-frequency or confidence claim is justified without independent regimes, far longer historical periods, unchanged thresholds, actual Gate fee/slippage/funding calibration and repeated or prospective holdouts.
 4. **No activation in OMS or existing 300 agents**. For later controlled SHADOW staging, require review of both CI workflows, no future leakage, and explicit operator approval before touching the Gate service. LIVE/TESTNET orders separately forbidden.
+
+## Observed initial result, Gate Testnet public historical replay (1 Nov 2026)
+
+The one-shot CI comparison ran **nine unselected fixed strategy experiments** (BTC/ETH/SOL × three strategies, 15m signals with 1h/4h context), each on 800 15m candles with a chronologically later 320-bar segment. Results are **overlapping independent hypothetical accounts** with US$1000 initial capital each and stress costs; the PnLs must **not** be interpreted as a single portfolio.
+
+- S2 standalone: 109 simulated trades, sum of independent hypothetical account PnL **-US$194.410594**.
+- S1+S2 context filter: 27 simulated trades, sum **-US$50.798227**; 148 candidate evaluations rejected by confluence.
+- With **zero trades**, the no-trade benchmark PnL is **US$0** for every account. The filter beat the always-trading baseline in this restricted window but **still underperformed abstention**.
+- Among nine comparisons, the gate shut off all three Bollinger/RSI mean-reversion branches, often because higher timeframes were trending. SOL 15m Donchian worsened (-6.55 vs -7.88), and SOL EMA remained unchanged and losing (-22.98 each).
+- BTC 15m Donchian alone was -15.744107; filtered was +2.610379, but only two filtered trades: not a credible positive sample.
+- **No candidate is validated for profitability, no executable trading access is granted.**
+
+**Important selection limitation:** The same recent Gate market history had already been examined during Stage 2A/2B development. The 320-bar later slice is chronologically separated **within this diagnostic** but is **not a pristine, never-observed independent holdout**. Thus these results cannot establish generalization or alpha, even if some PnLs become positive. Before performance claims, freeze policies and test on genuinely new data and sufficiently large forward windows. In particular, reducing entries alone can improve observed drawdown without improving per-trade expectancy or beating a no-trade baseline.
