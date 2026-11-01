@@ -139,8 +139,8 @@ def test_late_signal_expires_instead_of_backdating_entry():
     score=ShadowForwardScorecard(friction=Friction(0,0,0))
     send(score,candle(0,received_offset=1000),proposed="LONG",offset=1000)
     # By the next bar observation, the next open was before the signal.
-    send(score,candle(1,received_offset=1100),offset=1100)
-    send(score,candle(2,received_offset=1200),offset=1200)
+    send(score,candle(1,received_offset=120),offset=120)
+    send(score,candle(2,received_offset=5),offset=5)
     outcome=send(score,candle(3,received_offset=5),offset=5)
     assert not account(outcome,"STANDALONE")["open_position"]
     assert account(outcome,"STANDALONE")["expired_signals"]==1
