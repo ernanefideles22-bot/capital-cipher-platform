@@ -120,6 +120,7 @@ def main() -> int:
             "agent_cohort": data["agent_cohort"],
             "market_provenance": data["market_provenance"],
             "future_agent_cohort": data["future_agent_cohort"],
+            "future_market_readiness": data["future_market_readiness"],
             "candidate_coverage": {
                 k: data["candidate_coverage"][k] for k in (
                     "mode", "prospective_collection_running",
