@@ -137,3 +137,18 @@ def test_invalid_fold_boundaries_fail_closed(train,forward):
     with pytest.raises(ValueError,match="Insufficient|Not enough"):
         expanding_walk_forward(bars(700),initial_train_bars=train,
                                oos_bars=forward)
+
+
+
+def test_walk_forward_accepts_batch_observed_histories_without_faking_receipts():
+    historical=bars(800)
+    batch_receipt=historical[-1].closed_at+timedelta(seconds=5)
+    historical=[bar.model_copy(update={"received_at":batch_receipt})
+                for bar in historical]
+    # This deliberately replicates the Gate public historical fetch:
+    # all old bars are first observed at one single current request time.
+    result=expanding_walk_forward(
+        historical,initial_train_bars=400,oos_bars=120)
+    assert result.total_folds==3
+    assert result.profitability_proven is False
+    assert result.automatic_promotion_authorized is False
