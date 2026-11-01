@@ -31,6 +31,9 @@ from app.strategy.paper_shadow_cohorts_e14 import describe_shadow_cohorts
 from app.strategy.paper_candidate_coverage_e15 import describe_candidate_visibility
 from app.strategy.paper_decision_context_e17 import inspect_decision_context
 from app.strategy.paper_agent_quality_e22 import evaluate_runtime_quality
+from app.strategy.paper_agent_cohort_e23 import (
+    cohort_query, summarize_cohort_rows,
+)
 
 
 def to_float(value):
@@ -208,6 +211,18 @@ async def export_forensics(
                 outcome_table_visible=outcome_source_visible,
                 jobs_table_visible=job_source_visible,
             )
+            # E2.3: a single GROUP BY returns a bounded number of cohort
+            # aggregates over seven days; no unbounded forecast materialization.
+            # If either source is inaccessible, mark NOT_VISIBLE instead.
+            cohort_now = datetime.now(timezone.utc)
+            cohort_rows = list((await session.execute(
+                cohort_query(cohort_now)
+            )).all()) if forecast_source_visible and outcome_source_visible else []
+            e23_quality = summarize_cohort_rows(
+                cohort_rows,
+                tables_visible=forecast_source_visible and outcome_source_visible,
+                now=cohort_now,
+            )
             if not orders:
                 report = analyze_paper_trades(())
                 return {
@@ -225,6 +240,7 @@ async def export_forensics(
                     ),
                     "candidate_coverage": candidate_coverage,
                     "agent_quality": e22_quality,
+                    "agent_cohort": e23_quality,
                     "report": asdict(report),
                     "caveat": "Zero visible rows is not evidence of zero trades; verify archive/retention and RLS.",
                 }
@@ -382,6 +398,7 @@ async def export_forensics(
                 "shadow_cohorts": shadow_cohorts,
                 "candidate_coverage": candidate_coverage,
                 "agent_quality": e22_quality,
+                "agent_cohort": e23_quality,
                 "tables_read": [
                     "capital_cipher.paper_orders",
                     "capital_cipher.decisions",
