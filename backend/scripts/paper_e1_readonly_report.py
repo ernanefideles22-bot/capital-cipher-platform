@@ -43,6 +43,10 @@ from app.strategy.paper_future_agent_cohort_e26 import (
     per_agent_query as e26_per_agent_query,
     summarize as e26_agent_summary,
 )
+from app.strategy.paper_future_market_readiness_e26 import (
+    recent_warmup_query, summarize_warmup,
+)
+from app.strategy.prospective_core_gate_e26 import MARKETS as E26_MARKETS
 
 
 def to_float(value):
@@ -313,6 +317,32 @@ async def export_forensics(
             e26_forward = e26_agent_summary(
                 e26_rows, now=cohort_now, sources_visible=e26_sources
             )
+            # Existing 300-agent database already stores received + recorded
+            # market candles. Before creating a new paid collector service,
+            # determine whether 300 complete BINANCE-labelled warmup candles
+            # are visible for each frozen forward-market timeframe.
+            e26_market_series = {}
+            for e26_symbol, e26_tf in E26_MARKETS:
+                e26_last_bars = list((await session.execute(
+                    recent_warmup_query(e26_symbol,e26_tf,now=cohort_now)
+                )).scalars()) if e24_candle_visible else []
+                e26_market_series[e26_symbol+"_"+e26_tf] = summarize_warmup(
+                    e26_last_bars,symbol=e26_symbol,timeframe=e26_tf,
+                    now=cohort_now,table_visible=e24_candle_visible,
+                )
+            e26_market_readiness = {
+                "mode":"E26_EXISTING_STAGING_MARKET_STORAGE_READ_ONLY_PRECHECK",
+                "source":"POSTGRESQL_ONLY_NO_NEW_WORKER",
+                "three_series":e26_market_series,
+                "complete_internal_warmup_count":sum(
+                    x.get("warmup_complete",False)
+                    for x in e26_market_series.values()
+                ),
+                "all_market_feeds_verified_external":False,
+                "separate_foreign_collector_deployed":False,
+                "future_data_prospective_proof":False,
+                "execution_authorized":False,
+            }
             if not orders:
                 report = analyze_paper_trades(())
                 return {
@@ -333,6 +363,7 @@ async def export_forensics(
                     "agent_cohort": e23_quality,
                     "market_provenance": e24_market,
                     "future_agent_cohort": e26_forward,
+                    "future_market_readiness": e26_market_readiness,
                     "report": asdict(report),
                     "caveat": "Zero visible rows is not evidence of zero trades; verify archive/retention and RLS.",
                 }
@@ -493,6 +524,7 @@ async def export_forensics(
                 "agent_cohort": e23_quality,
                 "market_provenance": e24_market,
                 "future_agent_cohort": e26_forward,
+                "future_market_readiness": e26_market_readiness,
                 "tables_read": [
                     "capital_cipher.paper_orders",
                     "capital_cipher.decisions",
