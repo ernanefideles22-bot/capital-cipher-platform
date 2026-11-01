@@ -50,3 +50,8 @@ jobs:
         run: |
           python -m pytest -q app/tests/test_research_benchmark_e20.py
           python -m scripts.run_e20_chart_skill_benchmark
+      - name: Run E2.1 matched core-agent vs chart benchmark (isolated)
+        working-directory: backend
+        run: |
+          python -m pytest -q app/tests/test_matched_signal_replay_e21.py
+          python -m scripts.run_e21_matched_core_agent_benchmark
