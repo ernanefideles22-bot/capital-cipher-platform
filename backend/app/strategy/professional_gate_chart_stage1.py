@@ -105,8 +105,8 @@ def _validated(bars: Sequence[Candle], as_of: datetime) -> tuple[str, str, datet
         if previous_closed is not None:
             if closed - previous_closed != step:
                 raise ValueError("Missing, duplicate or irregular candle")
-            if received <= previous_received:
-                raise ValueError("Nonmonotonic receipt clock")
+            if received < previous_received:
+                raise ValueError("Decreasing receipt clock")
         values = (bar.open, bar.high, bar.low, bar.close, bar.volume)
         if not all(isfinite(float(value)) for value in values):
             raise ValueError("Non-finite OHLCV")
