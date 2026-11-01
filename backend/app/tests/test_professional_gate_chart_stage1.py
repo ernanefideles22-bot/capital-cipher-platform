@@ -16,7 +16,7 @@ STEP={"15m":900,"1h":3600,"4h":14400}
 
 
 def candles(tf="15m", count=120, *, exchange=Exchange.GATE,
-            symbol="BTC_USDT", wobble=False, descending=False,
+            symbol="BTCUSDT", wobble=False, descending=False,
             received_all_at=None):
     step=timedelta(seconds=STEP[tf])
     start=END-count*step
@@ -44,7 +44,7 @@ def test_gate_chart_is_a_real_deterministic_research_report_not_an_order():
     a=analyze(bars)
     assert a==analyze(bars)
     assert a.exchange=="GATE"
-    assert a.symbol=="BTC_USDT"
+    assert a.symbol=="BTCUSDT"
     assert a.candles_analyzed==120
     assert a.ema20>a.ema50
     assert 0<=a.rsi14<=100
@@ -122,7 +122,7 @@ def test_three_timeframe_confluence_is_causal_and_cross_symbol_forbidden():
     assert [v.timeframe for v in r.readings]==["4h","1h","15m"]
     assert r.alignment=="BULLISH_ALIGNMENT"
     assert not r.trading_authorized
-    groups["1h"]=candles("1h",symbol="ETH_USDT")
+    groups["1h"]=candles("1h",symbol="ETHUSDT")
     with pytest.raises(ValueError,match="Mixed venues"):
         analyze_gate_multi_timeframe(groups,as_of=END+timedelta(seconds=3))
 
