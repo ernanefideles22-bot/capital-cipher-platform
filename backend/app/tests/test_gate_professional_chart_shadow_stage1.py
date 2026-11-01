@@ -20,13 +20,13 @@ def populate(store,*,count=90,tf_set=("15m","1h","4h")):
             t=END-(count-i-1)*step
             p=100+i*0.2
             store.add(Candle(
-                exchange=Exchange.GATE,symbol="BTC_USDT",timeframe=tf,
+                exchange=Exchange.GATE,symbol="BTCUSDT",timeframe=tf,
                 open=p,close=p+0.1,high=p+1,low=p-1,volume=50,
                 closed_at=t,received_at=t+timedelta(seconds=1),
             ))
 
 
-def request(*,exchange="GATE",symbol="BTC_USDT",at=END+timedelta(seconds=2)):
+def request(*,exchange="GATE",symbol="BTCUSDT",at=END+timedelta(seconds=2)):
     return AgentInput(
         correlation_id="gate-s1-shadow",
         agent_name="GateProfessionalChartShadowAgent",
