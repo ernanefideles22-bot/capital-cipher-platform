@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from app.agents.market_data import MarketDataAgent
@@ -40,6 +40,7 @@ from app.schemas.backtest import (
     BacktestRequest,
 )
 from app.schemas.market import Candle
+from app.schemas.decisions import Decision
 from app.schemas.risk import RiskLimits
 from app.strategy.engine import StrategyEngine
 
@@ -126,6 +127,7 @@ class BacktestingEngine:
         candles: list[Candle],
         *,
         record_report: bool = True,
+        decision_observer: Callable[[Candle, Decision], None] | None = None,
     ) -> BacktestReport:
         started = time.monotonic()
         if not candles:
@@ -187,6 +189,10 @@ class BacktestingEngine:
             decision = await orchestrator.on_candle_closed(candle)
             if decision is None:
                 continue
+            if decision_observer is not None:
+                # E2.1 observational hook: no changed OMS, risk or PAPER path.
+                # Caller is offline; production does not register an observer.
+                decision_observer(candle, decision)
             decisions += 1
             if decision.candidate_action.value in ("BUY", "SELL"):
                 actionable += 1

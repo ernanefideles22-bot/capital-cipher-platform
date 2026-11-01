@@ -44,3 +44,36 @@ jobs:
             app/tests/test_orchestrator_e2e.py \
             app/tests/test_dashboard_contract.py \
             app/tests/test_staging_paper.py
+
+      - name: Run E2.0 frozen chart skill benchmark (no network or execution)
+        working-directory: backend
+        run: |
+          python -m pytest -q app/tests/test_research_benchmark_e20.py
+          python -m scripts.run_e20_chart_skill_benchmark
+      - name: E2.6 future-only campaign safety and blocked-without-data status
+        working-directory: backend
+        run: |
+          python -m pytest -q app/tests/test_prospective_core_gate_e26.py app/tests/test_e26_capture_public_spot_observations.py app/tests/test_paper_future_agent_cohort_e26.py app/tests/test_paper_future_market_readiness_e26.py app/tests/test_paper_forensics_e1.py
+          python -m scripts.run_e26_future_gate_evaluation
+      - name: E2.5 long-only core-agent skill filter on disjoint public SPOT candles
+        working-directory: backend
+        run: |
+          python -m pytest -q app/tests/test_core_signal_gate_e25.py
+          python -m scripts.run_e25_frozen_spot_signal_gate
+      - name: E2.4 independent market candle provenance safeguards
+        working-directory: backend
+        run: |
+          python -m pytest -q app/tests/test_paper_market_provenance_e24.py app/tests/test_paper_forensics_e1.py
+      - name: E2.3 SQL aggregation and historical cohort safeguards
+        working-directory: backend
+        run: |
+          python -m pytest -q app/tests/test_paper_agent_cohort_e23.py app/tests/test_paper_forensics_e1.py
+      - name: E2.2 read-only agent quality and auditor integration regressions
+        working-directory: backend
+        run: |
+          python -m pytest -q app/tests/test_paper_agent_quality_e22.py app/tests/test_paper_forensics_e1.py
+      - name: Run E2.1 matched core-agent vs chart benchmark (isolated)
+        working-directory: backend
+        run: |
+          python -m pytest -q app/tests/test_matched_signal_replay_e21.py
+          python -m scripts.run_e21_matched_core_agent_benchmark
