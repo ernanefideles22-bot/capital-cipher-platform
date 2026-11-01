@@ -40,6 +40,12 @@ async def test_gate_s1_actual_shadow_agent_uses_three_existing_market_series():
     assert not result["source_decision_cohort_modified"]
     assert not result["historical_snapshots_are_prospective_proof"]
     assert len(result["receipt_clocks_utc"])==3
+    assert set(result["latest_closed_candles_utc"]) == {"15m","1h","4h"}
+    assert set(result["fetch_latency_ms_by_timeframe"]) == {"15m","1h","4h"}
+    assert all(x>=0 for x in result["fetch_latency_ms_by_timeframe"].values())
+    assert result["analysis_duration_ms"]>=0
+    assert result["total_duration_ms"]>=0
+    assert 0<=result["candle_age_seconds"]["15m"]<1800
 
 
 @pytest.mark.asyncio
@@ -105,3 +111,23 @@ async def test_invalid_market_rows_are_not_silently_repaired():
         return data
     with pytest.raises(ValueError,match="Invalid Gate Stage1 candle"):
         await professional_shadow_snapshot("BTCUSDT",fetch=market_fetch)
+
+
+@pytest.mark.asyncio
+async def test_elapsed_time_is_measured_per_market_frame_without_fake_prices():
+    now=datetime.now(timezone.utc)
+    ticks=iter([0,1,1.2,2,2.4,3,3.6,4,4.7,5])
+    async def market_fetch(symbol,tf,*,limit):
+        return _rows(tf,now=now)
+    r=await professional_shadow_snapshot(
+        "BTCUSDT",fetch=market_fetch,
+        observation_clock=lambda:now+timedelta(seconds=2),
+        elapsed_clock=lambda:next(ticks),
+    )
+    assert r["fetch_latency_ms_by_timeframe"]=={
+        "15m":200.0,"1h":400.0,"4h":600.0,
+    }
+    assert r["analysis_duration_ms"]==700.
+    assert r["total_duration_ms"]==5000.
+    assert r["agent_signal"]=="NEUTRAL"
+    assert not r["execution_authorized"]
