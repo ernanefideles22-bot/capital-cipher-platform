@@ -35,13 +35,17 @@ async def main():
         counts={}
         for tf in ("15m","1h","4h"):
             latest=utc_aligned_closed(observed,STEPS[tf])
-            # Before policy freeze: validate pagination from >1k candle
-            # history and do NOT give it any claim of future performance.
-            if tf=="15m":
-                bars_back=1250
-            else:
-                bars_back=180
-            first=latest-timedelta(seconds=(bars_back-1)*STEPS[tf])
+            # Retain at least 180 pre-freeze warm-up bars when collecting
+            # genuinely new post-freeze candles. Otherwise a rolling 1250-bar
+            # window eventually evicts the frozen boundary and invalidates
+            # the comparison just when the sample starts becoming useful.
+            baseline_count=1250 if tf=="15m" else 180
+            recent_start=latest-timedelta(seconds=(baseline_count-1)*STEPS[tf])
+            warmup_start=FROZEN_AT-timedelta(seconds=180*STEPS[tf])
+            first=min(recent_start,warmup_start) if latest>FROZEN_AT else recent_start
+            expected=(int((latest-first).total_seconds())//STEPS[tf])+1
+            if expected>6000:
+                raise ValueError("Frozen policy requires bounded data archive extension; do not truncate")
             raw=await fetch_gate_historical_range(
                 symbol,tf,first_closed_at=first,last_closed_at=latest,
                 clock=lambda:observed.timestamp(),
@@ -56,6 +60,8 @@ async def main():
                 for x in raw
             ]
             counts[tf]=len(raw)
+            if len(raw)!=expected:
+                raise AssertionError("Gate window missing required frozen-policy bars")
             total+=len(raw)
         # Never print or infer a forward win rate until frozen policy becomes
         # eligible. The evaluator's explicit status is the only acceptance.
@@ -73,8 +79,6 @@ async def main():
             "order_submission_authorized":report.order_submission_authorized,
             "profitability_proven":False,
         },sort_keys=True),flush=True)
-        if any(v!= (1250 if tf=="15m" else 180) for tf,v in counts.items()):
-            raise AssertionError("Public Gate range completeness gate")
         if report.order_submission_authorized or report.automatic_promotion_authorized:
             raise AssertionError("Unauthorized S2D promotion")
     print("GATE_S2D_RANGE_CHECK_COMPLETE "+json.dumps({
