@@ -13,11 +13,11 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta, timezone
 from math import ceil, isfinite
-from typing import Sequence
+from typing import Callable, Sequence
 
 from app.schemas.market import Candle
 from app.strategy.gate_classical_s2 import (
-    MIN_HISTORY, STRATEGIES, _check_bars, evaluate_strategy,
+    MIN_HISTORY, STRATEGIES, ResearchPlan, _check_bars, evaluate_strategy,
 )
 
 
@@ -168,6 +168,7 @@ def replay_segment(
     strategy_id: str, bars: Sequence[Candle], *, start_index: int,
     end_index: int, segment: str,
     friction: Friction = Friction(), risk: ResearchRisk = ResearchRisk(),
+    plan_evaluator: Callable[[str,Sequence[Candle],datetime],ResearchPlan] | None = None,
 ) -> ReplayReport:
     """Process only [start_index, end_index) entries/exit fills using the known past."""
     if strategy_id not in STRATEGIES:
@@ -242,9 +243,20 @@ def replay_segment(
         # deliberately does not pretend batch receipt clocks existed in the past.
         prefix=bars[:j]
         decision_at=prefix[-1].closed_at+timedelta(microseconds=1)
-        plan=evaluate_strategy(strategy_id,prefix,as_of=decision_at,
-                               historical_replay=True)
-        if plan.action not in ("LONG","SHORT"):
+        plan=(plan_evaluator(strategy_id,tuple(prefix),decision_at)
+              if plan_evaluator is not None
+              else evaluate_strategy(strategy_id,prefix,as_of=decision_at,
+                                     historical_replay=True))
+        if (not isinstance(plan,ResearchPlan)
+                or plan.strategy_id!=strategy_id
+                or plan.symbol!=prefix[0].symbol
+                or plan.timeframe!=prefix[0].timeframe
+                or plan.cutoff!=decision_at.astimezone(timezone.utc)
+                or plan.execution_authorized is not False
+                or plan.predictive_edge_proven is not False
+                or plan.action not in ('WAIT','LONG','SHORT')):
+            raise ValueError('Untrusted research plan cannot enter replay')
+        if plan.action not in ('LONG','SHORT'):
             continue
         direction=1 if plan.action=="LONG" else -1
         entry=_adverse_execution(bar.open,direction,opening=True,friction=friction)

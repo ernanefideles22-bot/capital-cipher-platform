@@ -1,0 +1,64 @@
+name: Gate S2C Stage1 x Stage2 Confluence Research
+
+on:
+  pull_request:
+    paths:
+      - 'backend/app/strategy/gate_s2c_confluence.py'
+      - 'backend/app/strategy/gate_s2_replay.py'
+      - 'backend/app/tests/test_gate_s2c_confluence.py'
+      - 'backend/scripts/gate_s2c_confluence_compare.py'
+      - '.github/workflows/gate-stage2c-confluence.yml'
+      - 'docs/75-gate-s2c-confluence-20261101.md'
+
+permissions:
+  contents: read
+
+jobs:
+  s2c-contract-and-safety:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SYSTEM_MODE: PAPER
+      OMS_TESTNET_ENABLED: "false"
+      GATE_S1_SHADOW_ENABLED: "false"
+      GATE_OMS_CONNECTION_ENABLED: "false"
+      GATE_OMS_WRITES_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install isolated test dependencies
+        working-directory: backend
+        run: python -m pip install -e ".[dev,postgres]"
+      - name: Run S1/S2/S2B/S2C causal and OMS regression tests
+        working-directory: backend
+        run: |
+          python -m pytest -q \
+            app/tests/test_gate_s2c_confluence.py \
+            app/tests/test_gate_s2b_loss_diagnostics.py \
+            app/tests/test_gate_s2_classical_replay.py \
+            app/tests/test_professional_gate_chart_stage1.py \
+            app/tests/test_gate_stage1_shadow_integration.py \
+            app/tests/test_gate_readonly.py \
+            app/tests/test_gate_oms_connection.py
+  s2c-gate-public-market-comparison:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SYSTEM_MODE: PAPER
+      OMS_TESTNET_ENABLED: "false"
+      GATE_S1_SHADOW_ENABLED: "false"
+      GATE_OMS_CONNECTION_ENABLED: "false"
+      GATE_OMS_WRITES_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install public GET dependencies
+        working-directory: backend
+        run: python -m pip install -e ".[postgres]"
+      - name: Compare fixed standalone vs S1-gated candidates on public historical candles
+        working-directory: backend
+        run: python -m scripts.gate_s2c_confluence_compare
