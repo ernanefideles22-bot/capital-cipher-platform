@@ -98,8 +98,11 @@ def test_restart_replays_exact_research_pnl_and_open_positions(tmp_path):
         persisted=restored.db.execute(
             "SELECT outcome_json FROM s3_observations ORDER BY seq DESC LIMIT 1"
         ).fetchone()[0]
-        assert "\\"last_closed_trade\\"" in persisted
-        assert "\\"exit_reason\\":\\"TARGET\\"" in persisted
+        import json
+        scored=json.loads(persisted)
+        assert any(account["last_closed_trade"] is not None and
+                   account["last_closed_trade"]["exit_reason"]=="TARGET"
+                   for account in scored["accounts"])
         assert research_account(result,"S1_CONFLUENCE")["net_pnl"]==0
         assert restored.status()["observations"]==4
     with DurableS3ForwardResearch(path,friction=Friction(0,0,0)) as final:
