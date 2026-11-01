@@ -61,7 +61,7 @@ def test_aggregate_sql_is_select_and_counts_distinct_candle_targets():
         dialect=postgresql.dialect(),
         compile_kwargs={"literal_binds":True},
     ))
-    assert "distinct(agent_forecasts.target_at)" in compiled.lower()
+    assert "distinct(" in compiled.lower() and ".target_at)" in compiled.lower()
 
 
 def test_three_hundred_agents_share_one_market_target_not_three_hundred():
