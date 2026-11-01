@@ -117,3 +117,29 @@ verify the deployment branch `fix/gate-stop-expiration-86400-20261030`
 (and its `app.demo.gate_market` adapter) against the S1 normalizer on
 identical real testnet responses. The two branches are not yet merged;
 no second production feed or conflicting runtime symbol namespace is enabled.
+
+## Integration blocker discovered in currently deployed Gate subprocess
+
+The existing Gate service branch contains
+`app.demo.gate_market.fetch_candles` and a 300-agent isolated
+`app.demo.analysis` subprocess. It already fetches the TestNet public
+market data, maps external `BTC_USDT` to internal `BTCUSDT` and
+multiplies raw contract volume by the contract `quanto_multiplier`.
+The Stage 1 adapter mirrors those invariants, but neither branch has
+yet been integrated into one deploy.
+
+Crucial as-of mismatch: existing `app.demo.analysis` rebuilds
+`Candle` objects with `received_at` defaulting to subprocess time,
+yet issues `AgentInput.timestamp = candles[-1].closed_at`. The new
+Stage 1 reader intentionally rejects a candle that was not received by
+the request's `as_of` clock. The integration PR MUST carry a real,
+explicit observation receipt timestamp through the subprocess boundary
+and use that timestamp in the new SHADOW analysis, rather than
+pretending the market response was available exactly at candle close.
+Existing 300-agent decisions and risk checks must remain unchanged
+until an independently reviewed test demonstrates equivalent safe
+behavior. No silent timestamp rewriting of historic evidence is allowed.
+
+This blocks any claim that S1 is already fully integrated with the
+deployed 300-agent Gate office. Existing Gate `AVAILABLE` telemetry
+certifies only its previous connector, not the new professional reader.
