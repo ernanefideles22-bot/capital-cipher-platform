@@ -51,9 +51,9 @@ def _canonical(obj: object) -> str:
                       ensure_ascii=True, allow_nan=False)
 
 
-def _event_hash(previous: str, payload_json: str) -> str:
+def _event_hash(previous: str, payload_json: str, outcome_json: str) -> str:
     return hashlib.sha256(
-        (SCHEMA_VERSION + "\n" + previous + "\n" + payload_json).encode("utf-8")
+        (SCHEMA_VERSION + "\n" + previous + "\n" + payload_json + "\n" + outcome_json).encode("utf-8")
     ).hexdigest()
 
 
@@ -167,6 +167,7 @@ class DurableS3ForwardResearch:
             candle_closed_at TEXT NOT NULL,
             observed_at TEXT NOT NULL,
             payload_json TEXT NOT NULL,
+            outcome_json TEXT NOT NULL,
             previous_hash TEXT NOT NULL,
             event_hash TEXT NOT NULL,
             UNIQUE(symbol,candle_closed_at))""")
@@ -189,7 +190,7 @@ class DurableS3ForwardResearch:
             raise S3JournalBlocked("SQLite research integrity check failed")
         records = self.db.execute(
             """SELECT seq,symbol,candle_closed_at,observed_at,payload_json,
-                      previous_hash,event_hash
+                      outcome_json,previous_hash,event_hash
                FROM s3_observations ORDER BY seq"""
         ).fetchall()
         if len(records) > MAX_OBSERVATIONS_PER_REPLAY:
@@ -199,9 +200,9 @@ class DurableS3ForwardResearch:
         count={}
         restored=ShadowForwardScorecard(
             friction=self.scorer.friction, risk=self.scorer.risk)
-        for seq,symbol,closed_at,observed_at,payload,previous,digest in records:
+        for seq,symbol,closed_at,observed_at,payload,outcome,previous,digest in records:
             last_seq,last_hash=heads.get(symbol,(0,GENESIS_HASH))
-            if previous != last_hash or digest != _event_hash(previous,payload):
+            if previous != last_hash or digest != _event_hash(previous,payload,outcome):
                 raise S3JournalBlocked("Broken research event hash chain")
             candle,shadow,clock=_deserialize(payload)
             if (candle.symbol != symbol or candle.closed_at.isoformat()!=closed_at
@@ -210,7 +211,9 @@ class DurableS3ForwardResearch:
             if symbol in previous_clocks and clock<=previous_clocks[symbol]:
                 raise S3JournalBlocked("Nonmonotonic recovered observation receipts")
             try:
-                restored.observe(candle,shadow,observed_at=clock)
+                replay_result=restored.observe(candle,shadow,observed_at=clock)
+                if _canonical(replay_result)!=outcome:
+                    raise ValueError("Scoring result changed since original write")
             except (ValueError, TypeError, KeyError) as exc:
                 raise S3JournalBlocked(
                     "Historical S3 observation cannot be reproduced"
@@ -265,15 +268,16 @@ class DurableS3ForwardResearch:
                     canonical_candle,canonical_shadow,observed_at=clock)
             except (ValueError,KeyError,TypeError) as exc:
                 raise S3JournalBlocked("Rejected unsafe or discontinuous forward observation") from None
-            digest=_event_hash(expected_hash,payload)
+            outcome=_canonical(result)
+            digest=_event_hash(expected_hash,payload,outcome)
             cursor=self.db.execute(
                 """INSERT INTO s3_observations(
                       symbol,candle_closed_at,observed_at,payload_json,
-                      previous_hash,event_hash)
-                   VALUES (?,?,?,?,?,?)""",
+                      outcome_json,previous_hash,event_hash)
+                   VALUES (?,?,?,?,?,?,?)""",
                 (symbol,canonical_candle.closed_at.isoformat(),
                  clock.astimezone(timezone.utc).isoformat(),payload,
-                 expected_hash,digest))
+                 outcome,expected_hash,digest))
             count=1 if latest is None else latest[2]+1
             self.db.execute("""INSERT INTO s3_heads(
                  symbol,last_seq,event_hash,event_count) VALUES (?,?,?,?)
