@@ -125,6 +125,9 @@ def main() -> int:
                     "candidate_actions", "decision_risk_statuses",
                     "risk_check_visibility", "paper_order_visibility",
                     "predecision_agent_visibility",
+                    "execution_job_visibility",
+                    "completed_job_role_visibility",
+                    "action_funnel",
                     "related_evidence_sample_truncated",
                 )
             },
