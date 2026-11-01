@@ -309,6 +309,10 @@ async def test_real_exporter_materializes_orm_rows_with_read_only_session(monkey
         "E24_HISTORICAL_MARKET_INDEPENDENCE_AND_CANDLE_PROBE"
     )
     assert not result["market_provenance"]["external_exchange_source_authenticated"]
+    assert result["future_agent_cohort"]["mode"] == (
+        "E26_FUTURE_VERSIONED_AGENT_SHADOW_ONLY"
+    )
+    assert not result["future_agent_cohort"]["execution_authorized"]
     assert result["candidate_coverage"]["decision_context"]["mode"] == (
         "HISTORICAL_DIAGNOSTIC_ONLY"
     )
@@ -466,6 +470,13 @@ def test_railway_e1_executor_logs_no_database_credentials(monkeypatch, capsys):
                     "agent_execution_jobs": False,
                 },
             },
+            "future_agent_cohort": {
+                "mode": "E26_FUTURE_VERSIONED_AGENT_SHADOW_ONLY",
+                "status": "SOURCE_TABLES_NOT_VISIBLE",
+                "execution_authorized": False,
+                "groups_visible": 0,
+                "cards": [],
+            },
             "market_provenance": {
                 "mode": "E24_HISTORICAL_MARKET_INDEPENDENCE_AND_CANDLE_PROBE",
                 "prospective_evidence_confirmed": False,
@@ -543,6 +554,10 @@ def test_railway_e1_executor_logs_no_database_credentials(monkeypatch, capsys):
         "E24_HISTORICAL_MARKET_INDEPENDENCE_AND_CANDLE_PROBE"
     )
     assert not summary["market_provenance"]["profitability_or_agent_promotion_authorized"]
+    assert summary["future_agent_cohort"]["mode"] == (
+        "E26_FUTURE_VERSIONED_AGENT_SHADOW_ONLY"
+    )
+    assert not summary["future_agent_cohort"]["execution_authorized"]
     assert summary["shadow_cohorts"]["mode"] == (
         "POST_HOC_IN_SAMPLE_DESCRIPTIVE_ONLY"
     )
