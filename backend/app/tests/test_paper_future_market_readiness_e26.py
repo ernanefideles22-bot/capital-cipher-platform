@@ -78,7 +78,7 @@ def test_preflight_never_calls_missing_table_zero_success():
                        now=NOW,table_visible=False)
     assert z["status"]=="TABLE_NOT_VISIBLE"
     assert z["sampled_candles"]==0
-    assert z["warmup_complete"] if "warmup_complete" in z else True
+    assert "warmup_complete" not in z
     with pytest.raises(ValueError,match="Invisible"):
         summarize_warmup([candle(0)],symbol="BTCUSDT",
                          timeframe="15m",now=NOW,table_visible=False)
