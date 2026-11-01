@@ -116,6 +116,7 @@ def main() -> int:
             "by_exit_reason": _grouped(report, "by_exit_reason"),
             "by_side": _grouped(report, "by_side"),
             "evidence_integrity": data["evidence_integrity"],
+            "agent_quality": data["agent_quality"],
             "candidate_coverage": {
                 k: data["candidate_coverage"][k] for k in (
                     "mode", "prospective_collection_running",
