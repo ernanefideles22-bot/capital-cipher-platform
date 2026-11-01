@@ -12,7 +12,7 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from math import ceil
 from typing import Mapping
 
@@ -24,6 +24,9 @@ from app.strategy.gate_s2_replay import (
 )
 from app.strategy.gate_s2d_forward import FROZEN_AT, POLICY_SOURCE_COMMIT
 from app.strategy.gate_s2e_live_shadow import S2E_POLICY, S2E_POLICY_COMMIT
+
+def copy_dict(value: dict | None) -> dict | None:
+    return dict(value) if value is not None else None
 
 PERIOD_SECONDS=900
 ARMS=("STANDALONE","S1_CONFLUENCE")
@@ -60,6 +63,9 @@ class _Book:
     targets: int=0
     skipped_due_to_risk: int=0
     expired_signals: int=0
+    entry_observed_at: datetime | None=None
+    entry_open_at: datetime | None=None
+    last_trade: dict | None=None
 
 
 class ShadowForwardScorecard:
@@ -94,6 +100,25 @@ class ShadowForwardScorecard:
         funding=(position.entry*position.quantity*
                  self.friction.funding_bps_8h/10000*intervals)
         net=gross-fees-funding
+        book.last_trade={
+            "strategy_id":position.strategy_id,
+            "side":position.side,
+            "entry_open_at_utc":book.entry_open_at.isoformat(),
+            "decision_observed_at_utc":book.entry_observed_at.isoformat(),
+            "exit_detected_in_bar_closed_at_utc":bar.closed_at.isoformat(),
+            "exit_reason":reason,
+            "entry_price":round(position.entry,8),
+            "exit_price":round(price,8),
+            "quantity":round(position.quantity,12),
+            "stop_price":round(position.stop,8),
+            "target_price":round(position.target,8),
+            "gross_after_slippage_before_fees":round(gross,8),
+            "fees":round(fees,8),
+            "funding":round(funding,8),
+            "net_pnl":round(net,8),
+            "hypothetical":True,
+            "real_exchange_fill":False,
+        }
         book.equity+=net
         book.net+=net
         book.gross_before_fees+=gross
@@ -109,6 +134,8 @@ class ShadowForwardScorecard:
             (1-book.equity/book.peak_equity)*100)
         book.position=None
         book.entry_candle=None
+        book.entry_open_at=None
+        book.entry_observed_at=None
         return reason
 
     def _step(self,book,bar,strategy):
@@ -163,6 +190,8 @@ class ShadowForwardScorecard:
             target=entry+pending.direction*pending.target_distance)
         book.position=position
         book.entry_candle=bar.closed_at
+        book.entry_open_at=bar.closed_at-timedelta(seconds=PERIOD_SECONDS)
+        book.entry_observed_at=pending.observed_at
         trigger=_exit_trigger(bar,position)
         if trigger:
             return self._close(book,position,bar,*trigger)
@@ -293,6 +322,18 @@ class ShadowForwardScorecard:
                 "expired_signals":b.expired_signals,
                 "risk_blocks":b.skipped_due_to_risk,
                 "stops":b.stops,"targets":b.targets,
+                "last_closed_trade":copy_dict(b.last_trade),
+                "open_hypothetical_position":(
+                    {
+                        "side":b.position.side,
+                        "entry_open_at_utc":b.entry_open_at.isoformat(),
+                        "decision_observed_at_utc":b.entry_observed_at.isoformat(),
+                        "entry_price":round(b.position.entry,8),
+                        "quantity":round(b.position.quantity,12),
+                        "stop_price":round(b.position.stop,8),
+                        "target_price":round(b.position.target,8),
+                        "hypothetical":True,
+                    } if b.position is not None else None),
                 "initial_equity":self.risk.initial_equity,
             })
         return {
