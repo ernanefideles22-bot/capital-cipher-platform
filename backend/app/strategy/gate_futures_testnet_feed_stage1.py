@@ -25,6 +25,14 @@ ALLOWED_CONTRACTS=frozenset({"BTC_USDT","ETH_USDT","SOL_USDT"})
 MAX_LIMIT=300
 
 
+def _require_public_client(client: httpx.AsyncClient) -> None:
+    """Prevent inherited Gate keys/cookies from reaching public research GETs."""
+    if (client.auth is not None or client.cookies or
+            any(name.lower() in {"authorization","key","sign","timestamp","cookie"}
+                for name in client.headers)):
+        raise ValueError("Authenticated HTTP client forbidden for Gate public research")
+
+
 def normalize_gate_futures_candles(
     rows: object, *, contract: str, timeframe: str,
     received_at: datetime,
@@ -79,6 +87,7 @@ async def fetch_gate_testnet_chart(
         raise ValueError("Unapproved Gate Futures TestNet market/timeframe")
     if not 80<=requested_limit<=MAX_LIMIT:
         raise ValueError("Gate chart history limit must be 80-300")
+    _require_public_client(client)
     response=await client.get(
         GATE_FUTURES_TESTNET_BASE+"/futures/usdt/candlesticks",
         params={"contract":contract,"interval":timeframe,"limit":requested_limit},
@@ -104,6 +113,7 @@ async def fetch_gate_testnet_multi_timeframe(
         raise ValueError("Unapproved Gate Futures TestNet contract")
     if not 80<=requested_limit<=MAX_LIMIT:
         raise ValueError("Invalid Gate history limit")
+    _require_public_client(client)
     by_tf={}
     for tf in ("4h","1h","15m"):
         response=await client.get(
