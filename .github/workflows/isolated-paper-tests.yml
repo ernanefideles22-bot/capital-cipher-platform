@@ -44,3 +44,9 @@ jobs:
             app/tests/test_orchestrator_e2e.py \
             app/tests/test_dashboard_contract.py \
             app/tests/test_staging_paper.py
+
+      - name: Run E2.0 frozen chart skill benchmark (no network or execution)
+        working-directory: backend
+        run: |
+          python -m pytest -q app/tests/test_research_benchmark_e20.py
+          python -m scripts.run_e20_chart_skill_benchmark
