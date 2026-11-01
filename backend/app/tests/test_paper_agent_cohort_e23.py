@@ -53,7 +53,8 @@ def test_true_30_sample_card_no_promotion_or_pnl_claim():
 
 
 def test_bounded_groups_truncate_explicitly_without_false_total():
-    items = [row(agent=f"Agent{i:04d}", settled=2)
+    items = [row(agent=f"Agent{i:04d}", settled=2,
+                 directional=2, correct=1)
              for i in range(GROUP_LIMIT + 1)]
     z = summarize_cohort_rows(items, tables_visible=True, now=NOW)
     assert z["groups_truncated"]
