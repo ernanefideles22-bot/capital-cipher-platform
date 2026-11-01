@@ -37,10 +37,11 @@ def test_gate_normalizer_drops_open_bar_and_uses_actual_close_time():
     source=rows(include_open_bar=True)
     now=datetime.now(timezone.utc)
     candles=normalize_gate_futures_candles(
-        source,contract="BTC_USDT",timeframe="15m",received_at=now,
+        source,contract="BTC_USDT",timeframe="15m",received_at=now,volume_multiplier="0.001",
     )
     assert len(candles)==100
-    assert candles[-1].symbol=="BTC_USDT"
+    assert candles[-1].symbol=="BTCUSDT"
+    assert candles[-1].volume==pytest.approx(0.035)
     assert candles[-1].exchange.value=="GATE"
     assert int(candles[-1].closed_at.timestamp())==source[-2]["t"]+900
     assert all(x.received_at==now for x in candles)
@@ -52,12 +53,12 @@ def test_duplicate_bar_and_wrong_market_fail_closed():
     with pytest.raises(ValueError,match="Duplicate"):
         normalize_gate_futures_candles(
             source+[source[-1]],contract="BTC_USDT",timeframe="15m",
-            received_at=datetime.now(timezone.utc),
+            received_at=datetime.now(timezone.utc),volume_multiplier="0.001",
         )
     with pytest.raises(ValueError,match="Unapproved"):
         normalize_gate_futures_candles(
             source,contract="BTCUSDT",timeframe="15m",
-            received_at=datetime.now(timezone.utc),
+            received_at=datetime.now(timezone.utc),volume_multiplier="0.001",
         )
 
 
@@ -66,14 +67,14 @@ def test_missing_and_misaligned_bar_not_repaired():
     bad=[x for i,x in enumerate(source) if i!=15]
     bars=normalize_gate_futures_candles(
         bad,contract="BTC_USDT",timeframe="15m",
-        received_at=datetime.now(timezone.utc),
+        received_at=datetime.now(timezone.utc),volume_multiplier="0.001",
     )
     assert len(bars)==99
     source[15]={**source[15],"t":source[15]["t"]+12}
     with pytest.raises(ValueError,match="Unusable"):
         normalize_gate_futures_candles(
             source,contract="BTC_USDT",timeframe="15m",
-            received_at=datetime.now(timezone.utc),
+            received_at=datetime.now(timezone.utc),volume_multiplier="0.001",
         )
 
 
@@ -81,6 +82,8 @@ def test_no_live_base_no_auth_and_get_only():
     requests=[]
     def handler(req:httpx.Request):
         requests.append(req)
+        if "/contracts/" in req.url.path:
+            return httpx.Response(200,json={"name":"BTC_USDT","quanto_multiplier":"0.001"})
         return httpx.Response(200,json=rows("15m",90,include_open_bar=True))
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
@@ -88,8 +91,9 @@ def test_no_live_base_no_auth_and_get_only():
                 client,contract="BTC_USDT",timeframe="15m",requested_limit=90,
             )
     out=asyncio.run(run())
-    assert len(requests)==1
-    request=requests[0]
+    assert len(requests)==2
+    assert "/contracts/BTC_USDT" in str(requests[0].url)
+    request=requests[1]
     assert request.method=="GET"
     assert str(request.url).startswith(GATE_FUTURES_TESTNET_BASE)
     assert "/futures/usdt/candlesticks" in str(request.url)
@@ -107,6 +111,8 @@ def test_multi_tf_adapter_fetches_gate_only_and_does_not_place_orders():
     methods=[]
     def handler(req:httpx.Request):
         methods.append((req.method,str(req.url)))
+        if "/contracts/" in req.url.path:
+            return httpx.Response(200,json={"name":"ETH_USDT","quanto_multiplier":"0.001"})
         return httpx.Response(200,json=rows(req.url.params["interval"],80))
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
@@ -114,20 +120,23 @@ def test_multi_tf_adapter_fetches_gate_only_and_does_not_place_orders():
                 client,contract="ETH_USDT",requested_limit=80,
             )
     result=asyncio.run(run())
-    assert len(methods)==3
+    assert len(methods)==4
     assert all(method=="GET" and GATE_FUTURES_TESTNET_BASE in url
                for method,url in methods)
     assert set(next(z for z in ["15m","1h","4h"] if f"interval={z}" in url)
-               for _,url in methods)=={"15m","1h","4h"}
-    assert result.symbol=="ETH_USDT"
+               for _,url in methods if "interval=" in url)=={"15m","1h","4h"}
+    assert result.symbol=="ETHUSDT"
     assert result.alignment=="BULLISH_ALIGNMENT"
     assert not result.trading_authorized
 
 
 def test_stale_empty_http_errors_and_bad_json_do_not_trigger_fallback():
     async def request(body,status=200):
-        async with httpx.AsyncClient(transport=httpx.MockTransport(
-                lambda req:httpx.Response(status,json=body))) as client:
+        def handler(req):
+            if "/contracts/" in req.url.path:
+                return httpx.Response(status,json={"name":"BTC_USDT","quanto_multiplier":"0.001"})
+            return httpx.Response(status,json=body)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             return await fetch_gate_testnet_chart(
                 client,contract="BTC_USDT",timeframe="15m",requested_limit=100,
             )
