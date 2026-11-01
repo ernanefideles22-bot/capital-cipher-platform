@@ -118,6 +118,7 @@ def main() -> int:
             "evidence_integrity": data["evidence_integrity"],
             "agent_quality": data["agent_quality"],
             "agent_cohort": data["agent_cohort"],
+            "market_provenance": data["market_provenance"],
             "candidate_coverage": {
                 k: data["candidate_coverage"][k] for k in (
                     "mode", "prospective_collection_running",
