@@ -157,8 +157,7 @@ def _summary(strategy_id,segment,bars_count,trades,start,finish,blocked,max_dd):
         trades=tuple(trades),start_equity=start,end_equity=finish,
         net_pnl=finish-start,return_pct=(finish/start-1)*100,
         win_rate=len(wins)/len(trades)*100 if trades else None,
-        profit_factor=sum(wins)/sum(losses) if losses else
-            (None if not wins else float("inf")),
+        profit_factor=sum(wins)/sum(losses) if losses else None,
         max_drawdown_pct=max_dd,
         estimated_end_window_exits=sum(t.exit_reason=="END_WINDOW_ESTIMATE" for t in trades),
         blocked_new_entries=blocked,
