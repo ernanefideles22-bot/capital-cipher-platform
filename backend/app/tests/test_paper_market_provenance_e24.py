@@ -142,6 +142,37 @@ def test_invisible_and_truncated_source_never_pretend_complete():
         )
 
 
+
+def test_candle_receipt_before_forecast_but_storage_after():
+    ev = event()
+    ref = candle(ev.forecast_at, 100)
+    ref.recorded_at = ev.first_forecast_created + timedelta(seconds=5)
+    target = candle(ev.target_at, 101)
+    r = summarize_market_evidence(
+        [market()], [ev], [ref, target],
+        observation_table_visible=True, now=AT,
+    )
+    c = r["observation_probe"]["counts"]
+    assert c["reference_price_match_ignore_timing"] == 1
+    assert c["reference_receipt_before_creation"] == 1
+    assert c["reference_stored_after_creation"] == 1
+    assert c.get("reference_asof_price_and_time_match", 0) == 0
+    assert c["target_asof_price_and_time_match"] == 1
+
+
+def test_candle_price_mismatch_does_not_become_clock_error():
+    ev = event()
+    r = summarize_market_evidence(
+        [market()], [ev],
+        [candle(ev.forecast_at, 99), candle(ev.target_at, 101)],
+        observation_table_visible=True, now=AT,
+    )
+    c = r["observation_probe"]["counts"]
+    assert c["reference_price_mismatch"] == 1
+    assert c["target_asof_price_and_time_match"] == 1
+    assert c.get("reference_receipt_too_late_or_clock_invalid", 0) == 0
+
+
 def test_naive_clock_rejected():
     with pytest.raises(ValueError,match="clock"):
         independence_query(datetime(2026,11,1))
