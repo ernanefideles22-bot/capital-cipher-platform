@@ -14,13 +14,13 @@ from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import desc, or_, select, text
+from sqlalchemy import desc, or_, select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.database.models import (
     AgentOutputModel, AgentExecutionJobModel, AgentForecastModel,
     AgentForecastOutcomeModel, AuditLogModel, DecisionModel, PaperOrderModel,
-    RiskCheckModel,
+    RiskCheckModel, CandleObservationModel,
 )
 from app.strategy.paper_forensics_e1 import (
     AgentObservation, PaperTrace, analyze_paper_trades,
@@ -33,6 +33,10 @@ from app.strategy.paper_decision_context_e17 import inspect_decision_context
 from app.strategy.paper_agent_quality_e22 import evaluate_runtime_quality
 from app.strategy.paper_agent_cohort_e23 import (
     cohort_query, summarize_cohort_rows,
+)
+from app.strategy.paper_market_provenance_e24 import (
+    independence_query, event_probe_query, summarize_market_evidence,
+    EVENT_PROBE_LIMIT, OBSERVATION_LIMIT,
 )
 
 
@@ -223,6 +227,43 @@ async def export_forensics(
                 tables_visible=forecast_source_visible and outcome_source_visible,
                 now=cohort_now,
             )
+            # E2.4: census of DISTINCT market target events, not 300
+            # independent observations just because 300 agents shared a bar.
+            # All evidence remains in the existing READ ONLY snapshot.
+            e24_candle_visible = (
+                await session.scalar(select(text(
+                    "to_regclass('capital_cipher.candle_observations')"
+                )))
+            ) is not None
+            e24_series = list((await session.execute(
+                independence_query(cohort_now)
+            )).all()) if forecast_source_visible and outcome_source_visible else []
+            e24_events = list((await session.execute(
+                event_probe_query(cohort_now)
+            )).all()) if forecast_source_visible and outcome_source_visible else []
+            e24_sample = e24_events[:EVENT_PROBE_LIMIT]
+            e24_keys = {
+                (str(row.symbol), str(row.timeframe), when)
+                for row in e24_sample
+                for when in (row.forecast_at, row.target_at)
+            }
+            e24_observations = list((await session.execute(
+                select(CandleObservationModel)
+                .where(tuple_(
+                    CandleObservationModel.symbol,
+                    CandleObservationModel.timeframe,
+                    CandleObservationModel.closed_at,
+                ).in_(e24_keys))
+                .limit(OBSERVATION_LIMIT)
+            )).scalars()) if e24_candle_visible and e24_keys else []
+            e24_market = summarize_market_evidence(
+                e24_series, e24_events, e24_observations,
+                observation_table_visible=e24_candle_visible,
+                now=cohort_now,
+            )
+            e24_market["forecast_and_outcome_tables_visible"] = (
+                forecast_source_visible and outcome_source_visible
+            )
             if not orders:
                 report = analyze_paper_trades(())
                 return {
@@ -241,6 +282,7 @@ async def export_forensics(
                     "candidate_coverage": candidate_coverage,
                     "agent_quality": e22_quality,
                     "agent_cohort": e23_quality,
+                    "market_provenance": e24_market,
                     "report": asdict(report),
                     "caveat": "Zero visible rows is not evidence of zero trades; verify archive/retention and RLS.",
                 }
@@ -399,6 +441,7 @@ async def export_forensics(
                 "candidate_coverage": candidate_coverage,
                 "agent_quality": e22_quality,
                 "agent_cohort": e23_quality,
+                "market_provenance": e24_market,
                 "tables_read": [
                     "capital_cipher.paper_orders",
                     "capital_cipher.decisions",
