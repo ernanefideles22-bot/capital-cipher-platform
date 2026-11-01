@@ -1,7 +1,7 @@
 """One-shot Gate S2 classical strategy smoke on actual public historical candles.
 
 NO KEYS, NO ORDERS, NO OMS, NO PERSISTENCE, NO AUTO-PROMOTION.
-200-bar exchange snapshot is too short to establish strategy edge; this
+Even an 800-bar exchange snapshot is too short to establish robust edge; this
 diagnostic explicitly labels point-in-time receipt as unavailable historically.
 """
 from __future__ import annotations
@@ -26,7 +26,7 @@ async def main():
     done=0
     for symbol in SYMBOLS:
         for frame in FRAMES:
-            rows=await fetch_candles(symbol,frame,limit=200)
+            rows=await fetch_candles(symbol,frame,limit=800)
             received=datetime.now(timezone.utc)
             bars=[Candle(exchange=Exchange.GATE,symbol=symbol,timeframe=frame,
                          open=r["open"],high=r["high"],low=r["low"],
