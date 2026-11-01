@@ -11,7 +11,7 @@ from app.schemas.common import AgentStatus, Signal
 from app.strategy.professional_gate_chart_stage1 import (
     MIN_BARS,analyze_gate_multi_timeframe,
 )
-from app.strategy.gate_futures_testnet_feed_stage1 import ALLOWED_CONTRACTS
+from app.strategy.gate_futures_testnet_feed_stage1 import ALLOWED_SYMBOLS
 
 
 class GateProfessionalChartShadowAgent(CandleSpecialistAgent):
@@ -24,7 +24,7 @@ class GateProfessionalChartShadowAgent(CandleSpecialistAgent):
 
     async def _analyze(self, agent_input: AgentInput) -> AgentOutput:
         if (agent_input.market_context.get("exchange")!="GATE"
-                or agent_input.symbol not in ALLOWED_CONTRACTS):
+                or agent_input.symbol not in ALLOWED_SYMBOLS):
             return self._output(
                 AgentStatus.BLOCKED,Signal.WAIT,0,
                 "Gate Futures TestNet chart research requires an allowed GATE market",
