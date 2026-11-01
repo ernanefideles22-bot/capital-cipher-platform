@@ -50,6 +50,10 @@ jobs:
         run: |
           python -m pytest -q app/tests/test_research_benchmark_e20.py
           python -m scripts.run_e20_chart_skill_benchmark
+      - name: E2.4 independent market candle provenance safeguards
+        working-directory: backend
+        run: |
+          python -m pytest -q app/tests/test_paper_market_provenance_e24.py app/tests/test_paper_forensics_e1.py
       - name: E2.3 SQL aggregation and historical cohort safeguards
         working-directory: backend
         run: |
