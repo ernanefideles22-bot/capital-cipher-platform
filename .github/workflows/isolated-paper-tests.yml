@@ -53,7 +53,7 @@ jobs:
       - name: E2.6 future-only campaign safety and blocked-without-data status
         working-directory: backend
         run: |
-          python -m pytest -q app/tests/test_prospective_core_gate_e26.py app/tests/test_e26_capture_public_spot_observations.py app/tests/test_paper_future_agent_cohort_e26.py app/tests/test_paper_future_market_readiness_e26.py app/tests/test_paper_forensics_e1.py
+          python -m pytest -q app/tests/test_prospective_core_gate_e26.py app/tests/test_e26_capture_public_spot_observations.py app/tests/test_paper_future_agent_cohort_e26.py app/tests/test_paper_future_market_readiness_e26.py app/tests/test_paper_future_market_diagnostics_e261.py app/tests/test_paper_forensics_e1.py
           python -m scripts.run_e26_future_gate_evaluation
       - name: E2.5 long-only core-agent skill filter on disjoint public SPOT candles
         working-directory: backend
