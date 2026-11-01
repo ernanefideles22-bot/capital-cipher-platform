@@ -294,6 +294,8 @@ async def test_real_exporter_materializes_orm_rows_with_read_only_session(monkey
     ] == 1
     assert result["archive_reconciliation"] == "NOT_PERFORMED"
     assert result["agent_history_coverage"] == "UNVERIFIED_MAY_BE_PRUNED"
+    assert result["candidate_coverage"]["sampled_decisions"] == 0
+    assert result["candidate_coverage"]["prospective_collection_running"] is False
     assert result["evidence_integrity"]["decision_link_status"] == {
         "NOT_VISIBLE_BY_ID": 1,
     }
@@ -419,6 +421,22 @@ def test_railway_e1_executor_logs_no_database_credentials(monkeypatch, capsys):
                     },
                 }],
             },
+            "candidate_coverage": {
+                "mode": "HISTORICAL_BOUNDED_READ_ONLY_PREFLIGHT",
+                "prospective_collection_running": False,
+                "candidate_visibility_complete": False,
+                "sampled_decisions": 1,
+                "sample_limit": 1000,
+                "has_more_decisions_than_limit": False,
+                "candidate_actions": {"HOLD": 1},
+                "decision_risk_statuses": {"PENDING": 1},
+                "risk_check_visibility": {"no_visible_risk_check": 1},
+                "paper_order_visibility": {"no_visible_paper_order": 1},
+                "predecision_agent_visibility": {"no_visible_predecision_agent_output": 1},
+                "related_evidence_sample_truncated": {
+                    "risk_checks": False, "paper_orders": False, "agent_outputs": False,
+                },
+            },
             "cost_diagnostics": {
                 "mode": "SHADOW_RESEARCH_ONLY_NO_EXECUTION",
                 "minimum_net_rr_for_illustrative_screen": 1.5,
@@ -449,6 +467,10 @@ def test_railway_e1_executor_logs_no_database_credentials(monkeypatch, capsys):
     assert summary["shadow_cohorts"]["prospective_readiness"] == (
         "NOT_STARTED_AND_NOT_EVALUATED"
     )
+    assert summary["candidate_coverage"]["mode"] == (
+        "HISTORICAL_BOUNDED_READ_ONLY_PREFLIGHT"
+    )
+    assert summary["candidate_coverage"]["candidate_actions"] == {"HOLD": 1}
     assert summary["cost_diagnostics"]["scenarios"][0][
         "hypothetical_meets_minimum_net_rr"
     ] == 1
