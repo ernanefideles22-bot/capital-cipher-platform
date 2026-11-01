@@ -34,6 +34,7 @@ economic edge; TestNet fills/prices alone are not evidence of live liquidity.
 Files:
 - `backend/app/strategy/professional_gate_chart_stage1.py`
 - `backend/app/strategy/gate_futures_testnet_feed_stage1.py`
+- `backend/app/agents/gate_professional_chart_shadow.py` (opt-in SHADOW agent, not registered automatically)
 - `backend/scripts/run_gate_chart_stage1_readonly.py`
 - `backend/app/tests/test_professional_gate_chart_stage1.py`
 - `backend/app/tests/test_gate_futures_testnet_feed_stage1.py`
@@ -89,3 +90,20 @@ order routing, write any database, or schedule persistent collection.
    profitability merely because a pattern reader has been built.
 
 Gate API v4: https://www.gate.com/docs/developers/apiv4/en/
+
+## Stage 1 SHADOW agent contract (implemented, not deployed)
+
+`GateProfessionalChartShadowAgent` is an optional, versioned
+`CandleSpecialistAgent` using the existing `CandleStore` and `AgentInput` /
+`AgentOutput` contracts. It reads GATE-only 15m, 1h and 4h bars with a
+strict timestamp cutoff, labels technical evidence and returns **NEUTRAL**
+with confidence **0**. If any required market data is absent/stale it returns
+`WAIT`, never `BUY` or `SELL`. Registry tests prove `SHADOW` role and
+non-inclusion in `decision_agents()`.
+
+This class is not auto-registered into the existing 300-agent runtime.
+Therefore it cannot be described as active in staging until an explicitly
+reviewed backend rollout and real Gate-input verification. Its existence
+does not alter candidate promotion, execute a trade or authorize testnet
+orders. The operational S1 gate still requires observing the actual
+registration and the emitted evidence in staging SHADOW runs.
