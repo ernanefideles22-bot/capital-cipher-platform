@@ -3,6 +3,8 @@ import asyncio
 import logging
 import math
 import os
+import time
+from collections import deque
 from contextlib import asynccontextmanager, AsyncExitStack
 from datetime import datetime, timezone
 
@@ -11,6 +13,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from app.demo.gate_readonly import GateProbeError, probe_account
 from app.demo.gate_market import fetch_candles
+from app.demo.gate_stage1_shadow import professional_shadow_snapshot, GATE_S1_SYMBOLS
 from app.demo.gate_analysis import analyze_snapshot
 from app.demo.gate_reconcile import inventory
 from app.demo.gate_position_config import read_position_config
@@ -24,7 +27,9 @@ SECRET_VARIABLE = "CAPITAL_CIPHER_GATE_TESTNET_API_SECRET"
 
 def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles, research=analyze_snapshot,
                inventory_fn=inventory, position_config_fn=read_position_config,
-               storage_path='/gate-data', mount_check=os.path.ismount, oms_connector=connect_gate_oms):
+               storage_path='/gate-data', mount_check=os.path.ismount, oms_connector=connect_gate_oms,
+               stage1_shadow_runner=professional_shadow_snapshot,
+               stage1_sleep=asyncio.sleep):
     values = dict(os.environ if environment is None else environment)
     key, secret = values.get(KEY_VARIABLE, "").strip(), values.get(SECRET_VARIABLE, "").strip()
     state = {"environment": "GATE_TESTNET", "status": "WAITING_FOR_CREDENTIALS",
@@ -34,6 +39,15 @@ def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles
              "research_checked_at": None, "inventory_status":"WAITING", "inventory_checked_at":None,
              "position_config_status":"WAITING", "storage_status":"WAITING",
              "recovery_status":"WAITING"}
+    # Independent research ONLY: no access to the OMS runtime, credentials or 300-agent decisions.
+    state['professional_shadow'] = {
+        'status': 'WAITING' if values.get('GATE_S1_SHADOW_ENABLED') == 'true' else 'DISABLED',
+        'checked_at': None, 'markets': {}, 'execution_authorized': False,
+        'cycle_count': 0, 'consecutive_ready_cycles': 0, 'recent_cycles': [],
+    }
+    shadow_cycles = deque(maxlen=16)
+    shadow_cycle_count = 0
+    shadow_ready_streak = 0
     private_account = {'equity': None}
     journals = {'research': None, 'cycle': None}
     runtime = {'flow':None,'status':'DISCONNECTED'}
@@ -119,6 +133,74 @@ def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles
                 logging.getLogger('uvicorn.error').info('GATE_RESEARCH_STATUS %s', state['research_status'])
             await asyncio.sleep(300)
 
+    async def professional_shadow_monitor():
+        # Opt-in only. Runs separate from the OMS and 300-agent decision path.
+        nonlocal shadow_cycle_count, shadow_ready_streak
+        while True:
+            cycle_started = time.perf_counter()
+            shadow_cycle_count += 1
+            try:
+                summaries = {}
+                for symbol in GATE_S1_SYMBOLS:
+                    try:
+                        report = await stage1_shadow_runner(symbol)
+                        if (report.get('execution_authorized') is not False or
+                                report.get('source_decision_cohort_modified') is not False or
+                                report.get('agent_signal') not in {'NEUTRAL','WAIT'}):
+                            raise ValueError('Unsafe Stage 1 SHADOW result')
+                        summaries[symbol] = report
+                    except Exception as exc:
+                        summaries[symbol] = {
+                            'symbol': symbol, 'status': 'BLOCKED',
+                            'error_type': type(exc).__name__,
+                            'execution_authorized': False,
+                        }
+                ready = sum(x.get('status') == 'READ_ONLY_CHART_READY'
+                            for x in summaries.values())
+                status = 'AVAILABLE' if ready == len(GATE_S1_SYMBOLS) else 'PARTIAL_OR_BLOCKED'
+                shadow_ready_streak = shadow_ready_streak + 1 if status == 'AVAILABLE' else 0
+                duration_ms = round(max(0., (time.perf_counter()-cycle_started)*1000), 3)
+                checked = datetime.now(timezone.utc).isoformat()
+                shadow_cycles.append({
+                    'cycle': shadow_cycle_count,
+                    'checked_at': checked,
+                    'status': status,
+                    'ready_markets': ready,
+                    'total_markets': len(GATE_S1_SYMBOLS),
+                    'duration_ms': duration_ms,
+                })
+                durations = sorted(c['duration_ms'] for c in shadow_cycles)
+                def percentile(q):
+                    from math import ceil
+                    return durations[max(0, ceil(q * len(durations)) - 1)]
+                state['professional_shadow'] = {
+                    'status': status, 'checked_at': checked,
+                    'markets': summaries, 'execution_authorized': False,
+                    'cycle_count': shadow_cycle_count,
+                    'consecutive_ready_cycles': shadow_ready_streak,
+                    'recent_cycles': list(shadow_cycles),
+                    'cycle_duration_ms': duration_ms,
+                    'cycle_duration_p50_ms': percentile(.50),
+                    'cycle_duration_p95_ms': percentile(.95),
+                    'cycle_duration_p99_ms': percentile(.99),
+                    'latency_samples': len(durations),
+                    'prolonged_reliability_proven': False,
+                    'predictive_edge_proven': False,
+                }
+                logging.getLogger('uvicorn.error').info(
+                    'GATE_S1_SHADOW_STATUS %s ready_markets=%d total_markets=%d '
+                    'execution=false cycle=%d streak=%d duration_ms=%.3f',
+                    status, ready, len(GATE_S1_SYMBOLS),
+                    shadow_cycle_count, shadow_ready_streak, duration_ms)
+            except Exception:
+                # Errors are isolated; preserve original Gate research and OMS.
+                shadow_ready_streak = 0
+                state['professional_shadow']['status'] = 'BLOCKED'
+                state['professional_shadow']['checked_at'] = datetime.now(timezone.utc).isoformat()
+                state['professional_shadow']['consecutive_ready_cycles'] = 0
+                logging.getLogger('uvicorn.error').warning('GATE_S1_SHADOW_MONITOR_BLOCKED')
+            await stage1_sleep(900)
+
     async def inventory_monitor():
         while True:
             if not state['authenticated']:
@@ -179,6 +261,8 @@ def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles
             tasks.append(asyncio.create_task(runtime['flow'].run(stop)))
         if values.get('GATE_RESEARCH_ANALYSIS_ENABLED') == 'true':
             tasks.append(asyncio.create_task(research_monitor()))
+        if values.get('GATE_S1_SHADOW_ENABLED') == 'true':
+            tasks.append(asyncio.create_task(professional_shadow_monitor()))
         try:
             yield
         finally:
