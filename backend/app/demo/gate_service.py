@@ -28,7 +28,8 @@ SECRET_VARIABLE = "CAPITAL_CIPHER_GATE_TESTNET_API_SECRET"
 def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles, research=analyze_snapshot,
                inventory_fn=inventory, position_config_fn=read_position_config,
                storage_path='/gate-data', mount_check=os.path.ismount, oms_connector=connect_gate_oms,
-               stage1_shadow_runner=professional_shadow_snapshot):
+               stage1_shadow_runner=professional_shadow_snapshot,
+               stage1_sleep=asyncio.sleep):
     values = dict(os.environ if environment is None else environment)
     key, secret = values.get(KEY_VARIABLE, "").strip(), values.get(SECRET_VARIABLE, "").strip()
     state = {"environment": "GATE_TESTNET", "status": "WAITING_FOR_CREDENTIALS",
@@ -198,7 +199,7 @@ def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles
                 state['professional_shadow']['checked_at'] = datetime.now(timezone.utc).isoformat()
                 state['professional_shadow']['consecutive_ready_cycles'] = 0
                 logging.getLogger('uvicorn.error').warning('GATE_S1_SHADOW_MONITOR_BLOCKED')
-            await asyncio.sleep(900)
+            await stage1_sleep(900)
 
     async def inventory_monitor():
         while True:
