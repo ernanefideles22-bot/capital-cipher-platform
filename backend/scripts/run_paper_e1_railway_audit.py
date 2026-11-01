@@ -116,6 +116,18 @@ def main() -> int:
             "by_exit_reason": _grouped(report, "by_exit_reason"),
             "by_side": _grouped(report, "by_side"),
             "evidence_integrity": data["evidence_integrity"],
+            "candidate_coverage": {
+                k: data["candidate_coverage"][k] for k in (
+                    "mode", "prospective_collection_running",
+                    "candidate_visibility_complete",
+                    "sampled_decisions", "sample_limit",
+                    "has_more_decisions_than_limit",
+                    "candidate_actions", "decision_risk_statuses",
+                    "risk_check_visibility", "paper_order_visibility",
+                    "predecision_agent_visibility",
+                    "related_evidence_sample_truncated",
+                )
+            },
             "shadow_cohorts": {
                 "mode": data["shadow_cohorts"]["mode"],
                 "frozen_protocol_sha256":
