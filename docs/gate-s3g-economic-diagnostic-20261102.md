@@ -88,9 +88,81 @@ The separate CLI `python -m scripts.gate_s3_economic_diagnostic`:
    excluding boundary marks. It selects no candidate and mutates no policy.
 
 The GitHub Actions workflow publishes an artifact containing snapshot,
-checksum and full diagnostic, then verifies byte-identical replay. Retention is
-90 days; evidence needed longer should be preserved before expiration. Logs
-include per-pair summaries even if the artifact cannot later be retrieved.
+checksum and full diagnostic, then verifies byte-identical replay. Artifact
+retention is 90 days. The initial run's normalized snapshot and full traces
+are also preserved in this PR under `research/gate-s3g-20261102/`, alongside
+their checksums and provenance manifest, so they outlive artifact expiration.
+
+## New archived capture: results
+
+Source code `5227a0b9ca5e9d88d40918580b6066116d72bfe4`, successful workflow
+[41395579441](https://github.com/ernanefideles22-bot/capital-cipher-platform/actions/runs/41395579441),
+artifact 13118878914. Capture completed 2026-11-02 05:43:01 UTC. Snapshot SHA-256:
+`02c406b670f8e802c2b48df1d1275f92b1a0683d8566d455e21ca4aa7be96eb5`.
+First decision candle closes Oct 29 21:45 UTC; final mark Nov 2 05:30 UTC.
+This window substantially **overlaps the previously observed data**. This is
+an explanation of behavior, not an independent replication or fresh holdout.
+
+| Market | Strategy | Baseline trades | Baseline net USD | Filtered trades | Filtered net USD |
+| --- | --- | ---: | ---: | ---: | ---: |
+| BTC | Donchian | 6 | -13.424401 | 2 | +2.610379 |
+| BTC | EMA | 11 | -22.704740 | 3 | +0.470806 |
+| BTC | Bollinger | 19 | -36.931853 | 0 | 0 |
+| ETH | Donchian | 6 | -15.964701 | 1 | -2.775597 |
+| ETH | EMA | 12 | -28.108808 | 4 | -12.595779 |
+| ETH | Bollinger | 18 | -20.230522 | 0 | 0 |
+| SOL | Donchian | 7 | -7.326580 | 6 | -4.345922 |
+| SOL | EMA | 12 | -14.710015 | 12 | -14.710015 |
+| SOL | Bollinger | 20 | -15.667071 | 0 | 0 |
+
+Separate-account diagnostic sums: 111 trades/-175.068690 baseline,
+28/-31.346128 filtered. They are not portfolio results. ETH/Donchian baseline
+includes one boundary estimate, net -0.595326; SOL/Bollinger baseline includes
+one boundary estimate, net +2.097562. Filtered accounts have no boundary marks.
+Neither small positive BTC result supports activation or profit claims.
+
+The full traces resolve several questions the old summaries could not:
+
+- BTC/Donchian vetoed four baseline losses totaling -16.034780 USD. It retained
+  one winner and one loser totaling +2.610379 USD. This observed pattern is
+  encouraging but far too small and reused to establish predictive power.
+- BTC/EMA vetoed seven losses and one winner. ETH/EMA vetoed six losses and
+  two winners, but the four retained trades **all lost**. Vetoing trades can
+  reduce total losses while worsening the remaining mean trade economics.
+- SOL/EMA produced exactly the same 12 trades in both arms: the frozen filter
+  contributed no selection there. Its reconstructed gross was +4.510354 USD,
+  insufficient against approximately 19.220369 USD modeled costs.
+- Bollinger vetoed all 57 baseline trades, including 24 net winners. It
+  delivered inactivity. Reconstructed baseline gross/costs/net were:
+
+| Bollinger 15m | Gross before explicit slippage USD | Modeled cost drag USD | Net USD |
+| --- | ---: | ---: | ---: |
+| BTC | +6.517733 | 43.449586 | -36.931853 |
+| ETH | +18.113255 | 38.343778 | -20.230522 |
+| SOL | +17.289667 | 32.956738 | -15.667071 |
+
+All 28 filtered trade decisions also occur in the baseline in this snapshot.
+There are no filtered-only decisions or allowed baseline trades missing from
+the filtered path. The bridge nevertheless detects the small BTC/EMA sizing
+difference (-0.018663 USD) after prior account losses; it does not silently
+equate matched decisions with identical trade PnL. Costs are rounded to six
+decimals in the table; the underlying trade bridge uses full precision.
+
+To reproduce the archived evidence from the repository root:
+
+```sh
+cd backend
+python -m scripts.gate_s3_economic_diagnostic \
+  --snapshot ../docs/research/gate-s3g-20261102/snapshot.json.gz \
+  --output /tmp/gate-s3g-archived-replay
+gzip -dc ../docs/research/gate-s3g-20261102/economic-diagnostic.json.gz \
+  > /tmp/gate-s3g-expected.json
+cmp /tmp/gate-s3g-expected.json /tmp/gate-s3g-archived-replay/economic-diagnostic.json
+```
+
+The initial workflow's captured-data replay and a second local replay both
+matched byte for byte. Source hashes refer to that archived run's diagnostic
+implementation, not a later changed policy.
 
 ## Research decision
 

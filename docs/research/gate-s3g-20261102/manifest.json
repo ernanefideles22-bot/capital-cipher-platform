@@ -1,0 +1,24 @@
+{
+  "source_commit": "5227a0b9ca5e9d88d40918580b6066116d72bfe4",
+  "source_workflow_run_id": 41395579441,
+  "source_job_id": 125116066892,
+  "source_artifact_id": 13118878914,
+  "source_zip_sha256": "35743ad12953943861807aa69b1a426e392e1a1452eee54d2371612de2633173",
+  "snapshot_sha256": "02c406b670f8e802c2b48df1d1275f92b1a0683d8566d455e21ca4aa7be96eb5",
+  "capture_completed_at": "2026-11-02T05:43:01.461750+00:00",
+  "source_sha256": {
+    "app/strategy/gate_classical_s2.py": "018835e7f6b5073b5a6cb86e1f9942cd47acb9b61dc1c3b1c57e52fa4295a23f",
+    "app/strategy/gate_s2_loss_diagnostics.py": "fd6f916d081dc63e6ed64ec1acf673272572294197088f0123927bedf5df3b52",
+    "app/strategy/gate_s2_replay.py": "3f147a5b14b05dc9026293e3c3e15abe66d92f8976c57166e7b0c0832b33b0d1",
+    "app/strategy/gate_s2c_confluence.py": "31cfaf5cae5f0083e291d906ec688ef148b59e7f0c60581fcec6d846af532db7",
+    "app/strategy/gate_s3_economic_diagnostic.py": "042783cf9f8d80491894e1bfdfc5284801323f2118253a6bc9f65299ba7c01b8",
+    "app/strategy/professional_gate_chart_stage1.py": "915ae104a43267c15740a28ffa800d6c9342e7987148d3f796503f4b9e6a2981",
+    "scripts/gate_s3_economic_diagnostic.py": "9845d666c9bbef86df4b264da8cfebec48ce1df14199423229c84de28fbfd69c"
+  },
+  "git_archived_normalized_snapshot": true,
+  "git_archived_full_trade_and_proposal_traces": true,
+  "pristine_holdout": false,
+  "production_execution_tested": false,
+  "profitability_proven": false,
+  "railway_deployment_performed": false
+}
