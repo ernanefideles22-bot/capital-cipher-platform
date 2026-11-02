@@ -22,6 +22,10 @@ async def fake_market(*args, **kwargs):
     return [{}]*60
 
 
+async def park_after_one_cycle(_seconds):
+    await asyncio.Event().wait()
+
+
 def wait_http(client, predicate, timeout=3):
     deadline = time.monotonic()+timeout
     while time.monotonic() < deadline:
@@ -209,7 +213,8 @@ def test_real_s1_s2_to_service_journal_uses_only_the_original_nine_series(tmp_pa
         return await professional_shadow_snapshot(
             symbol, fetch=fetch, observation_clock=lambda: NOW+timedelta(seconds=3), **kwargs)
     app = create_app(environment=FLAGS, storage_path=str(tmp_path), mount_check=lambda _: True,
-                     market_fetch=fake_market, stage1_shadow_runner=real_runner)
+                     market_fetch=fake_market, stage1_shadow_runner=real_runner,
+                     stage1_sleep=park_after_one_cycle)
     with TestClient(app) as client:
         result = wait_http(client, lambda s: s['forward_research'].get('journal_observations') == 3)
         report = client.get('/api/gate/research/forward').json()['comparison']
