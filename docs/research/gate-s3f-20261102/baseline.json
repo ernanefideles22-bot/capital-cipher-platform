@@ -1,0 +1,273 @@
+{
+  "crash_cases": [
+    {
+      "duplicate_retries_skipped": 1,
+      "exact_report_matches_reference": true,
+      "exit_code": -9,
+      "final_observations": 12,
+      "financial_oracle_max_error": 0.0,
+      "fresh_process_recovery_ms": 19.679,
+      "passed": true,
+      "phase": "open_position",
+      "published_before_kill": 9,
+      "recovered_prefix_matches_disk": true,
+      "signal": "SIGKILL",
+      "visible_committed_before_kill": 9,
+      "wal_bytes_at_barrier": 0
+    },
+    {
+      "duplicate_retries_skipped": 1,
+      "exact_report_matches_reference": true,
+      "exit_code": -9,
+      "final_observations": 12,
+      "financial_oracle_max_error": 0.0,
+      "fresh_process_recovery_ms": 16.694,
+      "passed": true,
+      "phase": "before_commit",
+      "published_before_kill": 9,
+      "recovered_prefix_matches_disk": true,
+      "signal": "SIGKILL",
+      "visible_committed_before_kill": 9,
+      "wal_bytes_at_barrier": 4152
+    },
+    {
+      "duplicate_retries_skipped": 1,
+      "exact_report_matches_reference": true,
+      "exit_code": -9,
+      "final_observations": 12,
+      "financial_oracle_max_error": 0.0,
+      "fresh_process_recovery_ms": 20.678,
+      "passed": true,
+      "phase": "after_commit_before_memory",
+      "published_before_kill": 9,
+      "recovered_prefix_matches_disk": true,
+      "signal": "SIGKILL",
+      "visible_committed_before_kill": 10,
+      "wal_bytes_at_barrier": 24752
+    }
+  ],
+  "experiment": "S3_ISOLATED_PROCESS_CRASH_AND_SCALE_V1",
+  "fixture_setup_not_measured": "bulk insert, closed connections, then full verified recovery",
+  "hardware_or_power_loss_tested": false,
+  "metadata": {
+    "harness_sha256": "cb6bfe505a6847f579de6d7dd073781186769bedc839b22d3d3ad49173768534",
+    "logical_cpu_count": 9,
+    "platform": "Linux x86_64",
+    "python": "3.12.14",
+    "runtime_modified_against_head": [],
+    "runtime_sha256": {
+      "app/demo/gate_s3_collector.py": "aafec85424c9e286f9e682aca6f81643313c2292163b4ad0b9f78bbec4d07988",
+      "app/demo/gate_service.py": "ccba78c17f57596c75f09d993632bc14d498bde913037881dfbf430f9ad2d167",
+      "app/demo/gate_stage1_shadow.py": "e74efd2cafe0a9806a69161af4441a774ce83b90877f50d06ba2d76aece0eb1f",
+      "app/strategy/gate_s3_durable_research.py": "1c5c796e182305bdc53322599d8465ef88a28ad081c0c1ab56cd801bb1f0f9e5",
+      "app/strategy/gate_s3_equity_valuation.py": "f8a00679f9b9910a796b2061c2af9024186f7edb29610ec4b9eb384a7dbfc5eb",
+      "app/strategy/gate_s3_forward_scorecard.py": "e735f1b3dfe782b3cc3847f334ec5ee0a767b66d178a60261b09ea257c7168f7",
+      "app/strategy/gate_s3_paired_evidence.py": "ff0ef351e2a97e5a3643548eb5edc9aa2c985537dbf50b47be81b609deed854a"
+    },
+    "source_head": "28fd9ce1f618cc271fd0bd1188ac7f4968057feb",
+    "sqlite": "3.53.1"
+  },
+  "method": "nearest-rank descriptive percentiles; in-process ASGI; separate fresh OS process per scale",
+  "os_page_cache_cold_proven": false,
+  "profitability_proven": false,
+  "provisional_local_budgets_not_hosted_sla": {
+    "append_to_verified_cache_p99_ms": 30000.0,
+    "cached_asgi_http_p99_ms": 200.0,
+    "enqueue_p99_ms": 50.0,
+    "fresh_process_api_ready_ms": 60000.0,
+    "peak_rss_mib": 256.0
+  },
+  "railway_modified": false,
+  "real_execution_proven": false,
+  "scale": [
+    {
+      "append_to_verified_cache_ms": {
+        "p50": 119.654,
+        "p95": 135.952,
+        "p99": 138.417,
+        "samples": 20
+      },
+      "appended_observations": 20,
+      "asgi_http_during_recovery_ms": {
+        "p50": 26.193,
+        "p95": 43.272,
+        "p99": 43.272,
+        "samples": 5
+      },
+      "cached_asgi_http_ms": {
+        "p50": 6.912,
+        "p95": 13.318,
+        "p99": 14.116,
+        "samples": 20
+      },
+      "enqueue_ms": {
+        "p50": 0.182,
+        "p95": 0.54,
+        "p99": 0.604,
+        "samples": 20
+      },
+      "execution_authorized": false,
+      "financial_oracle_max_error": 0.0,
+      "fresh_process_api_ready_ms": 263.485,
+      "history_observations": 100,
+      "initial_rss_mib": 72.742,
+      "journal_storage_bytes": {
+        "database": 692224,
+        "shm": 0,
+        "wal": 0
+      },
+      "journal_storage_total_bytes": 692224,
+      "peak_rss_mib": 78.367,
+      "provisional_budget_checks": {
+        "append_to_verified_cache_p99_ms": true,
+        "cached_asgi_http_p99_ms": true,
+        "enqueue_p99_ms": true,
+        "fresh_process_api_ready_ms": true,
+        "peak_rss_mib": true
+      },
+      "status": "MEASURED"
+    },
+    {
+      "append_to_verified_cache_ms": {
+        "p50": 419.07,
+        "p95": 783.127,
+        "p99": 791.992,
+        "samples": 20
+      },
+      "appended_observations": 20,
+      "asgi_http_during_recovery_ms": {
+        "p50": 32.613,
+        "p95": 174.027,
+        "p99": 174.027,
+        "samples": 19
+      },
+      "cached_asgi_http_ms": {
+        "p50": 6.55,
+        "p95": 11.807,
+        "p99": 12.416,
+        "samples": 20
+      },
+      "enqueue_ms": {
+        "p50": 0.165,
+        "p95": 0.331,
+        "p99": 0.569,
+        "samples": 20
+      },
+      "execution_authorized": false,
+      "financial_oracle_max_error": 0.0,
+      "fresh_process_api_ready_ms": 1101.545,
+      "history_observations": 1000,
+      "initial_rss_mib": 72.637,
+      "journal_storage_bytes": {
+        "database": 5644288,
+        "shm": 0,
+        "wal": 0
+      },
+      "journal_storage_total_bytes": 5644288,
+      "peak_rss_mib": 87.273,
+      "provisional_budget_checks": {
+        "append_to_verified_cache_p99_ms": true,
+        "cached_asgi_http_p99_ms": true,
+        "enqueue_p99_ms": true,
+        "fresh_process_api_ready_ms": true,
+        "peak_rss_mib": true
+      },
+      "status": "MEASURED"
+    },
+    {
+      "append_to_verified_cache_ms": {
+        "p50": 1680.485,
+        "p95": 2419.506,
+        "p99": 2556.508,
+        "samples": 20
+      },
+      "appended_observations": 20,
+      "asgi_http_during_recovery_ms": {
+        "p50": 17.685,
+        "p95": 80.509,
+        "p99": 490.538,
+        "samples": 73
+      },
+      "cached_asgi_http_ms": {
+        "p50": 7.208,
+        "p95": 15.68,
+        "p99": 40.519,
+        "samples": 20
+      },
+      "enqueue_ms": {
+        "p50": 0.176,
+        "p95": 0.496,
+        "p99": 0.534,
+        "samples": 20
+      },
+      "execution_authorized": false,
+      "financial_oracle_max_error": 0.0,
+      "fresh_process_api_ready_ms": 3466.747,
+      "history_observations": 5000,
+      "initial_rss_mib": 72.965,
+      "journal_storage_bytes": {
+        "database": 27693056,
+        "shm": 0,
+        "wal": 0
+      },
+      "journal_storage_total_bytes": 27693056,
+      "peak_rss_mib": 121.258,
+      "provisional_budget_checks": {
+        "append_to_verified_cache_p99_ms": true,
+        "cached_asgi_http_p99_ms": true,
+        "enqueue_p99_ms": true,
+        "fresh_process_api_ready_ms": true,
+        "peak_rss_mib": true
+      },
+      "status": "MEASURED"
+    },
+    {
+      "append_to_verified_cache_ms": {
+        "p50": 3206.734,
+        "p95": 3863.811,
+        "p99": 3902.396,
+        "samples": 20
+      },
+      "appended_observations": 20,
+      "asgi_http_during_recovery_ms": {
+        "p50": 18.872,
+        "p95": 128.541,
+        "p99": 504.094,
+        "samples": 131
+      },
+      "cached_asgi_http_ms": {
+        "p50": 6.569,
+        "p95": 10.082,
+        "p99": 10.868,
+        "samples": 20
+      },
+      "enqueue_ms": {
+        "p50": 0.17,
+        "p95": 0.574,
+        "p99": 0.603,
+        "samples": 20
+      },
+      "execution_authorized": false,
+      "financial_oracle_max_error": 0.0,
+      "fresh_process_api_ready_ms": 6728.483,
+      "history_observations": 9900,
+      "initial_rss_mib": 72.828,
+      "journal_storage_bytes": {
+        "database": 54702080,
+        "shm": 0,
+        "wal": 0
+      },
+      "journal_storage_total_bytes": 54702080,
+      "peak_rss_mib": 162.758,
+      "provisional_budget_checks": {
+        "append_to_verified_cache_p99_ms": true,
+        "cached_asgi_http_p99_ms": true,
+        "enqueue_p99_ms": true,
+        "fresh_process_api_ready_ms": true,
+        "peak_rss_mib": true
+      },
+      "status": "MEASURED"
+    }
+  ],
+  "synthetic_data_only": true
+}
