@@ -1,0 +1,53 @@
+name: Gate Fixed Cost Viability Research
+
+on:
+  pull_request:
+    paths:
+      - 'backend/app/strategy/gate_cost_viability_research.py'
+      - 'backend/scripts/gate_cost_viability_experiment.py'
+      - 'backend/app/tests/test_gate_cost_viability_research.py'
+      - 'docs/research/gate-s3h-20261102/**'
+      - '.github/workflows/gate-cost-viability-research.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  offline-cost-hypotheses-and-frozen-controls:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SYSTEM_MODE: PAPER
+      OMS_TESTNET_ENABLED: "false"
+      GATE_S1_SHADOW_ENABLED: "false"
+      GATE_S2E_SHADOW_ENABLED: "false"
+      GATE_S3_SHADOW_ENABLED: "false"
+      GATE_OMS_CONNECTION_ENABLED: "false"
+      GATE_OMS_WRITES_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install isolated dependencies
+        working-directory: backend
+        run: python -m pip install -e ".[dev,postgres]"
+      - name: Causality, fixed economics, frozen account parity and training selection
+        working-directory: backend
+        run: |
+          python -m pytest -q app/tests/test_gate_cost_viability_research.py \
+            app/tests/test_gate_s3_economic_diagnostic.py app/tests/test_gate_s2b_loss_diagnostics.py \
+            app/tests/test_gate_s2c_confluence.py app/tests/test_gate_s2_classical_replay.py \
+            app/tests/test_gate_s2d_frozen_forward.py
+      - name: Reproduce all archived experiments without market downloads
+        working-directory: backend
+        run: |
+          python -m scripts.gate_cost_viability_experiment \
+            --output /tmp/gate-cost-viability.json.gz \
+            --verify ../docs/research/gate-s3h-20261102/results.json.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gate-fixed-cost-viability-evidence
+          path: /tmp/gate-cost-viability.json.gz*
+          retention-days: 90
+          if-no-files-found: error
