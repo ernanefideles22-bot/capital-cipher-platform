@@ -1,0 +1,55 @@
+name: Gate Confirmed Entry and Net Target Research
+
+on:
+  pull_request:
+    paths:
+      - 'backend/app/strategy/gate_entry_exit_research.py'
+      - 'backend/scripts/gate_entry_exit_experiment.py'
+      - 'backend/app/tests/test_gate_entry_exit_research.py'
+      - 'docs/research/gate-s3i-20261102/**'
+      - '.github/workflows/gate-entry-exit-research.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  offline-diagnosis-and-locked-future-evaluation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SYSTEM_MODE: PAPER
+      OMS_TESTNET_ENABLED: "false"
+      GATE_S1_SHADOW_ENABLED: "false"
+      GATE_S2E_SHADOW_ENABLED: "false"
+      GATE_S3_SHADOW_ENABLED: "false"
+      GATE_OMS_CONNECTION_ENABLED: "false"
+      GATE_OMS_WRITES_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install isolated dependencies
+        working-directory: backend
+        run: python -m pip install -e ".[dev,postgres]"
+      - name: Causality, economics, frozen controls and holdout guards
+        working-directory: backend
+        run: |
+          python -m pytest -q app/tests/test_gate_entry_exit_research.py \
+            app/tests/test_gate_cost_viability_research.py app/tests/test_gate_s3_economic_diagnostic.py \
+            app/tests/test_gate_s2c_confluence.py app/tests/test_gate_s2_classical_replay.py
+      - name: Reproduce archived diagnostic and source hashes without market downloads
+        working-directory: backend
+        run: |
+          python -m scripts.gate_entry_exit_experiment \
+            --output /tmp/gate-entry-exit.json.gz \
+            --verify ../docs/research/gate-s3i-20261102/results.json.gz
+          python -m scripts.gate_entry_exit_experiment \
+            --future-snapshot ../docs/research/gate-s3g-20261102/snapshot.json.gz \
+            --output /tmp/gate-entry-exit-waiting.json.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gate-entry-exit-research-evidence
+          path: /tmp/gate-entry-exit*.json.gz*
+          retention-days: 90
+          if-no-files-found: error

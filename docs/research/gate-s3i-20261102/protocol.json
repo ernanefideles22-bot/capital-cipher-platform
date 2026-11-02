@@ -1,0 +1,23 @@
+{
+  "id": "GATE_ENTRY_EXIT_RESEARCH_V1",
+  "declared_at_utc": "2026-11-02T10:43:00+00:00",
+  "holdout_start_utc": "2026-11-02T12:00:00+00:00",
+  "historical_snapshot_sha256": "02c406b670f8e802c2b48df1d1275f92b1a0683d8566d455e21ca4aa7be96eb5",
+  "hypotheses": ["CONFIRM_CLOSE", "NET_RR2", "CONFIRM_CLOSE_NET_RR2"],
+  "confirmation_bars": 1,
+  "confirmation": "FAVORABLE_CLOSE_AND_NO_PRIOR_STOP_DISTANCE_EXCURSION",
+  "target": "MAX_ORIGINAL_TARGET_OR_2_STOP_PLUS_3_ESTIMATED_ROUND_TRIP_COST",
+  "stops_risk_and_maximum_holding_unchanged": true,
+  "base_friction": {"fee_bps_side": 6, "slippage_bps_side": 6, "funding_bps_8h": 1},
+  "stress_friction": {"fee_bps_side": 6, "slippage_bps_side": 12, "funding_bps_8h": 2},
+  "stress_policy_retuned": false,
+  "minimum_training_completed_trades": 5,
+  "minimum_holdout_bars": 96,
+  "minimum_holdout_completed_trades_each_arm": 30,
+  "training_selection": "COMPLETED_NET_BEATS_CASH_BASELINE_AND_S1_WHERE_AVAILABLE_THEN_MAX_NET_ID_TIE",
+  "holdout_selection": "FROZEN_FULL_OLD_SNAPSHOT_SELECTION_ONLY",
+  "historical_window_is_pristine": false,
+  "post_freeze_replay_uses_hypothetical_receipts": true,
+  "automatic_promotion_authorized": false,
+  "execution_authorized": false
+}
