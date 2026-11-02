@@ -15,6 +15,7 @@ from app.demo.gate_readonly import GateProbeError, probe_account
 from app.demo.gate_market import fetch_candles
 from app.demo.gate_stage1_shadow import professional_shadow_snapshot, GATE_S1_SYMBOLS
 from app.strategy.gate_s2e_live_shadow import evaluate_shared_shadow
+from app.demo.gate_s3_collector import GateS3Collector
 from app.demo.gate_analysis import analyze_snapshot
 from app.demo.gate_reconcile import inventory
 from app.demo.gate_position_config import read_position_config
@@ -26,12 +27,22 @@ KEY_VARIABLE = "CAPITAL_CIPHER_GATE_TESTNET_API_KEY"
 SECRET_VARIABLE = "CAPITAL_CIPHER_GATE_TESTNET_API_SECRET"
 
 
+def _shadow_delay(forward_enabled, now):
+    if not forward_enabled:
+        return 900
+    target = math.floor(now / 900) * 900 + 10
+    if target <= now:
+        target += 900
+    return max(0., target - now)
+
+
 def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles, research=analyze_snapshot,
                inventory_fn=inventory, position_config_fn=read_position_config,
                storage_path='/gate-data', mount_check=os.path.ismount, oms_connector=connect_gate_oms,
                stage1_shadow_runner=professional_shadow_snapshot,
                stage1_sleep=asyncio.sleep,
-               strategy_shadow_runner=evaluate_shared_shadow):
+               strategy_shadow_runner=evaluate_shared_shadow,
+               forward_research_factory=GateS3Collector):
     values = dict(os.environ if environment is None else environment)
     key, secret = values.get(KEY_VARIABLE, "").strip(), values.get(SECRET_VARIABLE, "").strip()
     state = {"environment": "GATE_TESTNET", "status": "WAITING_FOR_CREDENTIALS",
@@ -58,6 +69,14 @@ def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles
         'checked_at':None, 'markets':{}, 'execution_authorized':False,
         'source_decision_cohort_modified':False,
     }
+    forward_research_enabled = (
+        strategy_shadow_enabled and values.get('GATE_S3_SHADOW_ENABLED') == 'true')
+    state['forward_research'] = {
+        'status': 'WAITING' if forward_research_enabled else 'DISABLED',
+        'execution_authorized': False, 'oms_touched': False,
+        'profitability_proven': False,
+    }
+    forward = {'collector': None}
     shadow_cycles = deque(maxlen=16)
     shadow_cycle_count = 0
     shadow_ready_streak = 0
@@ -158,8 +177,10 @@ def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles
                 for symbol in GATE_S1_SYMBOLS:
                     try:
                         if strategy_shadow_enabled:
-                            report = await stage1_shadow_runner(
-                                symbol,strategy_shadow_hook=strategy_shadow_runner)
+                            kwargs = {'strategy_shadow_hook': strategy_shadow_runner}
+                            if forward['collector'] is not None:
+                                kwargs['observation_sink'] = forward['collector'].capture
+                            report = await stage1_shadow_runner(symbol, **kwargs)
                         else:
                             report = await stage1_shadow_runner(symbol)
                         if (report.get('execution_authorized') is not False or
@@ -255,7 +276,9 @@ def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles
                     state['strategy_shadow']['status']='BLOCKED'
                     state['strategy_shadow']['checked_at']=datetime.now(timezone.utc).isoformat()
                 logging.getLogger('uvicorn.error').warning('GATE_S1_SHADOW_MONITOR_BLOCKED')
-            await stage1_sleep(900)
+            # Opt-in S3 uses confirmed 15m boundaries, avoiding accumulated
+            # HTTP latency. The default S1-only cadence stays unchanged.
+            await stage1_sleep(_shadow_delay(forward_research_enabled, time.time()))
 
     async def inventory_monitor():
         while True:
@@ -305,6 +328,22 @@ def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles
                 if journal is not None:
                     journal.close()
             journals.update(research=None,cycle=None)
+        if forward_research_enabled:
+            try:
+                if state['storage_status'] != 'AVAILABLE':
+                    raise ValueError('S3 persistent mount unavailable')
+                forward['collector'] = forward_research_factory(
+                    storage_path, mount_verified=True)
+                forward['collector'].start()
+            except Exception:
+                if forward['collector'] is not None:
+                    try:
+                        forward['collector'].stop(timeout=0)
+                    except Exception:
+                        pass
+                forward['collector'] = None
+                state['forward_research'].update(
+                    status='BLOCKED', error_code='PERSISTENT_STORAGE_UNAVAILABLE')
         stack=AsyncExitStack()
         stop=asyncio.Event()
         try:
@@ -326,6 +365,8 @@ def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            if forward['collector'] is not None:
+                await asyncio.to_thread(forward['collector'].stop)
             await stack.aclose()
             for journal in journals.values():
                 if journal is not None:
@@ -352,6 +393,8 @@ def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles
     async def status():
         flow=runtime['flow']
         current=dict(state)
+        if forward['collector'] is not None:
+            current['forward_research'] = forward['collector'].snapshot()['collection']
         current['oms_connection_status']=runtime['status']
         current['oms_flow_status']=flow.status if flow is not None else 'DISCONNECTED'
         current['oms_release_authorized']=getattr(flow,'release_authorized',False)
@@ -365,6 +408,20 @@ def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles
         if journals['cycle'] is not None:
             current['recovery_status']='REQUIRED' if journals['cycle'].recovery_status()['recovery_required'] else 'CLEAR'
         return current
+
+    @app.get("/api/gate/research/forward")
+    async def forward_status():
+        # Cached, public-only report: HTTP clients never open or mutate SQLite.
+        if forward['collector'] is None:
+            result = {'collection': dict(state['forward_research']),
+                      'comparison': None, 'execution_authorized': False}
+            if state['forward_research']['status'] == 'BLOCKED':
+                return JSONResponse(result, status_code=503)
+            return result
+        result = forward['collector'].snapshot()
+        if result['collection']['status'] == 'BLOCKED':
+            return JSONResponse(result, status_code=503)
+        return result
 
     @app.get("/", response_class=HTMLResponse)
     async def home():

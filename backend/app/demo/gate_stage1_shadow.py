@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from time import perf_counter
+from copy import deepcopy
 from typing import Callable, Awaitable
 from pydantic import ValidationError as PydanticValidationError
 
@@ -31,6 +32,7 @@ async def professional_shadow_snapshot(
     observation_clock: Callable[[],datetime]=lambda: datetime.now(timezone.utc),
     elapsed_clock: Callable[[],float]=perf_counter,
     strategy_shadow_hook: Callable[...,dict] | None=None,
+    observation_sink: Callable[...,dict] | None=None,
 ) -> dict:
     """Read all 3 Gate timeframes, evaluate an actual opt-in SHADOW agent."""
     if symbol not in GATE_S1_SYMBOLS:
@@ -146,5 +148,35 @@ async def professional_shadow_snapshot(
                 "execution_authorized":False,
                 "oms_touched":False,
                 "source_decision_cohort_modified":False,
+            }
+    if observation_sink is not None:
+        # Optional public-only capture. Its queue/storage failure must not
+        # change S1 or the S2E decision. No raw candle enters public status.
+        try:
+            extension = result.get("strategy_shadow", {})
+            if (stage_status != "READ_ONLY_CHART_READY"
+                    or extension.get("status") != "READ_ONLY_CONFLUENCE_READY"):
+                raise ValueError("S3 requires ready S1 and S2E")
+            latest = store.get("GATE", symbol, "15m", limit=1)[-1].model_copy(deep=True)
+            # The feature cutoff is before analysis. A decision becomes usable
+            # only after both analyses finish, possibly across a candle open.
+            ready_at = observation_clock()
+            if ready_at.tzinfo is None or ready_at.utcoffset() is None or ready_at < as_of:
+                raise ValueError("Invalid decision availability clock")
+            ready_at = ready_at.astimezone(timezone.utc)
+            observation = deepcopy(extension)
+            observation["analysis_cutoff_utc"] = as_of.isoformat()
+            observation["as_of_utc"] = ready_at.isoformat()
+            captured = observation_sink(latest, observation, observed_at=ready_at)
+            if not isinstance(captured, dict) or captured.get("execution_authorized") is not False:
+                raise ValueError("Unsafe S3 capture response")
+            result["forward_research"] = {
+                "status": captured["status"], "execution_authorized": False,
+                "decision_available_at_utc": ready_at.isoformat(),
+            }
+        except Exception as exc:
+            result["forward_research"] = {
+                "status": "BLOCKED", "error_type": type(exc).__name__,
+                "execution_authorized": False,
             }
     return result
