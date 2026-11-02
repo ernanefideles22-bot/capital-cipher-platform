@@ -1,0 +1,782 @@
+{
+  "source_job_url": "https://github.com/ernanefideles22-bot/capital-cipher-platform/actions/runs/41311284958/job/124862030936",
+  "source_commit": "9c03597ef401361df1f2e7d9b4bb5e9e32ae17b7",
+  "raw_candles_archived": false,
+  "trade_traces_archived": false,
+  "records": [
+    {
+      "candles": 800,
+      "cost_breakdown": [
+        {
+          "fee_drag": 11.296449,
+          "funding_drag": 0.942,
+          "mark_at_window_end": 0,
+          "net": -43.477203,
+          "net_expectancy": -2.89848,
+          "pre_slippage_gross": -19.942313,
+          "slippage_drag": 11.296441,
+          "stopped": 12,
+          "strategy": "DONCHIAN_VOLUME_BREAKOUT_V1",
+          "targets": 1,
+          "trades": 15
+        },
+        {
+          "fee_drag": 16.172366,
+          "funding_drag": 1.347917,
+          "mark_at_window_end": 0,
+          "net": -37.281672,
+          "net_expectancy": -2.19304,
+          "pre_slippage_gross": -3.589023,
+          "slippage_drag": 16.172365,
+          "stopped": 11,
+          "strategy": "EMA_TREND_PULLBACK_V1",
+          "targets": 3,
+          "trades": 17
+        },
+        {
+          "fee_drag": 50.649335,
+          "funding_drag": 4.221718,
+          "mark_at_window_end": 1,
+          "net": -89.512447,
+          "net_expectancy": -1.688914,
+          "pre_slippage_gross": 16.007946,
+          "slippage_drag": 50.64934,
+          "stopped": 32,
+          "strategy": "RANGE_BOLLINGER_REVERSION_V1",
+          "targets": 16,
+          "trades": 53
+        }
+      ],
+      "execution_authorized": false,
+      "folds_evidence_sufficient": 0,
+      "folds_selected": 0,
+      "full_history_diagnostics_are_oos": false,
+      "historical_receipt_proven": false,
+      "oos_completed": 0,
+      "oos_sum_separate_accounts": 0,
+      "profitability_proven": false,
+      "symbol": "BTCUSDT",
+      "timeframe": "15m",
+      "walkforward_folds": [
+        {
+          "chosen": null,
+          "fold": 1,
+          "oos_completed": 0,
+          "oos_end": 520,
+          "oos_net": null,
+          "oos_start": 400,
+          "sufficient_evidence": false,
+          "train_end": 400
+        },
+        {
+          "chosen": null,
+          "fold": 2,
+          "oos_completed": 0,
+          "oos_end": 640,
+          "oos_net": null,
+          "oos_start": 520,
+          "sufficient_evidence": false,
+          "train_end": 520
+        },
+        {
+          "chosen": null,
+          "fold": 3,
+          "oos_completed": 0,
+          "oos_end": 760,
+          "oos_net": null,
+          "oos_start": 640,
+          "sufficient_evidence": false,
+          "train_end": 640
+        }
+      ]
+    },
+    {
+      "candles": 800,
+      "cost_breakdown": [
+        {
+          "fee_drag": 7.869159,
+          "funding_drag": 0.931027,
+          "mark_at_window_end": 0,
+          "net": -27.68688,
+          "net_expectancy": -1.457204,
+          "pre_slippage_gross": -11.017539,
+          "slippage_drag": 7.869155,
+          "stopped": 14,
+          "strategy": "DONCHIAN_VOLUME_BREAKOUT_V1",
+          "targets": 4,
+          "trades": 19
+        },
+        {
+          "fee_drag": 8.048635,
+          "funding_drag": 1.049367,
+          "mark_at_window_end": 0,
+          "net": -29.019145,
+          "net_expectancy": -1.612175,
+          "pre_slippage_gross": -11.872511,
+          "slippage_drag": 8.048631,
+          "stopped": 12,
+          "strategy": "EMA_TREND_PULLBACK_V1",
+          "targets": 2,
+          "trades": 18
+        },
+        {
+          "fee_drag": 23.768674,
+          "funding_drag": 2.443212,
+          "mark_at_window_end": 0,
+          "net": -54.025482,
+          "net_expectancy": -1.256407,
+          "pre_slippage_gross": -4.044922,
+          "slippage_drag": 23.768673,
+          "stopped": 26,
+          "strategy": "RANGE_BOLLINGER_REVERSION_V1",
+          "targets": 12,
+          "trades": 43
+        }
+      ],
+      "execution_authorized": false,
+      "folds_evidence_sufficient": 0,
+      "folds_selected": 0,
+      "full_history_diagnostics_are_oos": false,
+      "historical_receipt_proven": false,
+      "oos_completed": 0,
+      "oos_sum_separate_accounts": 0,
+      "profitability_proven": false,
+      "symbol": "BTCUSDT",
+      "timeframe": "1h",
+      "walkforward_folds": [
+        {
+          "chosen": null,
+          "fold": 1,
+          "oos_completed": 0,
+          "oos_end": 520,
+          "oos_net": null,
+          "oos_start": 400,
+          "sufficient_evidence": false,
+          "train_end": 400
+        },
+        {
+          "chosen": null,
+          "fold": 2,
+          "oos_completed": 0,
+          "oos_end": 640,
+          "oos_net": null,
+          "oos_start": 520,
+          "sufficient_evidence": false,
+          "train_end": 520
+        },
+        {
+          "chosen": null,
+          "fold": 3,
+          "oos_completed": 0,
+          "oos_end": 760,
+          "oos_net": null,
+          "oos_start": 640,
+          "sufficient_evidence": false,
+          "train_end": 640
+        }
+      ]
+    },
+    {
+      "candles": 800,
+      "cost_breakdown": [
+        {
+          "fee_drag": 1.773843,
+          "funding_drag": 0.733972,
+          "mark_at_window_end": 1,
+          "net": 4.954764,
+          "net_expectancy": 0.353912,
+          "pre_slippage_gross": 9.236427,
+          "slippage_drag": 1.773847,
+          "stopped": 6,
+          "strategy": "DONCHIAN_VOLUME_BREAKOUT_V1",
+          "targets": 4,
+          "trades": 14
+        },
+        {
+          "fee_drag": 3.410512,
+          "funding_drag": 1.302445,
+          "mark_at_window_end": 1,
+          "net": -31.232364,
+          "net_expectancy": -1.561618,
+          "pre_slippage_gross": -23.108903,
+          "slippage_drag": 3.410504,
+          "stopped": 14,
+          "strategy": "EMA_TREND_PULLBACK_V1",
+          "targets": 2,
+          "trades": 20
+        },
+        {
+          "fee_drag": 5.323119,
+          "funding_drag": 1.348609,
+          "mark_at_window_end": 0,
+          "net": -12.930747,
+          "net_expectancy": -0.497336,
+          "pre_slippage_gross": -0.935901,
+          "slippage_drag": 5.323119,
+          "stopped": 14,
+          "strategy": "RANGE_BOLLINGER_REVERSION_V1",
+          "targets": 8,
+          "trades": 26
+        }
+      ],
+      "execution_authorized": false,
+      "folds_evidence_sufficient": 0,
+      "folds_selected": 3,
+      "full_history_diagnostics_are_oos": false,
+      "historical_receipt_proven": false,
+      "oos_completed": 6,
+      "oos_sum_separate_accounts": -6.152651,
+      "profitability_proven": false,
+      "symbol": "BTCUSDT",
+      "timeframe": "4h",
+      "walkforward_folds": [
+        {
+          "chosen": "DONCHIAN_VOLUME_BREAKOUT_V1",
+          "fold": 1,
+          "oos_completed": 2,
+          "oos_end": 520,
+          "oos_net": -5.371639,
+          "oos_start": 400,
+          "sufficient_evidence": false,
+          "train_end": 400
+        },
+        {
+          "chosen": "DONCHIAN_VOLUME_BREAKOUT_V1",
+          "fold": 2,
+          "oos_completed": 1,
+          "oos_end": 640,
+          "oos_net": 4.728472,
+          "oos_start": 520,
+          "sufficient_evidence": false,
+          "train_end": 520
+        },
+        {
+          "chosen": "DONCHIAN_VOLUME_BREAKOUT_V1",
+          "fold": 3,
+          "oos_completed": 3,
+          "oos_end": 760,
+          "oos_net": -5.509483,
+          "oos_start": 640,
+          "sufficient_evidence": false,
+          "train_end": 640
+        }
+      ]
+    },
+    {
+      "candles": 800,
+      "cost_breakdown": [
+        {
+          "fee_drag": 8.029096,
+          "funding_drag": 0.669021,
+          "mark_at_window_end": 0,
+          "net": -38.184659,
+          "net_expectancy": -2.545644,
+          "pre_slippage_gross": -21.457454,
+          "slippage_drag": 8.029088,
+          "stopped": 10,
+          "strategy": "DONCHIAN_VOLUME_BREAKOUT_V1",
+          "targets": 0,
+          "trades": 15
+        },
+        {
+          "fee_drag": 14.325156,
+          "funding_drag": 1.192914,
+          "mark_at_window_end": 0,
+          "net": -40.124561,
+          "net_expectancy": -2.111819,
+          "pre_slippage_gross": -10.281339,
+          "slippage_drag": 14.325152,
+          "stopped": 14,
+          "strategy": "EMA_TREND_PULLBACK_V1",
+          "targets": 3,
+          "trades": 19
+        },
+        {
+          "fee_drag": 38.930155,
+          "funding_drag": 3.244139,
+          "mark_at_window_end": 1,
+          "net": -76.857652,
+          "net_expectancy": -1.568524,
+          "pre_slippage_gross": 4.246799,
+          "slippage_drag": 38.930157,
+          "stopped": 29,
+          "strategy": "RANGE_BOLLINGER_REVERSION_V1",
+          "targets": 14,
+          "trades": 49
+        }
+      ],
+      "execution_authorized": false,
+      "folds_evidence_sufficient": 0,
+      "folds_selected": 0,
+      "full_history_diagnostics_are_oos": false,
+      "historical_receipt_proven": false,
+      "oos_completed": 0,
+      "oos_sum_separate_accounts": 0,
+      "profitability_proven": false,
+      "symbol": "ETHUSDT",
+      "timeframe": "15m",
+      "walkforward_folds": [
+        {
+          "chosen": null,
+          "fold": 1,
+          "oos_completed": 0,
+          "oos_end": 520,
+          "oos_net": null,
+          "oos_start": 400,
+          "sufficient_evidence": false,
+          "train_end": 400
+        },
+        {
+          "chosen": null,
+          "fold": 2,
+          "oos_completed": 0,
+          "oos_end": 640,
+          "oos_net": null,
+          "oos_start": 520,
+          "sufficient_evidence": false,
+          "train_end": 520
+        },
+        {
+          "chosen": null,
+          "fold": 3,
+          "oos_completed": 0,
+          "oos_end": 760,
+          "oos_net": null,
+          "oos_start": 640,
+          "sufficient_evidence": false,
+          "train_end": 640
+        }
+      ]
+    },
+    {
+      "candles": 800,
+      "cost_breakdown": [
+        {
+          "fee_drag": 4.872882,
+          "funding_drag": 0.506848,
+          "mark_at_window_end": 0,
+          "net": -24.275152,
+          "net_expectancy": -1.213758,
+          "pre_slippage_gross": -14.022546,
+          "slippage_drag": 4.872877,
+          "stopped": 15,
+          "strategy": "DONCHIAN_VOLUME_BREAKOUT_V1",
+          "targets": 4,
+          "trades": 20
+        },
+        {
+          "fee_drag": 6.060007,
+          "funding_drag": 0.763292,
+          "mark_at_window_end": 0,
+          "net": -11.265848,
+          "net_expectancy": -0.704116,
+          "pre_slippage_gross": 1.617458,
+          "slippage_drag": 6.060008,
+          "stopped": 9,
+          "strategy": "EMA_TREND_PULLBACK_V1",
+          "targets": 4,
+          "trades": 16
+        },
+        {
+          "fee_drag": 13.656201,
+          "funding_drag": 1.438261,
+          "mark_at_window_end": 1,
+          "net": -29.178659,
+          "net_expectancy": -0.941247,
+          "pre_slippage_gross": -0.427997,
+          "slippage_drag": 13.656201,
+          "stopped": 18,
+          "strategy": "RANGE_BOLLINGER_REVERSION_V1",
+          "targets": 9,
+          "trades": 31
+        }
+      ],
+      "execution_authorized": false,
+      "folds_evidence_sufficient": 0,
+      "folds_selected": 0,
+      "full_history_diagnostics_are_oos": false,
+      "historical_receipt_proven": false,
+      "oos_completed": 0,
+      "oos_sum_separate_accounts": 0,
+      "profitability_proven": false,
+      "symbol": "ETHUSDT",
+      "timeframe": "1h",
+      "walkforward_folds": [
+        {
+          "chosen": null,
+          "fold": 1,
+          "oos_completed": 0,
+          "oos_end": 520,
+          "oos_net": null,
+          "oos_start": 400,
+          "sufficient_evidence": false,
+          "train_end": 400
+        },
+        {
+          "chosen": null,
+          "fold": 2,
+          "oos_completed": 0,
+          "oos_end": 640,
+          "oos_net": null,
+          "oos_start": 520,
+          "sufficient_evidence": false,
+          "train_end": 520
+        },
+        {
+          "chosen": null,
+          "fold": 3,
+          "oos_completed": 0,
+          "oos_end": 760,
+          "oos_net": null,
+          "oos_start": 640,
+          "sufficient_evidence": false,
+          "train_end": 640
+        }
+      ]
+    },
+    {
+      "candles": 800,
+      "cost_breakdown": [
+        {
+          "fee_drag": 1.739703,
+          "funding_drag": 0.527775,
+          "mark_at_window_end": 1,
+          "net": -7.627735,
+          "net_expectancy": -0.508516,
+          "pre_slippage_gross": -3.620557,
+          "slippage_drag": 1.739701,
+          "stopped": 9,
+          "strategy": "DONCHIAN_VOLUME_BREAKOUT_V1",
+          "targets": 4,
+          "trades": 15
+        },
+        {
+          "fee_drag": 3.423054,
+          "funding_drag": 1.341632,
+          "mark_at_window_end": 0,
+          "net": -9.811776,
+          "net_expectancy": -0.426599,
+          "pre_slippage_gross": -1.624036,
+          "slippage_drag": 3.423054,
+          "stopped": 11,
+          "strategy": "EMA_TREND_PULLBACK_V1",
+          "targets": 5,
+          "trades": 23
+        },
+        {
+          "fee_drag": 2.855335,
+          "funding_drag": 0.63699,
+          "mark_at_window_end": 0,
+          "net": -5.456117,
+          "net_expectancy": -0.341007,
+          "pre_slippage_gross": 0.891543,
+          "slippage_drag": 2.855335,
+          "stopped": 8,
+          "strategy": "RANGE_BOLLINGER_REVERSION_V1",
+          "targets": 5,
+          "trades": 16
+        }
+      ],
+      "execution_authorized": false,
+      "folds_evidence_sufficient": 0,
+      "folds_selected": 0,
+      "full_history_diagnostics_are_oos": false,
+      "historical_receipt_proven": false,
+      "oos_completed": 0,
+      "oos_sum_separate_accounts": 0,
+      "profitability_proven": false,
+      "symbol": "ETHUSDT",
+      "timeframe": "4h",
+      "walkforward_folds": [
+        {
+          "chosen": null,
+          "fold": 1,
+          "oos_completed": 0,
+          "oos_end": 520,
+          "oos_net": null,
+          "oos_start": 400,
+          "sufficient_evidence": false,
+          "train_end": 400
+        },
+        {
+          "chosen": null,
+          "fold": 2,
+          "oos_completed": 0,
+          "oos_end": 640,
+          "oos_net": null,
+          "oos_start": 520,
+          "sufficient_evidence": false,
+          "train_end": 520
+        },
+        {
+          "chosen": null,
+          "fold": 3,
+          "oos_completed": 0,
+          "oos_end": 760,
+          "oos_net": null,
+          "oos_start": 640,
+          "sufficient_evidence": false,
+          "train_end": 640
+        }
+      ]
+    },
+    {
+      "candles": 800,
+      "cost_breakdown": [
+        {
+          "fee_drag": 6.59196,
+          "funding_drag": 0.549278,
+          "mark_at_window_end": 0,
+          "net": -18.65278,
+          "net_expectancy": -1.165799,
+          "pre_slippage_gross": -4.919584,
+          "slippage_drag": 6.591958,
+          "stopped": 11,
+          "strategy": "DONCHIAN_VOLUME_BREAKOUT_V1",
+          "targets": 3,
+          "trades": 16
+        },
+        {
+          "fee_drag": 14.812843,
+          "funding_drag": 1.233624,
+          "mark_at_window_end": 0,
+          "net": -30.287713,
+          "net_expectancy": -1.514386,
+          "pre_slippage_gross": 0.571597,
+          "slippage_drag": 14.812843,
+          "stopped": 14,
+          "strategy": "EMA_TREND_PULLBACK_V1",
+          "targets": 5,
+          "trades": 20
+        },
+        {
+          "fee_drag": 34.909931,
+          "funding_drag": 2.910316,
+          "mark_at_window_end": 1,
+          "net": -66.243561,
+          "net_expectancy": -1.380074,
+          "pre_slippage_gross": 6.486618,
+          "slippage_drag": 34.909933,
+          "stopped": 26,
+          "strategy": "RANGE_BOLLINGER_REVERSION_V1",
+          "targets": 15,
+          "trades": 48
+        }
+      ],
+      "execution_authorized": false,
+      "folds_evidence_sufficient": 0,
+      "folds_selected": 0,
+      "full_history_diagnostics_are_oos": false,
+      "historical_receipt_proven": false,
+      "oos_completed": 0,
+      "oos_sum_separate_accounts": 0,
+      "profitability_proven": false,
+      "symbol": "SOLUSDT",
+      "timeframe": "15m",
+      "walkforward_folds": [
+        {
+          "chosen": null,
+          "fold": 1,
+          "oos_completed": 0,
+          "oos_end": 520,
+          "oos_net": null,
+          "oos_start": 400,
+          "sufficient_evidence": false,
+          "train_end": 400
+        },
+        {
+          "chosen": null,
+          "fold": 2,
+          "oos_completed": 0,
+          "oos_end": 640,
+          "oos_net": null,
+          "oos_start": 520,
+          "sufficient_evidence": false,
+          "train_end": 520
+        },
+        {
+          "chosen": null,
+          "fold": 3,
+          "oos_completed": 0,
+          "oos_end": 760,
+          "oos_net": null,
+          "oos_start": 640,
+          "sufficient_evidence": false,
+          "train_end": 640
+        }
+      ]
+    },
+    {
+      "candles": 800,
+      "cost_breakdown": [
+        {
+          "fee_drag": 3.970835,
+          "funding_drag": 0.52887,
+          "mark_at_window_end": 0,
+          "net": -11.616048,
+          "net_expectancy": -0.611371,
+          "pre_slippage_gross": -3.145509,
+          "slippage_drag": 3.970834,
+          "stopped": 13,
+          "strategy": "DONCHIAN_VOLUME_BREAKOUT_V1",
+          "targets": 5,
+          "trades": 19
+        },
+        {
+          "fee_drag": 4.572118,
+          "funding_drag": 0.736163,
+          "mark_at_window_end": 1,
+          "net": 3.712806,
+          "net_expectancy": 0.23205,
+          "pre_slippage_gross": 13.59321,
+          "slippage_drag": 4.572123,
+          "stopped": 7,
+          "strategy": "EMA_TREND_PULLBACK_V1",
+          "targets": 4,
+          "trades": 16
+        },
+        {
+          "fee_drag": 7.482709,
+          "funding_drag": 0.74495,
+          "mark_at_window_end": 0,
+          "net": 2.232993,
+          "net_expectancy": 0.093041,
+          "pre_slippage_gross": 17.943369,
+          "slippage_drag": 7.482716,
+          "stopped": 11,
+          "strategy": "RANGE_BOLLINGER_REVERSION_V1",
+          "targets": 10,
+          "trades": 24
+        }
+      ],
+      "execution_authorized": false,
+      "folds_evidence_sufficient": 0,
+      "folds_selected": 3,
+      "full_history_diagnostics_are_oos": false,
+      "historical_receipt_proven": false,
+      "oos_completed": 9,
+      "oos_sum_separate_accounts": -11.540741,
+      "profitability_proven": false,
+      "symbol": "SOLUSDT",
+      "timeframe": "1h",
+      "walkforward_folds": [
+        {
+          "chosen": "DONCHIAN_VOLUME_BREAKOUT_V1",
+          "fold": 1,
+          "oos_completed": 4,
+          "oos_end": 520,
+          "oos_net": -11.387063,
+          "oos_start": 400,
+          "sufficient_evidence": false,
+          "train_end": 400
+        },
+        {
+          "chosen": "EMA_TREND_PULLBACK_V1",
+          "fold": 2,
+          "oos_completed": 1,
+          "oos_end": 640,
+          "oos_net": 2.611421,
+          "oos_start": 520,
+          "sufficient_evidence": false,
+          "train_end": 520
+        },
+        {
+          "chosen": "EMA_TREND_PULLBACK_V1",
+          "fold": 3,
+          "oos_completed": 4,
+          "oos_end": 760,
+          "oos_net": -2.7651,
+          "oos_start": 640,
+          "sufficient_evidence": false,
+          "train_end": 640
+        }
+      ]
+    },
+    {
+      "candles": 800,
+      "cost_breakdown": [
+        {
+          "fee_drag": 1.920038,
+          "funding_drag": 0.657809,
+          "mark_at_window_end": 1,
+          "net": 8.740698,
+          "net_expectancy": 0.485594,
+          "pre_slippage_gross": 13.238588,
+          "slippage_drag": 1.920043,
+          "stopped": 9,
+          "strategy": "DONCHIAN_VOLUME_BREAKOUT_V1",
+          "targets": 7,
+          "trades": 18
+        },
+        {
+          "fee_drag": 3.031861,
+          "funding_drag": 1.103911,
+          "mark_at_window_end": 0,
+          "net": -17.195351,
+          "net_expectancy": -0.818826,
+          "pre_slippage_gross": -10.027722,
+          "slippage_drag": 3.031857,
+          "stopped": 14,
+          "strategy": "EMA_TREND_PULLBACK_V1",
+          "targets": 4,
+          "trades": 21
+        },
+        {
+          "fee_drag": 2.408686,
+          "funding_drag": 0.696771,
+          "mark_at_window_end": 0,
+          "net": -9.49495,
+          "net_expectancy": -0.632997,
+          "pre_slippage_gross": -3.980809,
+          "slippage_drag": 2.408685,
+          "stopped": 9,
+          "strategy": "RANGE_BOLLINGER_REVERSION_V1",
+          "targets": 4,
+          "trades": 15
+        }
+      ],
+      "execution_authorized": false,
+      "folds_evidence_sufficient": 0,
+      "folds_selected": 3,
+      "full_history_diagnostics_are_oos": false,
+      "historical_receipt_proven": false,
+      "oos_completed": 8,
+      "oos_sum_separate_accounts": 3.385784,
+      "profitability_proven": false,
+      "symbol": "SOLUSDT",
+      "timeframe": "4h",
+      "walkforward_folds": [
+        {
+          "chosen": "DONCHIAN_VOLUME_BREAKOUT_V1",
+          "fold": 1,
+          "oos_completed": 3,
+          "oos_end": 520,
+          "oos_net": -5.726827,
+          "oos_start": 400,
+          "sufficient_evidence": false,
+          "train_end": 400
+        },
+        {
+          "chosen": "DONCHIAN_VOLUME_BREAKOUT_V1",
+          "fold": 2,
+          "oos_completed": 1,
+          "oos_end": 640,
+          "oos_net": 4.809842,
+          "oos_start": 520,
+          "sufficient_evidence": false,
+          "train_end": 520
+        },
+        {
+          "chosen": "DONCHIAN_VOLUME_BREAKOUT_V1",
+          "fold": 3,
+          "oos_completed": 4,
+          "oos_end": 760,
+          "oos_net": 4.302768,
+          "oos_start": 640,
+          "sufficient_evidence": false,
+          "train_end": 640
+        }
+      ]
+    }
+  ]
+}

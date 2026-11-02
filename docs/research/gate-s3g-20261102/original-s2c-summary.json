@@ -1,0 +1,278 @@
+{
+  "source_job_url": "https://github.com/ernanefideles22-bot/capital-cipher-platform/actions/runs/41312717634/job/124866285320",
+  "source_commit": "8813431f2d80408241e9befe2a25ab4c5c0245a5",
+  "raw_candles_archived": false,
+  "trade_traces_archived": false,
+  "records": [
+    {
+      "allowed_proposals": 2,
+      "baseline_drawdown_pct": 1.574411,
+      "baseline_net_pnl": -15.744107,
+      "baseline_trades": 7,
+      "candles_15m": 800,
+      "cash_no_trade_net_pnl": 0,
+      "confluence_drawdown_pct": 0.161776,
+      "confluence_net_pnl": 2.610379,
+      "confluence_trades": 2,
+      "context_frames": [
+        "1h",
+        "4h"
+      ],
+      "decision_frame": "15m",
+      "execution_authorized": false,
+      "hypothetical_historical_receipts": true,
+      "improvement_proven": false,
+      "oos_bars": 320,
+      "oos_start": 480,
+      "pristine_holdout": false,
+      "rejected_proposals": 7,
+      "rejection_reasons": {
+        "ADVERSE_BEARISH_CANDLE": 1,
+        "HIGHER_TIMEFRAMES_NOT_ALIGNED": 7
+      },
+      "strategy": "DONCHIAN_VOLUME_BREAKOUT_V1",
+      "symbol": "BTCUSDT",
+      "training_selection_performed": false
+    },
+    {
+      "allowed_proposals": 4,
+      "baseline_drawdown_pct": 2.137162,
+      "baseline_net_pnl": -21.371625,
+      "baseline_trades": 11,
+      "candles_15m": 800,
+      "cash_no_trade_net_pnl": 0,
+      "confluence_drawdown_pct": 0.439444,
+      "confluence_net_pnl": -3.635938,
+      "confluence_trades": 4,
+      "context_frames": [
+        "1h",
+        "4h"
+      ],
+      "decision_frame": "15m",
+      "execution_authorized": false,
+      "hypothetical_historical_receipts": true,
+      "improvement_proven": false,
+      "oos_bars": 320,
+      "oos_start": 480,
+      "pristine_holdout": false,
+      "rejected_proposals": 9,
+      "rejection_reasons": {
+        "ADVERSE_BEARISH_CANDLE": 1,
+        "HIGHER_TIMEFRAMES_NOT_ALIGNED": 9
+      },
+      "strategy": "EMA_TREND_PULLBACK_V1",
+      "symbol": "BTCUSDT",
+      "training_selection_performed": false
+    },
+    {
+      "allowed_proposals": 0,
+      "baseline_drawdown_pct": 2.936646,
+      "baseline_net_pnl": -29.288989,
+      "baseline_trades": 18,
+      "candles_15m": 800,
+      "cash_no_trade_net_pnl": 0,
+      "confluence_drawdown_pct": 0,
+      "confluence_net_pnl": 0,
+      "confluence_trades": 0,
+      "context_frames": [
+        "1h",
+        "4h"
+      ],
+      "decision_frame": "15m",
+      "execution_authorized": false,
+      "hypothetical_historical_receipts": true,
+      "improvement_proven": false,
+      "oos_bars": 320,
+      "oos_start": 480,
+      "pristine_holdout": false,
+      "rejected_proposals": 34,
+      "rejection_reasons": {
+        "ADVERSE_BEARISH_CANDLE": 2,
+        "ADVERSE_BULLISH_CANDLE": 5,
+        "HIGHER_TIMEFRAME_TREND_AGAINST_MEAN_REVERSION": 34,
+        "PRIMARY_NOT_RANGING": 17
+      },
+      "strategy": "RANGE_BOLLINGER_REVERSION_V1",
+      "symbol": "BTCUSDT",
+      "training_selection_performed": false
+    },
+    {
+      "allowed_proposals": 1,
+      "baseline_drawdown_pct": 1.728435,
+      "baseline_net_pnl": -17.284346,
+      "baseline_trades": 6,
+      "candles_15m": 800,
+      "cash_no_trade_net_pnl": 0,
+      "confluence_drawdown_pct": 0.27756,
+      "confluence_net_pnl": -2.775597,
+      "confluence_trades": 1,
+      "context_frames": [
+        "1h",
+        "4h"
+      ],
+      "decision_frame": "15m",
+      "execution_authorized": false,
+      "hypothetical_historical_receipts": true,
+      "improvement_proven": false,
+      "oos_bars": 320,
+      "oos_start": 480,
+      "pristine_holdout": false,
+      "rejected_proposals": 9,
+      "rejection_reasons": {
+        "HIGHER_TIMEFRAMES_NOT_ALIGNED": 9
+      },
+      "strategy": "DONCHIAN_VOLUME_BREAKOUT_V1",
+      "symbol": "ETHUSDT",
+      "training_selection_performed": false
+    },
+    {
+      "allowed_proposals": 5,
+      "baseline_drawdown_pct": 2.410365,
+      "baseline_net_pnl": -23.394345,
+      "baseline_trades": 11,
+      "candles_15m": 800,
+      "cash_no_trade_net_pnl": 0,
+      "confluence_drawdown_pct": 1.61355,
+      "confluence_net_pnl": -16.135504,
+      "confluence_trades": 5,
+      "context_frames": [
+        "1h",
+        "4h"
+      ],
+      "decision_frame": "15m",
+      "execution_authorized": false,
+      "hypothetical_historical_receipts": true,
+      "improvement_proven": false,
+      "oos_bars": 320,
+      "oos_start": 480,
+      "pristine_holdout": false,
+      "rejected_proposals": 11,
+      "rejection_reasons": {
+        "HIGHER_TIMEFRAMES_NOT_ALIGNED": 11
+      },
+      "strategy": "EMA_TREND_PULLBACK_V1",
+      "symbol": "ETHUSDT",
+      "training_selection_performed": false
+    },
+    {
+      "allowed_proposals": 0,
+      "baseline_drawdown_pct": 2.897305,
+      "baseline_net_pnl": -27.4929,
+      "baseline_trades": 19,
+      "candles_15m": 800,
+      "cash_no_trade_net_pnl": 0,
+      "confluence_drawdown_pct": 0,
+      "confluence_net_pnl": 0,
+      "confluence_trades": 0,
+      "context_frames": [
+        "1h",
+        "4h"
+      ],
+      "decision_frame": "15m",
+      "execution_authorized": false,
+      "hypothetical_historical_receipts": true,
+      "improvement_proven": false,
+      "oos_bars": 320,
+      "oos_start": 480,
+      "pristine_holdout": false,
+      "rejected_proposals": 35,
+      "rejection_reasons": {
+        "ADVERSE_BEARISH_CANDLE": 5,
+        "ADVERSE_BULLISH_CANDLE": 6,
+        "HIGHER_TIMEFRAME_TREND_AGAINST_MEAN_REVERSION": 35,
+        "PRIMARY_NOT_RANGING": 20
+      },
+      "strategy": "RANGE_BOLLINGER_REVERSION_V1",
+      "symbol": "ETHUSDT",
+      "training_selection_performed": false
+    },
+    {
+      "allowed_proposals": 5,
+      "baseline_drawdown_pct": 0.794071,
+      "baseline_net_pnl": -6.550459,
+      "baseline_trades": 7,
+      "candles_15m": 800,
+      "cash_no_trade_net_pnl": 0,
+      "confluence_drawdown_pct": 0.788133,
+      "confluence_net_pnl": -7.881327,
+      "confluence_trades": 5,
+      "context_frames": [
+        "1h",
+        "4h"
+      ],
+      "decision_frame": "15m",
+      "execution_authorized": false,
+      "hypothetical_historical_receipts": true,
+      "improvement_proven": false,
+      "oos_bars": 320,
+      "oos_start": 480,
+      "pristine_holdout": false,
+      "rejected_proposals": 4,
+      "rejection_reasons": {
+        "HIGHER_TIMEFRAMES_NOT_ALIGNED": 4
+      },
+      "strategy": "DONCHIAN_VOLUME_BREAKOUT_V1",
+      "symbol": "SOLUSDT",
+      "training_selection_performed": false
+    },
+    {
+      "allowed_proposals": 10,
+      "baseline_drawdown_pct": 2.644038,
+      "baseline_net_pnl": -22.98024,
+      "baseline_trades": 10,
+      "candles_15m": 800,
+      "cash_no_trade_net_pnl": 0,
+      "confluence_drawdown_pct": 2.644038,
+      "confluence_net_pnl": -22.98024,
+      "confluence_trades": 10,
+      "context_frames": [
+        "1h",
+        "4h"
+      ],
+      "decision_frame": "15m",
+      "execution_authorized": false,
+      "hypothetical_historical_receipts": true,
+      "improvement_proven": false,
+      "oos_bars": 320,
+      "oos_start": 480,
+      "pristine_holdout": false,
+      "rejected_proposals": 0,
+      "rejection_reasons": {},
+      "strategy": "EMA_TREND_PULLBACK_V1",
+      "symbol": "SOLUSDT",
+      "training_selection_performed": false
+    },
+    {
+      "allowed_proposals": 0,
+      "baseline_drawdown_pct": 3.190653,
+      "baseline_net_pnl": -31.133366,
+      "baseline_trades": 20,
+      "candles_15m": 800,
+      "cash_no_trade_net_pnl": 0,
+      "confluence_drawdown_pct": 0,
+      "confluence_net_pnl": 0,
+      "confluence_trades": 0,
+      "context_frames": [
+        "1h",
+        "4h"
+      ],
+      "decision_frame": "15m",
+      "execution_authorized": false,
+      "hypothetical_historical_receipts": true,
+      "improvement_proven": false,
+      "oos_bars": 320,
+      "oos_start": 480,
+      "pristine_holdout": false,
+      "rejected_proposals": 39,
+      "rejection_reasons": {
+        "ADVERSE_BEARISH_CANDLE": 3,
+        "ADVERSE_BULLISH_CANDLE": 1,
+        "HIGHER_TIMEFRAME_TREND_AGAINST_MEAN_REVERSION": 39,
+        "PRIMARY_NOT_RANGING": 13
+      },
+      "strategy": "RANGE_BOLLINGER_REVERSION_V1",
+      "symbol": "SOLUSDT",
+      "training_selection_performed": false
+    }
+  ]
+}
