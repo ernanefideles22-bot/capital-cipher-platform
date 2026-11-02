@@ -81,6 +81,18 @@ def _public_shadow(raw: Mapping) -> dict:
         clean.append({key: row[key] for key in sorted(HYPOTHESIS_KEYS)})
     out = {key: raw[key] for key in sorted(SHADOW_KEYS) if key != "hypotheses"}
     out["hypotheses"] = sorted(clean, key=lambda row: row["strategy_id"])
+    # Optional S3E provenance: feature cutoff precedes actual decision
+    # availability. Preserve it without changing canonical older V1 rows.
+    if "analysis_cutoff_utc" in raw:
+        try:
+            cutoff = datetime.fromisoformat(raw["analysis_cutoff_utc"])
+            ready = datetime.fromisoformat(raw["as_of_utc"])
+            if (cutoff.tzinfo is None or ready.tzinfo is None
+                    or cutoff > ready):
+                raise ValueError()
+        except (ValueError, TypeError):
+            raise S3JournalBlocked("Invalid analysis/availability provenance") from None
+        out["analysis_cutoff_utc"] = cutoff.astimezone(timezone.utc).isoformat()
     return out
 
 
@@ -88,10 +100,15 @@ def _serialize(candle: Candle, shadow: Mapping, observed_at: datetime) -> str:
     if observed_at.tzinfo is None or observed_at.utcoffset() is None:
         raise S3JournalBlocked("Naive observation timestamp")
     try:
+        public_shadow = _public_shadow(shadow)
+        if "analysis_cutoff_utc" in public_shadow:
+            cutoff = datetime.fromisoformat(public_shadow["analysis_cutoff_utc"])
+            if cutoff < candle.received_at or cutoff < candle.closed_at:
+                raise S3JournalBlocked("Analysis cutoff predates its source candle")
         return _canonical({
             "schema": SCHEMA_VERSION,
             "candle": candle.model_dump(mode="json"),
-            "shadow": _public_shadow(shadow),
+            "shadow": public_shadow,
             "observed_at": observed_at.astimezone(timezone.utc).isoformat(),
         })
     except (TypeError, ValueError, OverflowError) as exc:

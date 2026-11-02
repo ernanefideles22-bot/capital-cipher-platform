@@ -228,6 +228,41 @@ def test_real_s1_s2_to_service_journal_uses_only_the_original_nine_series(tmp_pa
         assert not report['profitability_proven']
 
 
+@pytest.mark.asyncio
+async def test_analysis_crossing_a_candle_open_cannot_backdate_the_decision():
+    from datetime import datetime, timedelta, timezone
+    from app.strategy.gate_s3_forward_scorecard import ShadowForwardScorecard
+    from app.tests.test_gate_s3_durable_research import research_account
+    cutoff = datetime(2026, 11, 2, 13, 44, 59, 990000, tzinfo=timezone.utc)
+    ready = cutoff+timedelta(milliseconds=20)  # 13:45 open occurs DURING analysis.
+    clocks = iter([cutoff, cutoff, cutoff, cutoff, ready])
+    packets = []
+    async def fetch(symbol, tf, *, limit):
+        return [dict(row, close_time_ms=row['close_time_ms']+86400000)
+                for row in same_observation(tf)]
+    def proposal(symbol, groups, *, as_of):
+        return shadow(groups['15m'][-1], action='LONG')
+    def capture_packet(bar, extension, *, observed_at):
+        packets.append((bar, extension, observed_at))
+        return {'status': 'QUEUED_NOT_COMMITTED', 'execution_authorized': False}
+    report = await professional_shadow_snapshot(
+        'BTCUSDT', fetch=fetch, observation_clock=lambda: next(clocks),
+        strategy_shadow_hook=proposal, observation_sink=capture_packet)
+    bar, extension, available_at = packets[0]
+    assert report['strategy_shadow']['as_of_utc'] == cutoff.isoformat()
+    assert extension['analysis_cutoff_utc'] == cutoff.isoformat()
+    assert extension['as_of_utc'] == available_at.isoformat() == ready.isoformat()
+    scorer = ShadowForwardScorecard()
+    scorer.observe(bar, extension, observed_at=available_at)
+    for offset in (15, 30, 45):
+        closed = bar.closed_at+timedelta(minutes=offset)
+        later = bar.model_copy(update={'closed_at': closed, 'received_at': closed+timedelta(seconds=5)})
+        scorer.observe(later, shadow(later), observed_at=later.received_at)
+    account = research_account(scorer.snapshot('BTCUSDT'), 'STANDALONE')
+    assert account['completed_trades'] == 0 and not account['open_position']
+    assert account['expired_signals'] == 1
+
+
 @pytest.mark.parametrize('phase,expected', [(2, 8), (10, 900), (14, 896), (899, 11)])
 def test_only_s3_optin_anchors_sampling_to_future_confirmed_15m_boundaries(phase, expected):
     assert _shadow_delay(True, 9000+phase) == expected

@@ -13,8 +13,9 @@ and sequential S2E/S3 acceptance. Existing prepared S2E release is separate.
   `GATE_S3_SHADOW_ENABLED`. S3 alone or any incomplete combination creates no
   S3 worker, directory or journal. No such flags were changed on Railway.
 - `professional_shadow_snapshot` can pass a deep copy of its newest closed
-  15m candle and validated S2E hypothesis summary, with the **original actual
-  observation cutoff**, to the optional capture callback. No additional
+  15m candle and validated S2E hypothesis summary to the optional capture
+  callback. It preserves the candle receipt and original **analysis cutoff**,
+  then measures **decision availability after S1/S2 analysis finishes**. No additional
   exchange fetch or private request is made by this callback or collector.
 - S1 and S2E reports keep their own statuses when capture/storage fails.
   S3 never receives the service's environment, credentials, OMS runtime,
@@ -63,6 +64,16 @@ replays and verifies committed evidence, restoring open hypothetical positions,
 cost assumptions and completed results; the comparison cache is reconstructed.
 No missed historical candle is supplied with an invented real-time receipt.
 
+`analysis_cutoff_utc` is optional provenance in the public journal projection.
+The S3 packet's `as_of_utc` / `observed_at` use the actual later decision-ready
+clock. Require `candle.received_at <= analysis_cutoff <= decision_ready`.
+S1/S2's original report cutoff is unchanged. This prevents an entry at a
+candle opening crossed during analysis, even when the difference is only
+milliseconds. Older V1 payloads without this optional field retain identical
+canonical serialization and replay outcomes. Older source revisions that lack
+the field cannot read newer payloads: rollback must disable S3 first and
+preserve the journal, not erase or reopen it with an incompatible reader.
+
 If the next public snapshot repeats a candle with unchanged OHLCV, retain the
 **first** observation, receipt and decision. A later hypothesis does not replace
 it. Changed OHLCV, backwards clocks, gaps, invalid scope, queue overflow, disk
@@ -102,14 +113,16 @@ all enqueued data survived is made.
 
 ## Validation and release gates
 
-The dedicated local suite passed **212 tests, with 1 skipped**, including
-36 new cases: all seven disabled flag
+The dedicated local suite passed **216 tests, with 1 skipped**, including
+40 new cases: all seven disabled flag
 combinations; actual S1/S2 public snapshots using exactly the existing nine
 series; capture isolation; 3-market service integration; open-position restart
 then close after costs; repeated-candle first receipt; altered candles/gaps;
 disk failure, disk reserve, slow disk without holding S1's event loop; queue
 overflow; second writer; symlinks/unrelated DB/corrupt heads; commit/report
 failure; capacity; partial shutdown and cached API behavior.
+It also covers analysis crossing a candle open, preserved cutoff/availability
+across cold replay, and rejection of impossible cutoff chronology.
 
 Tests use isolated temporary journals and synthetic candles; they do not prove
 continuous hosted operation or financial edge. Dedicated and full CI must pass

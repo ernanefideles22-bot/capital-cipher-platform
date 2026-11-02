@@ -270,3 +270,33 @@ def test_report_failure_after_commit_preserves_data_but_hides_stale_financials(t
     monkeypatch.setattr(module, 'read_only_comparison_report', original)
     with running(tmp_path) as restored:
         assert count(restored, 1)['comparison']['source_observations'] == 1
+
+
+def test_analysis_cutoff_and_later_decision_availability_survive_cold_replay(tmp_path):
+    bar = candle(0)
+    ready = bar.received_at+timedelta(milliseconds=250)
+    extension = shadow(bar, action='LONG')
+    extension['analysis_cutoff_utc'] = extension['as_of_utc']
+    extension['as_of_utc'] = ready.isoformat()
+    with running(tmp_path) as collector:
+        collector.capture(bar, extension, observed_at=ready)
+        before = count(collector, 1)
+        assert before['collection']['source_last_observed_at_utc'] == ready.isoformat()
+    with running(tmp_path) as restored:
+        assert count(restored, 1)['comparison'] == before['comparison']
+    path = tmp_path/'capital-cipher-gate-s3'/JOURNAL_NAME
+    with sqlite3.connect(path) as db:
+        payload = json.loads(db.execute('SELECT payload_json FROM s3_observations').fetchone()[0])
+    assert payload['shadow']['analysis_cutoff_utc'] == bar.received_at.isoformat()
+    assert payload['shadow']['as_of_utc'] == payload['observed_at'] == ready.isoformat()
+
+
+@pytest.mark.parametrize('offset', [-1, 1])
+def test_impossible_analysis_cutoff_is_not_persisted(tmp_path, offset):
+    bar = candle(0)
+    extension = shadow(bar)
+    extension['analysis_cutoff_utc'] = (bar.received_at+timedelta(seconds=offset)).isoformat()
+    with running(tmp_path) as collector:
+        result = collector.capture(bar, extension, observed_at=bar.received_at)
+        assert result['status'] == 'BLOCKED'
+        assert collector.snapshot()['collection']['journal_observations'] == 0

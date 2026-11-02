@@ -158,11 +158,21 @@ async def professional_shadow_snapshot(
                     or extension.get("status") != "READ_ONLY_CONFLUENCE_READY"):
                 raise ValueError("S3 requires ready S1 and S2E")
             latest = store.get("GATE", symbol, "15m", limit=1)[-1].model_copy(deep=True)
-            captured = observation_sink(latest, deepcopy(extension), observed_at=as_of)
+            # The feature cutoff is before analysis. A decision becomes usable
+            # only after both analyses finish, possibly across a candle open.
+            ready_at = observation_clock()
+            if ready_at.tzinfo is None or ready_at.utcoffset() is None or ready_at < as_of:
+                raise ValueError("Invalid decision availability clock")
+            ready_at = ready_at.astimezone(timezone.utc)
+            observation = deepcopy(extension)
+            observation["analysis_cutoff_utc"] = as_of.isoformat()
+            observation["as_of_utc"] = ready_at.isoformat()
+            captured = observation_sink(latest, observation, observed_at=ready_at)
             if not isinstance(captured, dict) or captured.get("execution_authorized") is not False:
                 raise ValueError("Unsafe S3 capture response")
             result["forward_research"] = {
                 "status": captured["status"], "execution_authorized": False,
+                "decision_available_at_utc": ready_at.isoformat(),
             }
         except Exception as exc:
             result["forward_research"] = {
