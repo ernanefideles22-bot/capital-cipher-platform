@@ -1,0 +1,209 @@
+{
+  "audit_run_id": "eb4886cc-fa8c-8332-8714-8eb43124c173",
+  "audit_completed_at": "2026-11-02T08:25:44.668616Z",
+  "recorded_result": "S1_HOMOLOGATED_SHADOW_GO_CONDITIONAL",
+  "original_cycles_reported": 97,
+  "original_inventory_checks_reported": 292,
+  "original_order_position_counts_observed": 0,
+  "actual_deployment": {
+    "id": "bd4b1ffb-727a-4582-9e3e-ad6fa53b9767",
+    "status": "SUCCESS",
+    "created_at": "2026-11-01T08:02:17.433Z",
+    "source_commit": "2eb009ba161ce42005de462e343901de5ae2abfd"
+  },
+  "pending_patch": {
+    "patchId": "39a1a60b-2f3b-4249-9469-db9a7ed2d05f",
+    "status": "STAGED",
+    "changeCount": 3,
+    "message": null,
+    "createdAt": "2026-11-01T14:26:12.117Z",
+    "updatedAt": "2026-11-01T14:26:19.857Z"
+  },
+  "volume": {
+    "id": "7f0dfa7c-1db9-4cef-8f2e-19baf8688dc5",
+    "name": "capital-cipher-data",
+    "mountPath": "/gate-data",
+    "sizeMB": 1024,
+    "region": "sfo",
+    "state": "live"
+  },
+  "following_s1_cycles": [
+    {
+      "timestamp": "2026-11-02T08:25:37.477313692Z",
+      "message": "INFO:     GATE_S1_SHADOW_STATUS AVAILABLE ready_markets=3 total_markets=3 execution=false cycle=98 streak=98 duration_ms=4444.420"
+    },
+    {
+      "timestamp": "2026-11-02T08:40:46.697797169Z",
+      "message": "INFO:     GATE_S1_SHADOW_STATUS AVAILABLE ready_markets=3 total_markets=3 execution=false cycle=99 streak=99 duration_ms=4368.374"
+    },
+    {
+      "timestamp": "2026-11-02T08:55:50.411911353Z",
+      "message": "INFO:     GATE_S1_SHADOW_STATUS AVAILABLE ready_markets=3 total_markets=3 execution=false cycle=100 streak=100 duration_ms=4389.033"
+    },
+    {
+      "timestamp": "2026-11-02T09:10:55.100760167Z",
+      "message": "INFO:     GATE_S1_SHADOW_STATUS AVAILABLE ready_markets=3 total_markets=3 execution=false cycle=101 streak=101 duration_ms=4601.312"
+    },
+    {
+      "timestamp": "2026-11-02T09:25:52.987128105Z",
+      "message": "INFO:     GATE_S1_SHADOW_STATUS AVAILABLE ready_markets=3 total_markets=3 execution=false cycle=102 streak=102 duration_ms=4385.996"
+    },
+    {
+      "timestamp": "2026-11-02T09:40:56.534739321Z",
+      "message": "INFO:     GATE_S1_SHADOW_STATUS AVAILABLE ready_markets=3 total_markets=3 execution=false cycle=103 streak=103 duration_ms=4405.315"
+    },
+    {
+      "timestamp": "2026-11-02T09:55:59.617115237Z",
+      "message": "INFO:     GATE_S1_SHADOW_STATUS AVAILABLE ready_markets=3 total_markets=3 execution=false cycle=104 streak=104 duration_ms=4409.012"
+    },
+    {
+      "timestamp": "2026-11-02T10:11:04.163352262Z",
+      "message": "INFO:     GATE_S1_SHADOW_STATUS AVAILABLE ready_markets=3 total_markets=3 execution=false cycle=105 streak=105 duration_ms=4497.424"
+    },
+    {
+      "timestamp": "2026-11-02T10:26:08.454958930Z",
+      "message": "INFO:     GATE_S1_SHADOW_STATUS AVAILABLE ready_markets=3 total_markets=3 execution=false cycle=106 streak=106 duration_ms=4389.379"
+    },
+    {
+      "timestamp": "2026-11-02T10:41:12.818811851Z",
+      "message": "INFO:     GATE_S1_SHADOW_STATUS AVAILABLE ready_markets=3 total_markets=3 execution=false cycle=107 streak=107 duration_ms=4361.939"
+    }
+  ],
+  "following_inventory_checks": [
+    {
+      "timestamp": "2026-11-02T08:23:27.079984549Z",
+      "message": "INFO:     GATE_INVENTORY positions=0 orders=0 conditional_orders=0 atomic=false"
+    },
+    {
+      "timestamp": "2026-11-02T08:28:24.673572622Z",
+      "message": "INFO:     GATE_INVENTORY positions=0 orders=0 conditional_orders=0 atomic=false"
+    },
+    {
+      "timestamp": "2026-11-02T08:33:25.343137864Z",
+      "message": "INFO:     GATE_INVENTORY positions=0 orders=0 conditional_orders=0 atomic=false"
+    },
+    {
+      "timestamp": "2026-11-02T08:38:25.948666789Z",
+      "message": "INFO:     GATE_INVENTORY positions=0 orders=0 conditional_orders=0 atomic=false"
+    },
+    {
+      "timestamp": "2026-11-02T08:43:28.415214444Z",
+      "message": "INFO:     GATE_INVENTORY positions=0 orders=0 conditional_orders=0 atomic=false"
+    },
+    {
+      "timestamp": "2026-11-02T08:48:29.719665622Z",
+      "message": "INFO:     GATE_INVENTORY positions=0 orders=0 conditional_orders=0 atomic=false"
+    },
+    {
+      "timestamp": "2026-11-02T08:53:30.495178870Z",
+      "message": "INFO:     GATE_INVENTORY positions=0 orders=0 conditional_orders=0 atomic=false"
+    },
+    {
+      "timestamp": "2026-11-02T08:58:31.965076239Z",
+      "message": "INFO:     GATE_INVENTORY positions=0 orders=0 conditional_orders=0 atomic=false"
+    },
+    {
+      "timestamp": "2026-11-02T09:03:33.312439949Z",
+      "message": "INFO:     GATE_INVENTORY positions=0 orders=0 conditional_orders=0 atomic=false"
+    },
+    {
+      "timestamp": "2026-11-02T09:08:34.392537097Z",
+      "message": "INFO:     GATE_INVENTORY positions=0 orders=0 conditional_orders=0 atomic=false"
+    },
+    {
+      "timestamp": "2026-11-02T09:13:35.882009591Z",
+      "message": "INFO:     GATE_INVENTORY positions=0 orders=0 conditional_orders=0 atomic=false"
+    },
+    {
+      "timestamp": "2026-11-02T09:18:39.842520963Z",
+      "message": "INFO:     GATE_INVENTORY positions=0 orders=0 conditional_orders=0 atomic=false"
+    },
+    {
+      "timestamp": "2026-11-02T09:23:32.511178258Z",
+      "message": "INFO:     GATE_INVENTORY positions=0 orders=0 conditional_orders=0 atomic=false"
+    },
+    {
+      "timestamp": "2026-11-02T09:28:34.051532661Z",
+      "message": "INFO:     GATE_INVENTORY positions=0 orders=0 conditional_orders=0 atomic=false"
+    },
+    {
+      "timestamp": "2026-11-02T09:33:35.514200992Z",
+      "message": "INFO:     GATE_INVENTORY positions=0 orders=0 conditional_orders=0 atomic=false"
+    },
+    {
+      "timestamp": "2026-11-02T09:38:36.092717237Z",
+      "message": "INFO:     GATE_INVENTORY positions=0 orders=0 conditional_orders=0 atomic=false"
+    },
+    {
+      "timestamp": "2026-11-02T09:43:37.831558746Z",
+      "message": "INFO:     GATE_INVENTORY positions=0 orders=0 conditional_orders=0 atomic=false"
+    },
+    {
+      "timestamp": "2026-11-02T09:48:40.895385780Z",
+      "message": "INFO:     GATE_INVENTORY positions=0 orders=0 conditional_orders=0 atomic=false"
+    },
+    {
+      "timestamp": "2026-11-02T09:53:42.831433757Z",
+      "message": "INFO:     GATE_INVENTORY positions=0 orders=0 conditional_orders=0 atomic=false"
+    },
+    {
+      "timestamp": "2026-11-02T09:58:40.452301715Z",
+      "message": "INFO:     GATE_INVENTORY positions=0 orders=0 conditional_orders=0 atomic=false"
+    },
+    {
+      "timestamp": "2026-11-02T10:03:43.846133790Z",
+      "message": "INFO:     GATE_INVENTORY positions=0 orders=0 conditional_orders=0 atomic=false"
+    },
+    {
+      "timestamp": "2026-11-02T10:08:45.407108653Z",
+      "message": "INFO:     GATE_INVENTORY positions=0 orders=0 conditional_orders=0 atomic=false"
+    },
+    {
+      "timestamp": "2026-11-02T10:13:44.282266346Z",
+      "message": "INFO:     GATE_INVENTORY positions=0 orders=0 conditional_orders=0 atomic=false"
+    },
+    {
+      "timestamp": "2026-11-02T10:18:46.353699450Z",
+      "message": "INFO:     GATE_INVENTORY positions=0 orders=0 conditional_orders=0 atomic=false"
+    },
+    {
+      "timestamp": "2026-11-02T10:23:47.420451852Z",
+      "message": "INFO:     GATE_INVENTORY positions=0 orders=0 conditional_orders=0 atomic=false"
+    },
+    {
+      "timestamp": "2026-11-02T10:28:49.073323770Z",
+      "message": "INFO:     GATE_INVENTORY positions=0 orders=0 conditional_orders=0 atomic=false"
+    },
+    {
+      "timestamp": "2026-11-02T10:33:52.986405059Z",
+      "message": "INFO:     GATE_INVENTORY positions=0 orders=0 conditional_orders=0 atomic=false"
+    },
+    {
+      "timestamp": "2026-11-02T10:38:56.022731148Z",
+      "message": "INFO:     GATE_INVENTORY positions=0 orders=0 conditional_orders=0 atomic=false"
+    }
+  ],
+  "runtime_read_only_probe": {
+    "health": {
+      "status": "UP",
+      "scope": "GATE_TESTNET_READ_ONLY"
+    },
+    "status": "CONNECTED_READ_ONLY",
+    "execution_enabled": false,
+    "canary_execution_enabled": false,
+    "oms_flow_status": "CONNECTED_READ_ONLY",
+    "oms_release_authorized": false,
+    "oms_risk_clear": false
+  },
+  "variable_values_redacted": true,
+  "staged_S2_enable_value_verified": false,
+  "deployment_performed": false,
+  "orders_authorized": false,
+  "profitability_proven": false,
+  "limitations": [
+    "Original audit result reused with matching completed run id; follow-up checks are bounded observations.",
+    "Zero observed inventory is not an exhaustive exchange trade-history audit.",
+    "Raw configuration values remain redacted; staged S2 enable value has not been verified.",
+    "Two auxiliary EU2 services were reported crashed outside this Gate audit scope."
+  ]
+}

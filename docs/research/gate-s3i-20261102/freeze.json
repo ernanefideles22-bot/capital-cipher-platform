@@ -1,0 +1,24 @@
+{
+  "protocol_sha256": "2f9f7ba9e049aa3ac98038fe0b5f6110a8d46fef07bfa1777d2a04df8b07b7a1",
+  "source_sha256": {
+    "app/agents/indicators.py": "602c97bb61b4770e2cf891463068f95dde0656e423fd661bf683528be4e503f6",
+    "app/schemas/common.py": "7bd0e851a95ec6714f3005e071bfabdaa5fd5051ed0f90b3bb012257be985932",
+    "app/schemas/events.py": "87ac95fb31393fba6b4289825d8a60c59346a34d5d8d33e3332ccaa4ffab4abb",
+    "app/schemas/market.py": "f22b10de33eabfc3a9d27495d249bb008c1109cfa561e7997482332e43d756fb",
+    "app/strategy/gate_classical_s2.py": "018835e7f6b5073b5a6cb86e1f9942cd47acb9b61dc1c3b1c57e52fa4295a23f",
+    "app/strategy/gate_cost_viability_research.py": "49046fc5d261bc70dc7fe10381c38d4c8e37ea3da790215a4ef35617867d975b",
+    "app/strategy/gate_entry_exit_research.py": "02443f2d1368fafdc1a413ffaf49c7796c62dc6ef56b69ad40cce914ba8c4480",
+    "app/strategy/gate_s2_loss_diagnostics.py": "fd6f916d081dc63e6ed64ec1acf673272572294197088f0123927bedf5df3b52",
+    "app/strategy/gate_s2_replay.py": "3f147a5b14b05dc9026293e3c3e15abe66d92f8976c57166e7b0c0832b33b0d1",
+    "app/strategy/gate_s2c_confluence.py": "31cfaf5cae5f0083e291d906ec688ef148b59e7f0c60581fcec6d846af532db7",
+    "app/strategy/market_intelligence.py": "dfdf3f44d5b8c4494f4503c64a6af85a8edd8ac94e66f65f1a98c143a179ed25",
+    "app/strategy/professional_gate_chart_stage1.py": "915ae104a43267c15740a28ffa800d6c9342e7987148d3f796503f4b9e6a2981",
+    "scripts/gate_cost_viability_experiment.py": "e3de51e3d7cdb8da0601c99440c71f1581498c25e2d7c4453e97d19f38c6a4ff",
+    "scripts/gate_entry_exit_experiment.py": "4dd4589b8d851979ffb2155b982c272bcb35f3011cf580e25739869fc4932e69",
+    "scripts/gate_s3_economic_diagnostic.py": "9845d666c9bbef86df4b264da8cfebec48ce1df14199423229c84de28fbfd69c"
+  },
+  "historical_result_sha256": "aa373102fe6a0c2072058c44afcb089ec9ed40ff688ef487d7420cbf07afdf35",
+  "holdout_start_utc": "2026-11-02T12:00:00+00:00",
+  "hypotheses_locked_before_holdout": true,
+  "execution_authorized": false
+}
