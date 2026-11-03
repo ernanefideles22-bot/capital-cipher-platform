@@ -1,0 +1,28 @@
+name: Gate Public Execution Cost Audit
+on:
+  pull_request:
+    paths:
+      - 'backend/app/strategy/gate_execution_cost_audit.py'
+      - 'backend/app/tests/test_gate_execution_cost_audit.py'
+      - 'backend/app/strategy/gate_execution_cost_offline.py'
+      - 'backend/app/tests/test_gate_execution_cost_offline.py'
+      - 'backend/scripts/gate_execution_cost_audit.py'
+      - '.github/workflows/gate-execution-cost-audit.yml'
+      - 'docs/gate-execution-cost-audit-20261103.md'
+permissions:
+  contents: read
+jobs:
+  quote-arithmetic-lots-and-no-account-access:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install tests
+        working-directory: backend
+        run: python -m pip install -e ".[dev,postgres]"
+      - name: Validate quote units, four fees, source clocks and no orders
+        working-directory: backend
+        run: python -m pytest -q app/tests/test_gate_execution_cost_audit.py app/tests/test_gate_execution_cost_offline.py
