@@ -97,3 +97,33 @@ not validate this specific perpetual strategy, venue, period or fee model.
 Custody, venue failure, leg timing and book liquidity remain outside this
 coarse screening exercise. No integration, deployment or production setting
 changes are part of this PR.
+
+## V1 retention failure and V2 official archive transport
+
+V1 was registered at 2026-11-03T20:16:19.444806Z. Its first funding GET returned
+HTTP 400 with `from time exceeds 180-day limit`. Its journal is permanently
+SOURCE_UNAVAILABLE, with zero financial evaluations; do not reset it.
+
+The [official historical-data description](https://www.gate.com/developer/historical_quotes)
+also documents monthly `futures_usdt/funding_applies` files at
+`https://download.gatedata.org/futures_usdt/funding_applies/YYYYMM/BTC_USDT-YYYYMM.csv.gz`,
+with timestamp and executed funding rate, distinct from forecast updates.
+
+V2 requires that specific preserved V1 no-PnL error and stores its journal and
+receipt hashes. It separately preregisters six archive months (April–September
+2024), nine public price pages, and one source attempt before downloading.
+The full V1 paired economics/date/cost/risk manifest is embedded unchanged.
+Monthly files can contain rows beyond the exact study boundary; those rows
+are not scored. No monthly source choice depends on returns. Missing or
+irregular funding remains a terminal source failure, not zero funding.
+
+```bash
+cd backend
+python -m scripts.gate_s4_funding_archive_v2 register --root /absolute/archive-study --prior-root /absolute/failed-v1 --output /absolute/archive-registration.json
+python -m scripts.gate_s4_funding_archive_v2 run --root /absolute/archive-study --output /absolute/archive-review.json
+```
+
+Preserve both attempts. Switching from the rate-limited endpoint to the official
+archive is a documented transport adaptation, not another parameter search or
+independent confirmation. Source availability must not be reported as financial
+acceptance or rejection. All previous execution/profitability limits apply.
