@@ -52,9 +52,9 @@ def test_monte_carlo_bound_matches_independent_small_binomial_oracle():
                   for k in range(hits + 1))
         assert cdf == pytest.approx(.025, abs=1e-12)
     assert study.monte_carlo_upper(101, 9999, .001) == 1
-    # Point p=1/10000 would pass the old 54-test threshold; precision bound must not.
-    assert study.monte_carlo_upper(0, 9999, .05 / 162) * 54 > .05 or (
-        study.monte_carlo_upper(0, 9999, .05 / 162) > 1 / 10000)
+    # One exceedance passes the point threshold, but fails the precision threshold.
+    assert 2 / 10000 * 54 < .05
+    assert study.monte_carlo_upper(1, 9999, .05 / 162) * 54 > .05
     with pytest.raises(ValueError):
         study.monte_carlo_upper(-1, 20, .05)
 
