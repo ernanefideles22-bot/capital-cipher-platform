@@ -65,6 +65,14 @@ receipt and checks that the original journal bytes remain unchanged. Complete
 BTC metadata must produce identical quote arithmetic. This does not certify
 ETH/SOL execution or bypass missing account/venue constraints.
 
+The archived ETH/SOL snapshots also contain zero-size price levels. The offline
+supplement explicitly removes those empty levels from ephemeral price arithmetic
+and records the count, while retaining negative/malformed rows for rejection.
+Original response bytes and hashes remain unchanged; derived arithmetic inputs
+are labelled and never retain the original response hash as if they were raw.
+No liquidity is invented, stale-clock checks remain, and an entirely empty side
+still fails. The earlier strict rejection and first supplement remain preserved.
+
 Primary references: [spot metadata/books](https://www.gate.com/docs/developers/apiv4/en/spot/),
 [futures contract units/books](https://www.gate.com/docs/developers/apiv4/en/futures/),
 [personal fee endpoint](https://www.gate.com/docs/developers/apiv4/en/wallet/).

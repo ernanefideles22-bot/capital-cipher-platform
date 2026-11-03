@@ -45,6 +45,38 @@ def partial_metadata(spot, perp, symbol):
             "source_contract_minimum": str(minimum), "whole_positive_contracts_only": True}
 
 
+def without_empty_levels(receipt, venue):
+    """Zero available size contributes no liquidity; keep negative/malformed rows.
+
+    Original response bytes/hashes are never changed. The ephemeral arithmetic
+    input is labelled derived and does not retain a contradictory raw hash.
+    """
+    try:
+        raw = json.loads(receipt["raw_response_utf8"])
+        cleaned, ignored = copy.deepcopy(raw), 0
+        for side in ("asks", "bids"):
+            kept = []
+            for level in raw[side]:
+                try:
+                    size = original.D(level[1] if venue == "spot" else level["s"])
+                    price = original.D(level[0] if venue == "spot" else level["p"])
+                except (ValueError, KeyError, IndexError, TypeError):
+                    kept.append(level)
+                    continue
+                if size == 0 and price > 0:
+                    ignored += 1
+                else:
+                    kept.append(level)
+            cleaned[side] = kept
+        value = dict(receipt)
+        value["derived_from_response_sha256"] = value.pop("response_sha256", None)
+        value["raw_response_utf8"] = original.base.canonical(cleaned)
+        value["derived_arithmetic_input_not_original_response"] = True
+        return value, ignored
+    except (ValueError, KeyError, TypeError):
+        return receipt, 0
+
+
 def analyze(root):
     root = Path(root)
     prior = original.review(root)
@@ -78,8 +110,10 @@ def analyze(root):
                 markets[symbol] = {"status": "METADATA_UNAVAILABLE"}
                 continue
             m = metadata[symbol]
-            value = original.analyze_pair(m, sources[f"sample-{sample}-spot_book-{symbol}"],
-                                           sources[f"sample-{sample}-perp_book-{symbol}"])
+            spot, zero_spot = without_empty_levels(sources[f"sample-{sample}-spot_book-{symbol}"], "spot")
+            perp, zero_perp = without_empty_levels(sources[f"sample-{sample}-perp_book-{symbol}"], "perp")
+            value = original.analyze_pair(m, spot, perp)
+            value["zero_available_size_levels_ignored"] = {"spot": zero_spot, "perp": zero_perp}
             for row in value["quotes"]:
                 unknown = [v for v in m["unverified_size_limits"] if
                            row["mode"] == "paired" or v.startswith(row["mode"] + ".")]
