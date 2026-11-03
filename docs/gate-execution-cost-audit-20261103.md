@@ -49,6 +49,22 @@ No hosted route, OMS/risk change, execution enablement, promotion, merge or depl
 This is execution research infrastructure, not an economic signal or proof of
 profitability. Preserve prior rejected strategies and their journals unchanged.
 
+## Observed partial metadata supplement
+
+The original capture accepted BTC metadata but rejected ETH/SOL because their
+public futures order_size_min was zero; SOL also omitted spot max_base_amount.
+Retain that rejection and the full original journal. Do not change zero into a
+certified minimum or silently interpret an omitted field as exchange no-limit.
+
+`gate_execution_cost_offline.analyze(root)` is a separately labelled post-capture
+descriptive supplement, with zero new requests. It computes price quotes from
+the same archived books using whole positive contracts and known size bounds,
+marks the effective positive minimum and omitted limits as unverified, and
+labels affected rows STATIC_QUOTE_PARTIAL_SIZE_LIMITS. It hashes every source
+receipt and checks that the original journal bytes remain unchanged. Complete
+BTC metadata must produce identical quote arithmetic. This does not certify
+ETH/SOL execution or bypass missing account/venue constraints.
+
 Primary references: [spot metadata/books](https://www.gate.com/docs/developers/apiv4/en/spot/),
 [futures contract units/books](https://www.gate.com/docs/developers/apiv4/en/futures/),
 [personal fee endpoint](https://www.gate.com/docs/developers/apiv4/en/wallet/).
