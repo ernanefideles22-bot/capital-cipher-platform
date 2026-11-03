@@ -1,0 +1,29 @@
+name: Gate S4 Funding Economics
+on:
+  pull_request:
+    paths:
+      - 'backend/app/strategy/gate_s4_funding_feasibility.py'
+      - 'backend/app/tests/test_gate_s4_funding_feasibility.py'
+      - 'backend/scripts/gate_s4_funding_feasibility.py'
+      - '.github/workflows/gate-stage4-funding-economics.yml'
+      - 'docs/gate-s4-funding-economics-20261103.md'
+permissions:
+  contents: read
+jobs:
+  public-source-bounds-and-paired-economics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SYSTEM_MODE: PAPER
+      GATE_OMS_WRITES_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install tests
+        working-directory: backend
+        run: python -m pip install -e ".[dev,postgres]"
+      - name: Verify actual funding sign, four fills, margin and immutable source
+        working-directory: backend
+        run: python -m pytest -q app/tests/test_gate_s4_funding_feasibility.py
