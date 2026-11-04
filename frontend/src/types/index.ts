@@ -17,6 +17,7 @@ export interface SystemStatus {
   source_revision: string | null;
   release_evidence: {
     status: string;
+    declared_status?: string;
     source_revision: string | null;
     bundle_id: string | null;
     bundle_sha256: string | null;

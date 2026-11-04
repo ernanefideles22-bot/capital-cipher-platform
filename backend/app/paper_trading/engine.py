@@ -431,6 +431,39 @@ class PaperTradingEngine:
         self._last_funding_at[order.paper_order_id] = end_at
 
     # -- reporting ---------------------------------------------------------------
+    def cost_reporting(self) -> dict[str, str | bool]:
+        """Describe units without rewriting stored trades or execution assumptions."""
+        realistic = self._execution_model is not None
+        return {
+            "version": "PAPER_COST_REPORT_V2",
+            "model": "REALISTIC_LEDGER_V1" if realistic else "BASIC_ENTRY_ONLY_V1",
+            "aggregate_cost_unit": "QUOTE_CURRENCY",
+            "stored_slippage_estimated_unit": "QUOTE_CURRENCY" if realistic else "QUOTE_PRICE_DELTA",
+            "basic_cash_cost_basis": "STORED_PRICE_DELTA_TIMES_FILLED_QUANTITY",
+            "slippage_embedded_in_gross_pnl": True,
+            "exit_slippage_applied": realistic,
+            "volume_impact_included_in_slippage": realistic,
+            "historical_order_values_rewritten": False,
+        }
+
+    def order_cost_report(self, order: PaperOrder) -> dict:
+        """Derived estimates; the original PaperOrder fields keep their old meaning."""
+        if self._execution_model is None:
+            if order.entry_price <= 0:
+                raise ValidationError("Positive entry price required for cash cost estimate")
+            cash = order.slippage_estimated * order.position_size / order.entry_price
+        else:
+            ledger = self._execution_costs.get(order.paper_order_id)
+            cash = ledger.spread + ledger.slippage if ledger is not None else None
+        return {
+            "paper_order_id": order.paper_order_id,
+            "stored_slippage_estimated_unit": self.cost_reporting()["stored_slippage_estimated_unit"],
+            "slippage_cost_quote_estimate": round(cash, 8) if cash is not None else None,
+            "status": "ESTIMATED" if cash is not None else "LEDGER_UNAVAILABLE",
+            "includes_spread": self._execution_model is not None,
+            "derived_from_rounded_stored_price_delta": self._execution_model is None,
+        }
+
     def performance(self) -> PaperPerformance:
         wins = [o for o in self.closed_orders if (o.pnl or 0) > 0]
         losses = [o for o in self.closed_orders if (o.pnl or 0) <= 0]
@@ -500,7 +533,8 @@ class PaperTradingEngine:
                 o.fees_estimated for o in self.closed_orders
             )
             slippage_total = sum(
-                o.slippage_estimated for o in self.closed_orders
+                o.slippage_estimated * o.position_size / o.entry_price
+                for o in self.closed_orders
             )
         else:
             fees_total = sum(
@@ -540,6 +574,7 @@ class PaperTradingEngine:
                 + rounded_liquidation_fees,
                 4,
             ),
+            cost_reporting=self.cost_reporting(),
             max_drawdown_percent=round(self._max_drawdown_percent, 4),
             consecutive_losses=self._risk.state.consecutive_losses,
             balance=round(self.balance, 2),

@@ -20,6 +20,16 @@ async def system_status(context: AppContext = Depends(get_context)) -> dict:
     evidence_bundle_id = os.getenv("RELEASE_EVIDENCE_BUNDLE_ID", "")
     evidence_bundle_sha256 = os.getenv("RELEASE_EVIDENCE_BUNDLE_SHA256", "")
     evidence_status = os.getenv("RELEASE_EVIDENCE_STATUS", "UNSET")
+    revision_matches = bool(
+        context.settings.app_source_revision and evidence_source_revision
+        and context.settings.app_source_revision == evidence_source_revision
+    )
+    effective_status = evidence_status
+    if evidence_status == "PASSED" and not revision_matches:
+        effective_status = (
+            "REVISION_MISMATCH" if context.settings.app_source_revision and evidence_source_revision
+            else "REVISION_UNVERIFIED"
+        )
 
     return success_response(
         {
@@ -30,15 +40,12 @@ async def system_status(context: AppContext = Depends(get_context)) -> dict:
             "risk": "ACTIVE",
             "source_revision": context.settings.app_source_revision or None,
             "release_evidence": {
-                "status": evidence_status,
+                "status": effective_status,
+                "declared_status": evidence_status,
                 "source_revision": evidence_source_revision or None,
                 "bundle_id": evidence_bundle_id or None,
                 "bundle_sha256": evidence_bundle_sha256 or None,
-                "matches_runtime_revision": bool(
-                    context.settings.app_source_revision
-                    and evidence_source_revision
-                    and context.settings.app_source_revision == evidence_source_revision
-                ),
+                "matches_runtime_revision": revision_matches,
             },
             "oms": {
                 "environment": context.oms_service.target_environment.value,

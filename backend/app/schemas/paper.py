@@ -65,6 +65,7 @@ class PaperPerformance(BaseModel):
     liquidations: int = 0
     liquidation_fees_total: float = 0.0
     total_execution_cost: float = 0.0
+    cost_reporting: dict[str, str | bool] = Field(default_factory=dict)
     max_drawdown_percent: float = 0.0
     consecutive_losses: int = 0
     balance: float = 0.0
