@@ -24,6 +24,7 @@ from app.api.routes import (
     backtest,
     decisions,
     governance,
+    gate,
     health,
     market,
     oms,
@@ -463,6 +464,7 @@ def create_app(
     app.include_router(paper.router, prefix=api_prefix)
     app.include_router(oms.router, prefix=api_prefix)
     app.include_router(binance_demo.router, prefix=api_prefix)
+    app.include_router(gate.router, prefix=api_prefix)
     app.include_router(operations.router, prefix=api_prefix)
     app.include_router(audit.router, prefix=api_prefix)
     app.include_router(backtest.router, prefix=api_prefix)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 
 from fastapi import APIRouter, Depends
 
@@ -20,14 +21,14 @@ async def system_status(context: AppContext = Depends(get_context)) -> dict:
     evidence_bundle_id = os.getenv("RELEASE_EVIDENCE_BUNDLE_ID", "")
     evidence_bundle_sha256 = os.getenv("RELEASE_EVIDENCE_BUNDLE_SHA256", "")
     evidence_status = os.getenv("RELEASE_EVIDENCE_STATUS", "UNSET")
-    revision_matches = bool(
-        context.settings.app_source_revision and evidence_source_revision
-        and context.settings.app_source_revision == evidence_source_revision
-    )
+    runtime_revision = context.settings.app_source_revision or ""
+    runtime_valid = bool(re.fullmatch(r"[a-f0-9]{40}", runtime_revision))
+    evidence_valid = bool(re.fullmatch(r"[a-f0-9]{40}", evidence_source_revision))
+    revision_matches = runtime_valid and evidence_valid and runtime_revision == evidence_source_revision
     effective_status = evidence_status
     if evidence_status == "PASSED" and not revision_matches:
         effective_status = (
-            "REVISION_MISMATCH" if context.settings.app_source_revision and evidence_source_revision
+            "REVISION_MISMATCH" if runtime_valid and evidence_valid
             else "REVISION_UNVERIFIED"
         )
 

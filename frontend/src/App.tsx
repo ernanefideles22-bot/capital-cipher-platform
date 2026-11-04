@@ -16,6 +16,7 @@ import Reports from "./screens/Reports";
 import Readiness from "./screens/Readiness";
 import Regimes from "./screens/Regimes";
 import Demo from "./screens/Demo";
+import GateWorkspace from "./screens/GateWorkspace";
 
 const TABS = ["Overview", "Readiness", "Market", "Agents", "Regimes", "Decisions", "Risk", "Paper", "Demo", "Backtest", "Reports", "Audit"] as const;
 type Tab = (typeof TABS)[number];
@@ -49,7 +50,8 @@ function formatRefresh(value: Date | null, language: Language, waiting: string):
 }
 
 function tabLabel(tab: Tab, t: ReturnType<typeof useI18n>["t"]): string {
-  if (tab === "Demo") return "Futuros Demo";
+  if (tab === "Demo") return "Binance Demo · legado";
+  if (tab === "Market") return "Mercado Binance · legado";
   if (tab === "Readiness") return "Readiness";
   if (tab === "Regimes") return "Regimes";
   return t(TAB_META[tab].label);
@@ -62,7 +64,7 @@ function tabDescription(tab: Tab, t: ReturnType<typeof useI18n>["t"]): string {
   return t(TAB_META[tab].description);
 }
 
-function AppShell() {
+function LegacyAppShell({ onOpenGate }: { onOpenGate: () => void }) {
   const { language, setLanguage, t, status: translateStatus } = useI18n();
   const [tab, setTab] = useState<Tab>(() => window.location.hash === "#demo" ? "Demo" : "Overview");
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -80,7 +82,8 @@ function AppShell() {
           <span className="flex h-9 w-9 items-center justify-center rounded-xl border border-cyan-700/60 bg-cyan-950/60 text-xs font-black tracking-tight text-cyan-300">CC</span>
           <div className="min-w-0"><div className="truncate text-sm font-bold tracking-[0.16em] text-slate-100">CAPITAL CIPHER</div><div className="mt-0.5 text-[10px] uppercase tracking-[0.18em] text-slate-500">{t("brandSubtitle")}</div></div>
         </div>
-        <div className="mt-7 rounded-xl border border-emerald-900/70 bg-emerald-950/20 px-3 py-3">
+        <button onClick={onOpenGate} className="mt-6 rounded-lg border border-cyan-800 bg-cyan-950/30 px-3 py-2 text-left text-xs font-semibold text-cyan-300">← Voltar ao workspace Gate.io</button>
+        <div className="mt-4 rounded-xl border border-emerald-900/70 bg-emerald-950/20 px-3 py-3">
           <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-emerald-300"><span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.9)]" />{tab === "Demo" ? "Binance Futuros Demo" : t("paperEnvironment")}</div>
           <p className="mt-1 text-xs leading-5 text-slate-500">{tab === "Demo" ? "Conta de testes com fundos virtuais" : t("paperDescription")}</p>
         </div>
@@ -106,6 +109,8 @@ function AppShell() {
           </div>
         </header>
         <div className="mx-auto max-w-[1800px] px-4 pb-8 sm:px-6 xl:px-8">
+          <div role="status" className="mt-5 rounded-xl border border-amber-900 bg-amber-950/20 px-4 py-3 text-xs leading-5 text-amber-200">Área legada Binance / PAPER. Mercado, conta, risco e resultados desta área são separados da Gate. O botão de emergência acima controla o backend principal; não representa um bloqueio global da Gate.</div>
+          {systemStatus && !(systemStatus.release_evidence?.status === "PASSED" && systemStatus.release_evidence?.matches_runtime_revision) && <div role="alert" className="mt-3 rounded-xl border border-amber-900 px-4 py-3 text-xs text-amber-300">Versão do backend legado sem aprovação correspondente: {systemStatus.release_evidence?.status ?? "UNVERIFIED"}. Revisão em execução: {systemStatus.source_revision ?? "não informada"}.</div>}
           <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-cyan-900/60 bg-cyan-950/25 px-4 py-3 text-xs text-cyan-100 shadow-[0_12px_40px_rgba(8,145,178,0.06)]"><span><span className="font-semibold tracking-wide text-cyan-200">{tab === "Demo" ? "BINANCE FUTUROS DEMO" : t("paperOnly")}</span><span className="mx-2 text-cyan-700">/</span>{tab === "Demo" ? "Ordens apenas com fundos virtuais" : t("noLiveExecution")}</span><span className="text-cyan-400/80">{t("auditedWorkflow")}</span></div>
           {!systemStatus && <p role="status" className="mt-4 rounded border border-amber-600 p-3 text-sm text-amber-300">{t("waitingTelemetry")}</p>}
           <main className="py-7">{tab === "Overview" && <Overview />}{tab === "Readiness" && <Readiness />}{tab === "Market" && <Market />}{tab === "Agents" && <Agents />}{tab === "Regimes" && <Regimes />}{tab === "Decisions" && <Decisions />}{tab === "Risk" && <Risk />}{tab === "Paper" && <Paper />}{tab === "Demo" && <Demo />}{tab === "Backtest" && <Backtest />}{tab === "Reports" && <Reports />}{tab === "Audit" && <Audit />}</main>
@@ -113,6 +118,17 @@ function AppShell() {
       </div>
     </div>
   );
+}
+
+function AppShell() {
+  const [legacy, setLegacy] = useState(() => window.location.hash === "#demo" || window.location.hash === "#legacy");
+  useEffect(() => {
+    const sync = () => setLegacy(window.location.hash === "#demo" || window.location.hash === "#legacy");
+    window.addEventListener("hashchange", sync);
+    return () => window.removeEventListener("hashchange", sync);
+  }, []);
+  const select = (next: boolean) => { window.location.hash = next ? "legacy" : "gate"; setLegacy(next); };
+  return legacy ? <LegacyAppShell onOpenGate={() => select(false)} /> : <GateWorkspace onOpenLegacy={() => select(true)} />;
 }
 
 export default function App() { return <I18nProvider><AppShell /></I18nProvider>; }
