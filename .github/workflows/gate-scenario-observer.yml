@@ -1,0 +1,34 @@
+name: Gate Conditional Scenario Observer
+on:
+  pull_request:
+    paths:
+      - 'backend/app/strategy/gate_scenario_*.py'
+      - 'backend/app/tests/test_gate_scenario_*.py'
+      - 'backend/scripts/gate_scenario_*.py'
+      - 'backend/app/strategy/professional_gate_chart_stage1.py'
+      - 'docs/gate-scenario-observer-20261103.md'
+      - '.github/workflows/gate-scenario-observer.yml'
+permissions:
+  contents: read
+jobs:
+  conditional-scenarios-and-durable-no-order-observations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies
+        working-directory: backend
+        run: python -m pip install -e ".[dev,postgres]"
+      - name: Validate scenario sequence, fresh minute confirmation, restart and failure paths
+        working-directory: backend
+        run: >-
+          python -m pytest -q app/tests/test_gate_scenario_observer.py
+          app/tests/test_gate_scenario_journal.py
+          app/tests/test_professional_gate_chart_stage1.py
+          app/tests/test_gate_s2e_shared_shadow.py
+      - name: Demonstrate six synthetic engineering paths without orders or PnL
+        working-directory: backend
+        run: python -m scripts.gate_scenario_demo --root "$RUNNER_TEMP/scenario-demo"
