@@ -136,7 +136,20 @@ cd backend
 python -m scripts.gate_scenario_financial_measurement review --root /analysis/evidencias --output /analysis/leitura-nova.json
 ```
 
-O ZIP contém dados brutos anteriores e suplementares, intenções, recibos,
-registro, eventos e resultados completos. O código permanece no repositório.
-Reabrir é somente leitura. Não executar register/run sobre o estudo já iniciado;
-uma reprodução dos mesmos dados não seria evidência financeira nova.
+## Limitação de preservação identificada na retomada em 04/11/2026
+
+O workspace temporário foi reinicializado antes da publicação do pacote de
+evidências desta medição. O código e este registro de resultados foram
+recuperados de objetos Git já enviados. Não foram recuperados o diário SQLite,
+os arquivos brutos suplementares, os eventos completos nem as saídas locais de
+teste. Os hashes acima são os valores registrados anteriormente, não uma
+reverificação dos arquivos nesta retomada.
+
+Portanto, não há ZIP completo desta execução disponível. A medição histórica
+relatada permanece zero entradas/zero PnL, mas sua trilha bruta está incompleta
+e não deve ser apresentada como auditoria financeira integralmente verificável.
+Os 96 testes direcionados (19 novos) são o resultado local anteriormente
+registrado; as verificações de CI do PR constituem evidência de código separada.
+Nenhum estudo ou diário foi recriado para aparentar continuidade. Uma eventual
+reprodução com dados recuperados deve ser identificada como reprodução, nunca
+como nova evidência independente de lucratividade.
