@@ -1,0 +1,51 @@
+{
+  "engineering_validation_only": true,
+  "local_targeted_tests_passed": 467,
+  "new_scenario_tests": 38,
+  "elapsed_seconds": 50.62,
+  "pytest_summary_warnings": 1,
+  "pytest_startup_deprecation_notice": true,
+  "source_fingerprint": "b2a90896b1015b8e91dd5f766e1ffde46992a7bfa5f59bdce89dee3666d03d9f",
+  "synthetic_paths": [
+    {
+      "side": "SHORT",
+      "case": "confirmed",
+      "final_stage": "CANDIDATE_ONLY",
+      "new_candidates": 1
+    },
+    {
+      "side": "SHORT",
+      "case": "failed_recheck",
+      "final_stage": "INVALIDATED",
+      "new_candidates": 0
+    },
+    {
+      "side": "SHORT",
+      "case": "invalidated",
+      "final_stage": "INVALIDATED",
+      "new_candidates": 0
+    },
+    {
+      "side": "LONG",
+      "case": "confirmed",
+      "final_stage": "CANDIDATE_ONLY",
+      "new_candidates": 1
+    },
+    {
+      "side": "LONG",
+      "case": "failed_recheck",
+      "final_stage": "INVALIDATED",
+      "new_candidates": 0
+    },
+    {
+      "side": "LONG",
+      "case": "invalidated",
+      "final_stage": "INVALIDATED",
+      "new_candidates": 0
+    }
+  ],
+  "financial_replays": 0,
+  "real_orders": 0,
+  "runtime_integrated": false,
+  "profitability_proven": false
+}
