@@ -171,16 +171,20 @@ async def test_realistic_cost_report_does_not_add_volume_impact_twice(audit_serv
     assert perf.cost_reporting["volume_impact_included_in_slippage"] is True
 
 
-@pytest.mark.parametrize("runtime,evidence,declared,effective", [
-    ("abc", "abc", "PASSED", "PASSED"),
-    ("abc", "def", "PASSED", "REVISION_MISMATCH"),
-    ("abc", "", "PASSED", "REVISION_UNVERIFIED"),
-    ("", "abc", "PASSED", "REVISION_UNVERIFIED"),
-    ("", "", "PASSED", "REVISION_UNVERIFIED"),
-    ("abc", "def", "FAILED", "FAILED"),
-    ("abc", "def", "UNSET", "UNSET"),
+@pytest.mark.parametrize("runtime,evidence,declared,effective,matching", [
+    ("a" * 40, "a" * 40, "PASSED", "PASSED", True),
+    ("a" * 40, "b" * 40, "PASSED", "REVISION_MISMATCH", False),
+    ("a" * 40, "", "PASSED", "REVISION_UNVERIFIED", False),
+    ("", "a" * 40, "PASSED", "REVISION_UNVERIFIED", False),
+    ("", "", "PASSED", "REVISION_UNVERIFIED", False),
+    ("a" * 40, "b" * 40, "FAILED", "FAILED", False),
+    ("a" * 40, "b" * 40, "UNSET", "UNSET", False),
+    ("a" * 40, "a" * 40, "FAILED", "FAILED", True),
+    ("a" * 40, "a" * 40, "UNSET", "UNSET", True),
+    ("abc", "abc", "PASSED", "REVISION_UNVERIFIED", False),
+    ("g" * 40, "g" * 40, "PASSED", "REVISION_UNVERIFIED", False),
 ])
-async def test_release_status_requires_current_revision(monkeypatch, paper_state_machine, runtime, evidence, declared, effective):
+async def test_release_status_requires_current_revision(monkeypatch, paper_state_machine, runtime, evidence, declared, effective, matching):
     monkeypatch.setenv("RELEASE_EVIDENCE_STATUS", declared)
     monkeypatch.setenv("RELEASE_EVIDENCE_SOURCE_REVISION", evidence)
     monkeypatch.setenv("RELEASE_EVIDENCE_BUNDLE_ID", "original-bundle")
@@ -194,7 +198,7 @@ async def test_release_status_requires_current_revision(monkeypatch, paper_state
     release = result["release_evidence"]
     assert release["status"] == effective
     assert release["declared_status"] == declared
-    assert release["matches_runtime_revision"] is bool(runtime and runtime == evidence)
+    assert release["matches_runtime_revision"] is matching
     assert release["source_revision"] == (evidence or None)
     assert release["bundle_id"] == "original-bundle"
     assert result["oms"]["live_execution_available"] is False
