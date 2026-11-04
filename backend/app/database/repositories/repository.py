@@ -3384,10 +3384,18 @@ class Repository:
         except Exception as exc:
             raise DatabaseError(f"Failed to create OMS order: {exc}") from exc
 
-    async def load_oms_order(self, oms_order_id: str) -> OMSOrder | None:
+    async def load_oms_order(
+        self, oms_order_id: str, *, exchange: Exchange | None = None,
+        environment: ExecutionEnvironment | None = None,
+    ) -> OMSOrder | None:
         try:
             async with self._db.session() as session:
-                row = await session.get(OMSOrderModel, oms_order_id)
+                statement = select(OMSOrderModel).where(OMSOrderModel.oms_order_id == oms_order_id)
+                if exchange is not None:
+                    statement = statement.where(OMSOrderModel.exchange == exchange.value)
+                if environment is not None:
+                    statement = statement.where(OMSOrderModel.environment == environment.value)
+                row = await session.scalar(statement)
                 return self._oms_order_from_row(row) if row is not None else None
         except Exception as exc:
             raise DatabaseError(f"Failed to load OMS order: {exc}") from exc
