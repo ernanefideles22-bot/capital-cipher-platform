@@ -32,6 +32,8 @@ jobs:
           app/tests/test_gate_scenario_financial_measurement.py
           app/tests/test_gate_scenario_staged_levels.py
           app/tests/test_gate_scenario_staged_journal.py
+          app/tests/test_gate_scenario_staged_financial_replay.py
+          app/tests/test_gate_scenario_staged_financial_measurement.py
           app/tests/test_professional_gate_chart_stage1.py
           app/tests/test_gate_s2e_shared_shadow.py
           --junitxml="${{ runner.temp }}/scenario-tests.xml"
