@@ -30,8 +30,25 @@ jobs:
           app/tests/test_gate_scenario_profitability_audit.py
           app/tests/test_gate_scenario_financial_replay.py
           app/tests/test_gate_scenario_financial_measurement.py
+          app/tests/test_gate_scenario_staged_levels.py
+          app/tests/test_gate_scenario_staged_journal.py
           app/tests/test_professional_gate_chart_stage1.py
           app/tests/test_gate_s2e_shared_shadow.py
+          --junitxml="${{ runner.temp }}/scenario-tests.xml"
       - name: Demonstrate six synthetic engineering paths without orders or PnL
         working-directory: backend
         run: python -m scripts.gate_scenario_demo --root "$RUNNER_TEMP/scenario-demo"
+      - name: Demonstrate staged V2 levels with durable synthetic snapshots
+        working-directory: backend
+        run: python -m scripts.gate_scenario_staged_demo --root "$RUNNER_TEMP/scenario-staged-demo"
+      - name: Preserve engineering checks and observation journals
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenario-engineering-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/scenario-tests.xml
+            ${{ runner.temp }}/scenario-demo
+            ${{ runner.temp }}/scenario-staged-demo
+          if-no-files-found: error
+          retention-days: 30
