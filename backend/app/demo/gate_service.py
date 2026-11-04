@@ -7,8 +7,9 @@ import time
 from collections import deque
 from contextlib import asynccontextmanager, AsyncExitStack
 from datetime import datetime, timezone
+from typing import Literal
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from app.demo.gate_readonly import GateProbeError, probe_account
@@ -84,6 +85,9 @@ def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles
     journals = {'research': None, 'cycle': None}
     runtime = {'flow':None,'status':'DISCONNECTED'}
     revision = values.get('RAILWAY_GIT_COMMIT_SHA', values.get('APP_SOURCE_REVISION', ''))
+    # Separate public chart cache: never read/write S3 journals or execution state.
+    chart_cache = {}
+    chart_locks = {}
 
     async def refresh():
         private_account['equity'] = None
@@ -393,6 +397,7 @@ def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles
     async def status():
         flow=runtime['flow']
         current=dict(state)
+        current['source_revision'] = revision or None
         if forward['collector'] is not None:
             current['forward_research'] = forward['collector'].snapshot()['collection']
         current['oms_connection_status']=runtime['status']
@@ -408,6 +413,35 @@ def create_app(environment=None, probe=probe_account, market_fetch=fetch_candles
         if journals['cycle'] is not None:
             current['recovery_status']='REQUIRED' if journals['cycle'].recovery_status()['recovery_required'] else 'CLEAR'
         return current
+
+    @app.get("/api/gate/market/candles")
+    async def chart_candles(
+        symbol: Literal['BTCUSDT', 'ETHUSDT', 'SOLUSDT'] = 'BTCUSDT',
+        timeframe: Literal['15m', '1h', '4h'] = '15m',
+    ):
+        cache_key = (symbol, timeframe)
+        lock = chart_locks.setdefault(cache_key, asyncio.Lock())
+        async with lock:
+            cached = chart_cache.get(cache_key)
+            if cached is not None and time.monotonic() - cached[0] < 30:
+                return cached[1]
+            try:
+                rows = await market_fetch(symbol, timeframe, limit=200)
+                if len(rows) < 60:
+                    raise ValueError('insufficient candles')
+            except Exception:
+                # No fallback to Binance, stale data, or a different account.
+                raise HTTPException(502, 'GATE_CHART_DATA_UNAVAILABLE') from None
+            result = {
+                'source': 'GATE', 'environment': 'GATE_TESTNET',
+                'market': 'GATE_USDT_FUTURES_TESTNET',
+                'symbol': symbol, 'timeframe': timeframe,
+                'observed_at': datetime.now(timezone.utc).isoformat(),
+                'closed_candles_only': True, 'execution_authorized': False,
+                'candles': rows,
+            }
+            chart_cache[cache_key] = (time.monotonic(), result)
+            return result
 
     @app.get("/api/gate/research/forward")
     async def forward_status():
