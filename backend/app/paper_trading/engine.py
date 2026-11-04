@@ -7,12 +7,13 @@ No real orders, no private API keys, ever (Phase 1).
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import NAMESPACE_URL, uuid5
 
 from app.audit.service import AuditService
 from app.core.errors import RiskError, ValidationError
 from app.core.logging import ServiceLogger
+from app.market_data.data_quality import TIMEFRAME_SECONDS
 from app.paper_trading.execution import (
     ExecutionCostLedger,
     IsolatedMarginModel,
@@ -211,7 +212,7 @@ class PaperTradingEngine:
             approval_id=risk_check.approval_id,
             request_fingerprint=risk_check.request_fingerprint,
             correlation_id=decision.correlation_id,
-            exchange=Exchange.BINANCE,
+            exchange=market_candle.exchange if market_candle is not None else Exchange.BINANCE,
             symbol=decision.symbol,
             timeframe=decision.timeframe,
             strategy=decision.strategy,
@@ -258,8 +259,20 @@ class PaperTradingEngine:
     async def on_candle(self, candle: Candle) -> list[PaperOrder]:
         """Check SL/TP for open positions on every closed candle (docs/18)."""
         closed: list[PaperOrder] = []
+        step_seconds = TIMEFRAME_SECONDS.get(candle.timeframe)
+        if step_seconds is None:
+            raise ValidationError("Unsupported PAPER monitoring candle timeframe")
+        # OHLC has no intrabar chronology. A candle containing pre-entry prices
+        # cannot decide the exit of a position opened partway through it. Use
+        # closed_at - duration as a conservative boundary for both inclusive
+        # millisecond exchange closes and exact-boundary research candles.
+        interval_start = candle.closed_at - timedelta(seconds=step_seconds)
         for order in list(self.open_orders.values()):
-            if order.symbol != candle.symbol:
+            if order.symbol != candle.symbol or order.exchange != candle.exchange:
+                continue
+            if order.opened_at is None:
+                raise ValidationError("PAPER position requires an entry timestamp")
+            if interval_start < order.opened_at:
                 continue
             self._accrue_funding(order, candle.closed_at)
             exit_price: float | None = None

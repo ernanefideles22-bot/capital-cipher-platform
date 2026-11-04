@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 
 from app.core.errors import AuditError, RiskError, ValidationError
@@ -43,7 +45,7 @@ async def test_stop_loss_triggers(paper_engine, risk_manager):
     decision = make_decision()
     check = await approved_check(risk_manager, decision)
     order = await paper_engine.create_order(decision, check, current_price=100.0)
-    crash = make_candle(order.stop_loss - 0.5, open_=99.0, high=99.5, low=order.stop_loss - 1)
+    crash = make_candle(order.stop_loss - 0.5, open_=99.0, high=99.5, low=order.stop_loss - 1, closed_at=order.opened_at + timedelta(minutes=15))
     closed = await paper_engine.on_candle(crash)
     assert len(closed) == 1
     assert closed[0].exit_reason == "STOP_LOSS"
@@ -55,8 +57,9 @@ async def test_stop_loss_triggers(paper_engine, risk_manager):
 async def test_stop_gap_executes_at_adverse_open(paper_engine, risk_manager, action, open_price):
     decision = make_decision(action=action)
     check = await approved_check(risk_manager, decision)
-    await paper_engine.create_order(decision, check, current_price=100)
-    candle = make_candle(open_price, open_=open_price, high=open_price+1, low=open_price-1)
+    order = await paper_engine.create_order(decision, check, current_price=100)
+    candle = make_candle(open_price, open_=open_price, high=open_price+1, low=open_price-1,
+        closed_at=order.opened_at + timedelta(minutes=15))
     closed = await paper_engine.on_candle(candle)
     assert closed[0].exit_price == open_price
     assert closed[0].exit_reason == "STOP_LOSS"
@@ -135,7 +138,8 @@ async def test_take_profit_triggers(paper_engine, risk_manager):
     decision = make_decision()
     check = await approved_check(risk_manager, decision)
     order = await paper_engine.create_order(decision, check, current_price=100.0)
-    pump = make_candle(103.5, open_=100.5, high=order.take_profit + 1, low=100.0)
+    pump = make_candle(103.5, open_=100.5, high=order.take_profit + 1, low=100.0,
+        closed_at=order.opened_at + timedelta(minutes=15))
     closed = await paper_engine.on_candle(pump)
     assert len(closed) == 1
     assert closed[0].exit_reason == "TAKE_PROFIT"
@@ -165,7 +169,8 @@ async def test_sell_order_stop_and_direction(paper_engine, risk_manager):
     check = await risk_manager.check(decision, entry_price=100.0, atr=1.0)
     order = await paper_engine.create_order(decision, check, current_price=100.0)
     assert order.stop_loss > order.entry_price
-    spike = make_candle(102.0, open_=100.0, high=order.stop_loss + 1, low=99.9)
+    spike = make_candle(102.0, open_=100.0, high=order.stop_loss + 1, low=99.9,
+        closed_at=order.opened_at + timedelta(minutes=15))
     closed = await paper_engine.on_candle(spike)
     assert closed[0].exit_reason == "STOP_LOSS"
     assert closed[0].pnl < 0

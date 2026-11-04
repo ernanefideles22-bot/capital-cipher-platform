@@ -31,7 +31,7 @@ from app.schemas.backtest import (
     WalkForwardResearchPlan,
     WalkForwardRequest,
 )
-from app.schemas.common import RiskStatus
+from app.schemas.common import Exchange, RiskStatus
 from app.schemas.risk import RiskCheck
 from app.schemas.strategy import StrategyConfig
 from app.strategy.engine import StrategyEngine
@@ -162,9 +162,11 @@ async def test_backtest_records_historical_dataset_and_margin_manifest():
     assert report.funding > 0
 
 
+@pytest.mark.parametrize("exchange", [Exchange.BINANCE, Exchange.BYBIT])
 async def test_liquidation_precedes_stop_and_charges_liquidation_fee(
     audit_service,
     risk_manager,
+    exchange,
 ):
     start = datetime(2026, 7, 1, tzinfo=timezone.utc)
     margin = BacktestMarginAssumptions(
@@ -198,7 +200,7 @@ async def test_liquidation_precedes_stop_and_charges_liquidation_fee(
         decision,
         check,
         current_price=100,
-        market_candle=make_candle(close=100, closed_at=start),
+        market_candle=make_candle(close=100, closed_at=start).model_copy(update={"exchange":exchange}),
         occurred_at=start,
     )
     liquidation_candle = make_candle(
@@ -207,11 +209,12 @@ async def test_liquidation_precedes_stop_and_charges_liquidation_fee(
         low=75,
         close=80,
         closed_at=start + timedelta(minutes=15),
-    )
+    ).model_copy(update={"exchange":exchange})
 
     closed = (await engine.on_candle(liquidation_candle))[0]
     performance = engine.performance()
 
+    assert order.exchange == exchange
     assert order.liquidation_price == pytest.approx(80.5)
     assert order.initial_margin == pytest.approx(200)
     assert closed.exit_reason == "LIQUIDATION"

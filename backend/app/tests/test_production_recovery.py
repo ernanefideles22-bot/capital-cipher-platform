@@ -36,7 +36,8 @@ async def test_durable_restart_keeps_monitoring_stop_and_reconstructs_equity(tmp
         await restored.initialize()
         assert risk.state.open_positions == 1
         assert order.paper_order_id in restored.open_orders
-        candle = make_candle(80, open_=80, high=81, low=79)
+        candle = make_candle(80, open_=80, high=81, low=79,
+            closed_at=order.opened_at + timedelta(minutes=15))
         closed = await restored.on_candle(candle)
         assert len(closed) == 1
         assert closed[0].pnl < 0
