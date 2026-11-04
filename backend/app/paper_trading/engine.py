@@ -212,7 +212,7 @@ class PaperTradingEngine:
             approval_id=risk_check.approval_id,
             request_fingerprint=risk_check.request_fingerprint,
             correlation_id=decision.correlation_id,
-            exchange=Exchange.BINANCE,
+            exchange=market_candle.exchange if market_candle is not None else Exchange.BINANCE,
             symbol=decision.symbol,
             timeframe=decision.timeframe,
             strategy=decision.strategy,

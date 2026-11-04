@@ -22,9 +22,18 @@ on BUY and SELL, stop-first ambiguity, venue isolation and invalid timing inputs
 Synthetic exit/recovery certification fixtures now advance a full interval after
 entry; runtime clock/freshness and risk limits are unchanged.
 
-Full local backend validation before synthetic-fixture redaction: 815 passed,
-34 skipped (174.99 seconds). Revalidate the synthetic-monitor suite and use CI
-with disposable PostgreSQL/Redis for skipped integrations.
+Positions now inherit `market_candle.exchange` at creation. Calls without a
+source candle retain the existing Binance default. Without this companion fix,
+the venue admission check would skip Bybit monitoring because older creation
+hardcoded Binance. Historical stored records are not relabeled.
+
+Source-venue regressions reproduce six failing Bybit scenarios before the fix.
+They cover BUY/SELL stops and targets, audit provenance, foreign-venue rejection,
+ongoing funding and the real BacktestingEngine replay path. Liquidation priority
+and fees are verified for both Binance and Bybit. The selected source-venue,
+causality, margin and backtest suites pass: 57 tests. Commit-specific full CI
+with disposable PostgreSQL/Redis is tracked in PR #105; the earlier successful
+CI run belongs to the preceding revision and does not approve this update.
 
 This change does not deploy, change Gate/S3, rewrite stored trades, reset history,
 change strategy/risk settings or authorize execution. A future measurement cohort
