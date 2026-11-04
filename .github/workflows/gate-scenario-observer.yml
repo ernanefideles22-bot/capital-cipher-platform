@@ -27,6 +27,7 @@ jobs:
         run: >-
           python -m pytest -q app/tests/test_gate_scenario_observer.py
           app/tests/test_gate_scenario_journal.py
+          app/tests/test_gate_scenario_profitability_audit.py
           app/tests/test_professional_gate_chart_stage1.py
           app/tests/test_gate_s2e_shared_shadow.py
       - name: Demonstrate six synthetic engineering paths without orders or PnL
