@@ -109,7 +109,7 @@ async def certify_cpu_isolation(settings, timeframe, marker_directory):
                 exchange=Exchange.BINANCE, symbol=opened.symbol, timeframe=timeframe,
                 open=close, close=close, high=max(close, opened.take_profit) * 1.00001,
                 low=min(close, opened.take_profit) * .99999, volume=100,
-                closed_at=datetime.now(timezone.utc)))
+                closed_at=opened.opened_at + fixture_interval(timeframe)))
             assert closed.exit_reason == "TAKE_PROFIT"
             balance = context.paper_engine.balance
         finally:

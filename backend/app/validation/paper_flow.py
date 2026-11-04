@@ -167,7 +167,8 @@ async def validate_full_paper_flow(
             open=close, close=close, volume=100,
             high=max(close, opened.take_profit) * 1.00001,
             low=min(close, opened.take_profit) * .99999,
-            closed_at=datetime.now(timezone.utc),
+            # Isolated synthetic exit: a whole interval after the entry.
+            closed_at=opened.opened_at + interval,
         )
         closed, = await restored.paper_engine.on_candle(closing_candle)
         assert closed.exit_reason == "TAKE_PROFIT"
