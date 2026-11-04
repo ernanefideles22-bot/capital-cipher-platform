@@ -88,8 +88,18 @@ class OMSService:
     async def initialize(self) -> None:
         if self._repository is None:
             return
-        for order in await self._repository.list_oms_orders(limit=1_000):
+        for order in await self._repository.list_oms_orders(
+            exchange=self.target_exchange,
+            environment=self.target_environment,
+            limit=1_000,
+        ):
+            if not self._owns(order):
+                raise SecurityError("Repository returned an order outside the OMS scope")
             self._orders[order.oms_order_id] = order
+
+    def _owns(self, order: OMSOrder) -> bool:
+        return (order.exchange == self.target_exchange
+                and order.environment == self.target_environment)
 
     async def submit_approved(
         self,
@@ -129,7 +139,9 @@ class OMSService:
             mirrored = _paper_oms_order(paper_order)
             if self._repository is not None:
                 durable = await self._repository.load_oms_order(
-                    mirrored.oms_order_id
+                    mirrored.oms_order_id,
+                    exchange=self.target_exchange,
+                    environment=self.target_environment,
                 )
                 if durable is None:
                     raise ValidationError(
@@ -197,17 +209,31 @@ class OMSService:
 
     async def get_order(self, oms_order_id: str) -> OMSOrder | None:
         if self._repository is not None:
-            durable = await self._repository.load_oms_order(oms_order_id)
+            durable = await self._repository.load_oms_order(
+                oms_order_id,
+                exchange=self.target_exchange,
+                environment=self.target_environment,
+            )
             if durable is not None:
+                if not self._owns(durable):
+                    raise SecurityError("Repository returned an order outside the OMS scope")
                 self._orders[durable.oms_order_id] = durable
                 return durable
-        return self._orders.get(oms_order_id)
+        cached = self._orders.get(oms_order_id)
+        return cached if cached is not None and self._owns(cached) else None
 
     async def list_orders(self, *, limit: int = 200) -> list[OMSOrder]:
         if self._repository is not None:
-            return await self._repository.list_oms_orders(limit=limit)
+            orders = await self._repository.list_oms_orders(
+                exchange=self.target_exchange,
+                environment=self.target_environment,
+                limit=limit,
+            )
+            if any(not self._owns(order) for order in orders):
+                raise SecurityError("Repository returned an order outside the OMS scope")
+            return orders
         return sorted(
-            self._orders.values(),
+            (order for order in self._orders.values() if self._owns(order)),
             key=lambda order: order.created_at,
             reverse=True,
         )[:limit]
@@ -269,6 +295,8 @@ class OMSService:
         if claimed is None:
             return False
         command, order = claimed
+        if not self._owns(order):
+            raise SecurityError("Claimed command is outside the OMS scope")
         adapter = self._adapters.get((order.exchange, order.environment))
         if adapter is None or order.environment != ExecutionEnvironment.TESTNET:
             now = datetime.now(timezone.utc)
@@ -514,13 +542,23 @@ class OMSService:
     async def _claim_command(
         self,
     ) -> tuple[ExecutionCommand, OMSOrder] | None:
+        # PAPER submissions are mirrored fills, never external worker commands.
+        if self.target_environment != ExecutionEnvironment.TESTNET:
+            return None
         if self._repository is not None:
             return await self._repository.claim_execution_command(
                 worker_id=self._worker_id,
                 lease_seconds=self._lease_seconds,
+                exchange=self.target_exchange,
+                environment=self.target_environment,
             )
         now = datetime.now(timezone.utc)
         for command_id, command in self._commands.items():
+            order = self._orders.get(command.oms_order_id)
+            if order is None:
+                raise ValidationError("In-memory OMS order is missing")
+            if not self._owns(order):
+                continue
             if (
                 command.status == ExecutionCommandStatus.PENDING
                 and command.attempt_count < command.max_attempts

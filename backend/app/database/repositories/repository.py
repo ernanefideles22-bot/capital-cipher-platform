@@ -3369,10 +3369,21 @@ class Repository:
         except Exception as exc:
             raise DatabaseError(f"Failed to create OMS order: {exc}") from exc
 
-    async def load_oms_order(self, oms_order_id: str) -> OMSOrder | None:
+    async def load_oms_order(
+        self, oms_order_id: str, *,
+        exchange: Exchange | None = None,
+        environment: ExecutionEnvironment | None = None,
+    ) -> OMSOrder | None:
         try:
             async with self._db.session() as session:
-                row = await session.get(OMSOrderModel, oms_order_id)
+                statement = select(OMSOrderModel).where(
+                    OMSOrderModel.oms_order_id == oms_order_id
+                )
+                if exchange is not None:
+                    statement = statement.where(OMSOrderModel.exchange == exchange.value)
+                if environment is not None:
+                    statement = statement.where(OMSOrderModel.environment == environment.value)
+                row = await session.scalar(statement)
                 return self._oms_order_from_row(row) if row is not None else None
         except Exception as exc:
             raise DatabaseError(f"Failed to load OMS order: {exc}") from exc
@@ -3412,16 +3423,29 @@ class Repository:
         *,
         worker_id: str,
         lease_seconds: float,
+        exchange: Exchange | None = None,
+        environment: ExecutionEnvironment | None = None,
     ) -> tuple[ExecutionCommand, OMSOrder] | None:
         """Lease one command; PostgreSQL workers skip rows leased elsewhere."""
 
         now = _now()
         lease_until = now + timedelta(seconds=max(1.0, lease_seconds))
+        # Apply the scope to BOTH leasing and expired-lease recovery, before
+        # mapping a foreign venue's rows or changing any command lifecycle.
+        scope = []
+        owned_orders = select(OMSOrderModel.oms_order_id)
+        if exchange is not None:
+            owned_orders = owned_orders.where(OMSOrderModel.exchange == exchange.value)
+        if environment is not None:
+            owned_orders = owned_orders.where(OMSOrderModel.environment == environment.value)
+        if exchange is not None or environment is not None:
+            scope.append(ExecutionCommandModel.oms_order_id.in_(owned_orders))
         try:
             async with self._db.session() as session, session.begin():
                 expired_rows = list(
                     await session.scalars(
                         select(ExecutionCommandModel)
+                        .where(*scope)
                         .where(
                             ExecutionCommandModel.status
                             == ExecutionCommandStatus.LEASED.value,
@@ -3480,6 +3504,7 @@ class Repository:
                     expired.completed_at = now
                 statement = (
                     select(ExecutionCommandModel)
+                    .where(*scope)
                     .where(
                         ExecutionCommandModel.attempt_count
                         < ExecutionCommandModel.max_attempts,

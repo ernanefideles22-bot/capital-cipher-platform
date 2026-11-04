@@ -14,9 +14,12 @@ router = APIRouter(prefix="/paper")
 @router.get("/orders")
 async def list_orders(context: AppContext = Depends(get_context)) -> dict:
     engine = context.paper_engine
-    orders = [o.model_dump(mode="json") for o in engine.open_orders.values()]
-    orders += [o.model_dump(mode="json") for o in engine.closed_orders[-100:]]
-    return success_response({"orders": orders})
+    visible = [*engine.open_orders.values(), *engine.closed_orders[-100:]]
+    return success_response({
+        "orders": [o.model_dump(mode="json") for o in visible],
+        "cost_reporting": engine.cost_reporting(),
+        "order_costs": [engine.order_cost_report(o) for o in visible],
+    })
 
 
 @router.get("/orders/{order_id}")
@@ -27,7 +30,11 @@ async def get_order(order_id: str, context: AppContext = Depends(get_context)) -
         order = next((o for o in engine.closed_orders if o.paper_order_id == order_id), None)
     if order is None:
         return error_response("NOT_FOUND", f"Paper order {order_id} not found")
-    return success_response({"order": order.model_dump(mode="json")})
+    return success_response({
+        "order": order.model_dump(mode="json"),
+        "cost_reporting": engine.cost_reporting(),
+        "cost_report": engine.order_cost_report(order),
+    })
 
 
 @router.get("/performance")
