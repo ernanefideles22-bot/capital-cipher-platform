@@ -75,19 +75,39 @@ python -m pytest -q app/tests/test_audit_backend_regressions.py
 python -m pytest -q
 ```
 
-Local results (Python 3.12): 12 new regression cases passed; complete backend
+Initial local results (Python 3.12), before the guard correction below:
+12 new regression cases passed; complete backend
 suite: 728 passed, 34 skipped, 1 failed in 180.62 seconds. Dashboard production
 build and TypeScript compilation passed. `git diff --check` passed.
 
-The failure is `test_security.py::test_no_real_order_code_in_backend`. The
-unchanged test rejects the literal `/fapi/v1/order` in the existing DEMO tests
+The initial failure was `test_security.py::test_no_real_order_code_in_backend`.
+The original test rejected the literal `/fapi/v1/order` in the existing DEMO tests
 (the DEMO implementation also contains it). Re-running the security file in a
 detached, unmodified checkout of base `9ab29dc` reproduces exactly the failure:
-5 passed, 1 failed. Neither the scanner nor DEMO execution is changed here.
-The security policy and DEMO implementation need a separate explicit review;
-this baseline failure must not be treated as a passed release gate. The 34
-skips also mean environment-dependent integrations were not all exercised
-locally; CI provisions disposable PostgreSQL and Redis for its integration run.
+5 passed, 1 failed. Initial CI run 41832492021 independently reproduced the
+same scanner failure: 760 passed, 2 skipped, 1 failed.
+
+### Follow-up: security guard reflects the actual application boundary
+
+The guard now excludes negative fixtures only in the actual `app/tests`
+subtree and permits the relative Futures order path only in the two existing
+isolated modules, `demo/venue.py` and `demo/execution.py`. Absolute endpoint
+prohibitions remain active in production modules, including DEMO. Live Futures
+origins are explicitly forbidden inside DEMO. An AST check rejects absolute or
+relative imports of DEMO by the main backend. Mutation cases verify these
+restrictions, including a production file disguised with a `test_` filename.
+
+`test_demo_network_boundary.py` independently checks the literal HTTPS Demo
+origin for every allowlisted request, rejects hostile hosts/paths/methods before
+transport, requires credentials and synchronized clock for signed requests, and
+checks that GET/POST/DELETE redirects (301/302/303/307/308) never forward to live.
+All network requests terminate in `httpx.MockTransport`; no exchange is contacted.
+
+The selected security, DEMO, and audit regression suites pass: **133 tests**.
+Full revalidation is tracked in PR #104 and its commit-specific CI. Production
+DEMO code, execution flags, routing, credentials and permissions are unchanged.
+Local integration skips require the CI job with disposable PostgreSQL/Redis;
+a green test suite is not a runtime deployment or a new release-readiness bundle.
 
 After review, any separately authorized staging deployment must verify the
 actual deployed SHA and `/status`, then list scoped OMS orders and reconcile
